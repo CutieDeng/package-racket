@@ -329,12 +329,15 @@ actual output:
         (build-path rpm-repo-root "racket9.repo")
         "# GENERATED RPM REPOSITORY METADATA - DO NOT EDIT IN rpm-racket.\n")
        (make-directory* (build-path rpm-repo-root "repo"))
+       (define artifact-dir (build-path tmp "artifacts"))
+       (write-text! (build-path artifact-dir "racket-minimal-9.2.1-src.tgz") "fake source artifact")
        (define config-path (build-path tmp "rpm-repo-config.rktd"))
        (write-rpm-repo-config! config-path rpm-repo-root)
        (define-values (out err)
          (run-package/success
           (list "--target" "rpm-spec"
                 "--rpm-arch" "arm64"
+                "--artifact-dir" (path-arg artifact-dir)
                 "--rpm-repo-config" (path-arg config-path))))
        (define text (combined-output out err))
        (check-contains text "Generated RPM SPEC scaffold:")

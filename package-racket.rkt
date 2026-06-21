@@ -866,18 +866,19 @@ Description: {(cfg-summary c)}
 (define (rpm-payload-source-name c)
   f"{(cfg-package-name c)}-{(cfg-formula-version c)}-payload.tar.gz")
 
-(define (rpm-source-sha256 c)
+(define (rpm-source-sha256/local c)
   (let ([source-path (brew-output-tgz c)])
     (if (file-exists? source-path)
         (sha256-file source-path)
         "")
   ) ; end let source path
-) ; end define rpm-source-sha256
+) ; end define rpm-source-sha256/local
 
 (define (rpm-file-list-source-name c)
   f"{(cfg-package-name c)}.files")
 
-(define (rpm-spec-content c [source-url (formula-source-url c)])
+(define (rpm-spec-content c [source-url (formula-source-url c)]
+                          [source-sha256 (rpm-source-sha256/local c)])
   f"Name: {(cfg-package-name c)}
 Version: {(cfg-formula-version c)}
 Release: {(cfg-release c)}
@@ -888,7 +889,7 @@ Source0: {source-url}
 AutoReqProv: no
 %global __brp_compress %{{nil}}
 %global package_prefix {(cfg-prefix c)}
-%global source_sha256 {(rpm-source-sha256 c)}
+%global source_sha256 {source-sha256}
 
 %description
 Racket packaged from a stable source release archive.
@@ -955,9 +956,10 @@ grep -Eq '^(%dir )?/usr/(bin|lib|lib64|share)$' \"$manifest\" && exit 1
 %defattr(-,root,root,-)
 ")
 
-(define (write-rpm-spec! c spec-path [source-url (formula-source-url c)])
+(define (write-rpm-spec! c spec-path [source-url (formula-source-url c)]
+                         [source-sha256 (resolve-rpm-source-sha256! c source-url)])
   (begin
-    (write-text-file! spec-path (rpm-spec-content c source-url))
+    (write-text-file! spec-path (rpm-spec-content c source-url source-sha256))
     (validate-rpm-spec! c spec-path source-url)
   ) ; end begin write-rpm-spec!
 ) ; end define write-rpm-spec!
@@ -3353,6 +3355,15 @@ end
   ) ; end match url
 ) ; end define https-url->host/path
 
+(define (github-release-download-url-values who url)
+  (match (regexp-match #px"^https://github[.]com/([^/]+)/([^/]+)/releases/download/([^/]+)/([^/?#]+)" url)
+    [(list _ owner repo tag asset-name)
+     (values owner repo tag asset-name)]
+    [_ (raise-user-error who
+                         f"expected GitHub release download URL: {url}")]
+  ) ; end match GitHub release URL
+) ; end define github-release-download-url-values
+
 (define (http-status-code status)
   (begin
     (define pieces (string-split (bytes->string/utf-8 status)))
@@ -3384,10 +3395,15 @@ end
 ) ; end define github-header-value
 
 (define (github-headers token accept)
-  (list "User-Agent: package-racket"
-        f"Accept: {accept}"
-        f"Authorization: Bearer {token}"
-        f"X-GitHub-Api-Version: {github-api-version}"))
+  (append
+   (list "User-Agent: package-racket"
+         f"Accept: {accept}"
+         f"X-GitHub-Api-Version: {github-api-version}")
+   (if (and (string? token)
+            (not (string=? token "")))
+       (list f"Authorization: Bearer {token}")
+       '()))
+) ; end define github-headers
 
 (define (strip-http-line-cr line)
   (regexp-replace #rx"\r$" line ""))
@@ -3582,6 +3598,121 @@ body: {(safe-response-body body)}")]
     (and (pair? matches) (car matches))
   ) ; end begin release-asset-by-name
 ) ; end define release-asset-by-name
+
+(define (github-asset-digest-sha256 digest)
+  (and (string? digest)
+       (match (regexp-match #px"^sha256:([0-9A-Fa-f]{64})$" digest)
+         [(list _ sha) (string-downcase sha)]
+         [_ #f]))
+) ; end define github-asset-digest-sha256
+
+(define (github-release-asset-sha256/digest who owner repo tag asset-name)
+  (with-handlers ([exn:fail?
+                   (lambda (exn)
+                     (println/flush
+                      f"Could not read GitHub release asset digest; will download Source0 to calculate sha256: {(exn-message exn)}")
+                     #f)])
+    (define release (github-release-by-tag! owner repo tag ""))
+    (define release-id (hash-ref release 'id))
+    (define assets (github-release-assets! owner repo release-id ""))
+    (define asset (release-asset-by-name assets asset-name))
+    (and asset
+         (github-asset-digest-sha256 (hash-ref asset 'digest #f)))
+  ) ; end with-handlers GitHub release digest
+) ; end define github-release-asset-sha256/digest
+
+(define (download-https-url! who url dest)
+  (begin
+    (define-values (initial-host initial-path)
+      (https-url->host/path who url)
+    ) ; end define-values initial URL parts
+    (let loop ([host initial-host]
+               [path initial-path]
+               [redirects 0])
+      (when (> redirects 5)
+        (raise-user-error who f"too many redirects while downloading: {url}")
+      ) ; end when too many redirects
+      (define-values (status header-lines body-port)
+        (http-send/port! who "GET" host path (list "User-Agent: package-racket") #f)
+      ) ; end define-values download response
+      (define code (http-status-code status))
+      (cond
+        [(= code 200)
+         (make-directory* (or (path-only dest) (current-directory)))
+         (call-with-output-file dest
+           #:exists 'truncate/replace
+           (lambda (out)
+             (copy-port body-port out)
+           ) ; end lambda copy URL body
+         ) ; end call-with-output-file dest
+         (close-input-port body-port)]
+        [(member code '(301 302 303 307 308) =)
+         (define location (github-header-value header-lines "Location"))
+         (close-input-port body-port)
+         (unless location
+           (raise-user-error who f"HTTP redirect missing Location header: {code}")
+         ) ; end unless location header
+         (cond
+           [(string-prefix? location "https://")
+            (define-values (next-host next-path)
+              (https-url->host/path who location)
+            ) ; end define-values absolute redirect
+            (loop next-host next-path (add1 redirects))]
+           [(string-prefix? location "/")
+            (loop host location (add1 redirects))]
+           [else
+            (raise-user-error who f"unsupported redirect Location: {location}")]
+         ) ; end cond redirect location
+        ]
+        [else
+         (define body (port->string body-port))
+         (close-input-port body-port)
+         (raise-user-error who
+                           f"download failed: {code} https://{host}{path}
+body: {(safe-response-body body)}")]
+      ) ; end cond response status
+    ) ; end let loop
+  ) ; end begin download-https-url!
+) ; end define download-https-url!
+
+(define (resolve-rpm-source-sha256! c source-url)
+  (begin
+    (define local-source (brew-output-tgz c))
+    (cond
+      [(file-exists? local-source)
+       (define sha (sha256-file local-source))
+       (println/flush f"RPM Source0 sha256 from local artifact: {sha}")
+       sha]
+      [else
+       (define-values (owner repo tag asset-name)
+         (github-release-download-url-values 'resolve-rpm-source-sha256! source-url)
+       ) ; end define-values release URL parts
+       (define remote-digest
+         (github-release-asset-sha256/digest 'resolve-rpm-source-sha256!
+                                             owner
+                                             repo
+                                             tag
+                                             asset-name)
+       ) ; end define remote digest
+       (cond
+         [remote-digest
+          (println/flush f"RPM Source0 sha256 from GitHub release digest: {remote-digest}")
+          remote-digest]
+         [else
+          (define source-dir (build-path (cfg-work-dir c) "rpm-source"))
+          (define downloaded-source (build-path source-dir asset-name))
+          (reset-managed-dir! 'resolve-rpm-source-sha256! source-dir)
+          (println/flush f"Downloading RPM Source0 for sha256: {source-url}")
+          (download-https-url! 'resolve-rpm-source-sha256! source-url downloaded-source)
+          (assert-nonempty-file 'resolve-rpm-source-sha256! downloaded-source)
+          (define sha (sha256-file downloaded-source))
+          (println/flush f"RPM Source0 sha256 from downloaded artifact: {sha}")
+          sha]
+       ) ; end cond remote digest
+      ]
+    ) ; end cond local or remote source
+  ) ; end begin resolve-rpm-source-sha256!
+) ; end define resolve-rpm-source-sha256!
 
 (define (release-upload-config c who config-path repo-arg tag-arg asset-arg token-file-arg
                                repo-key tag-key asset-key token-key
@@ -4898,6 +5029,7 @@ jobs:
     (delete-managed-dir-if-present! (build-path (cfg-work-dir c) "brew"))
     (delete-managed-dir-if-present! (build-path (cfg-work-dir c) "brew-ci"))
     (delete-managed-dir-if-present! (build-path (cfg-work-dir c) "rpm"))
+    (delete-managed-dir-if-present! (build-path (cfg-work-dir c) "rpm-source"))
     (delete-managed-dir-if-present! (build-path (cfg-stage-dir c) "brew-source"))
   ) ; end unless cleanup work dirs
   (println/flush "Done.")
