@@ -2441,10 +2441,92 @@ jobs:
 
           gh release view \"$RELEASE_TAG\" >/dev/null
 
+          release_asset_dir=\"${{RUNNER_TEMP:-$GITHUB_WORKSPACE}}/bottle-release-assets\"
+          rm -rf \"$release_asset_dir\"
+          mkdir -p \"$release_asset_dir\"
+          release_assets=()
+          declare -A tarballs_by_basename
+
+          for bottle_tarball in \"${{bottle_tarballs[@]}}\"; do
+            bottle_basename=\"${{bottle_tarball##*/}}\"
+
+            if [ -n \"${{tarballs_by_basename[$bottle_basename]:-}}\" ]; then
+              echo \"Duplicate bottle tarball basename: $bottle_basename\"
+              exit 1
+            fi
+
+            tarballs_by_basename[\"$bottle_basename\"]=\"$bottle_tarball\"
+          done
+
+          extract_bottle_metadata() {{
+            ruby -rjson -ruri -e '
+              path = ARGV.fetch(0)
+              JSON.parse(File.read(path)).each_value do |formula|
+                formula.fetch(\"bottle\").fetch(\"tags\").each_value do |tag|
+                  local_filename = tag.fetch(\"local_filename\")
+                  url_filename = tag.fetch(\"filename\")
+                  sha256 = tag.fetch(\"sha256\")
+                  release_asset_name = URI.decode_www_form_component(url_filename)
+
+                  if local_filename.empty? || release_asset_name.empty? || sha256.empty?
+                    abort \"bottle JSON contains empty filename or sha256: #{{path}}\"
+                  end
+
+                  puts [local_filename, release_asset_name, sha256].join(\"\\t\")
+                end
+              end
+            ' \"$1\"
+          }}
+
+          for bottle_json in \"${{bottle_jsons[@]}}\"; do
+            while IFS=$'\\t' read -r local_filename release_asset_name expected_sha256; do
+              case \"$local_filename\" in
+                \"\"|*/*)
+                  echo \"Invalid bottle local_filename in metadata: $local_filename\"
+                  exit 1
+                  ;;
+              esac
+
+              case \"$release_asset_name\" in
+                \"\"|*/*)
+                  echo \"Invalid bottle release asset filename in metadata: $release_asset_name\"
+                  exit 1
+                  ;;
+              esac
+
+              bottle_tarball=\"${{tarballs_by_basename[$local_filename]:-}}\"
+              if [ -z \"$bottle_tarball\" ]; then
+                echo \"Bottle metadata references missing local tarball: $local_filename\"
+                exit 1
+              fi
+
+              actual_sha256=\"$(ruby -rdigest -e 'puts Digest::SHA256.file(ARGV.fetch(0)).hexdigest' \"$bottle_tarball\")\"
+              if [ \"$actual_sha256\" != \"$expected_sha256\" ]; then
+                echo \"Bottle tarball sha256 does not match metadata: $local_filename\"
+                exit 1
+              fi
+
+              release_asset_path=\"$release_asset_dir/$release_asset_name\"
+              if [ -e \"$release_asset_path\" ]; then
+                echo \"Duplicate release asset filename from Homebrew metadata: $release_asset_name\"
+                exit 1
+              fi
+
+              cp \"$bottle_tarball\" \"$release_asset_path\"
+              release_assets+=(\"$release_asset_path\")
+              printf 'Release asset: %s -> %s\\n' \"$local_filename\" \"$release_asset_name\"
+            done < <(extract_bottle_metadata \"$bottle_json\")
+          done
+
+          if [ \"${{#release_assets[@]}}\" -ne \"{bottle-tarball-count}\" ]; then
+            echo \"Release asset count does not match bottle tarball count.\"
+            exit 1
+          fi
+
           cd \"$(brew --repository \"$GITHUB_REPOSITORY\")\"
           brew bottle --merge --write --no-commit --root-url=\"$BOTTLE_ROOT_URL\" {bottle-json-array}
 
-          gh release upload \"$RELEASE_TAG\" {bottle-tarball-array} --clobber
+          gh release upload \"$RELEASE_TAG\" \"${{release_assets[@]}}\" --clobber
 
           if git diff --quiet -- Formula/racket@9.rb; then
             echo \"Formula bottle block is already current.\"
