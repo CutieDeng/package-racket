@@ -1,0 +1,97 @@
+# package-racket
+
+Packaging helper for a local Racket checkout. The command supports three named
+packaging flows:
+
+- `brew`: creates the Homebrew source `.tgz`, generates a staged
+  `brew/Formula/racket@9.rb`, validates it, then replaces the formula in the
+  Homebrew tap at the end of a successful script run unless disabled.
+- `apt`: installs into a staged root with `make unix-style` and builds a `.deb`.
+- `rpm`: installs into a staged root with `make unix-style` and builds a `.rpm`.
+
+All inputs are passed by named options. There are no positional arguments.
+Generated metadata text in the Racket script is assembled with `f"..."` strings,
+so package fields stay close to the self-hosted tstring syntax used by the
+Racket checkout.
+
+For maintainability, complex Racket blocks in `package-racket.rkt` use an
+explicit block-ending style: close important `define`, `begin`, `cond`, `when`,
+`unless`, `for`, `match`, and `lambda` forms on their own line with an
+`; end ...` comment. Keep that style when extending the script.
+
+The script stops on safety-check failures instead of continuing. It checks
+required directories and tools, validates non-empty staged install roots,
+checks package metadata files, verifies `.deb` archive members, verifies RPM
+metadata with `rpm -qip`, and compares the generated Homebrew formula sha256
+against the generated source `.tgz`.
+
+## Requirements
+
+- Racket with the `tstring` reader available.
+- For `brew`: `/opt/homebrew/Library/Taps/cutiedeng/homebrew-racket/racket-to-brew-tgz.rkt`.
+- For `apt`: `dpkg-deb`, or `ar` + `tar` + `xz` through the automatic fallback.
+- For `rpm`: `rpmbuild`.
+
+## Examples
+
+Create the Homebrew source archive and update the formula:
+
+```sh
+racket package-racket.rkt \
+  --target brew \
+  --racket-root /Users/cutiedeng/Y2026/M04/D03/racket.git
+```
+
+For `brew`, `--formula` means the final tap formula path. The script copies that
+file into `.build/brew/Formula/`, lets the brew helper update the staged copy,
+then replaces `/opt/homebrew/Library/Taps/cutiedeng/homebrew-racket/Formula/racket@9.rb`
+only after all selected targets succeed.
+
+Create a Debian package from a Linux x64 build:
+
+```sh
+racket package-racket.rkt \
+  --target apt \
+  --racket-root /path/to/racket.git \
+  --prefix /opt/racket9 \
+  --deb-arch amd64
+```
+
+Force the portable `.deb` backend when `dpkg-deb` is not installed:
+
+```sh
+racket package-racket.rkt \
+  --target apt \
+  --racket-root /path/to/racket.git \
+  --skip-build \
+  --install-root /tmp/racket-package-root \
+  --deb-backend ar
+```
+
+Create an RPM package from a Linux x64 build:
+
+```sh
+racket package-racket.rkt \
+  --target rpm \
+  --racket-root /path/to/racket.git \
+  --prefix /opt/racket9 \
+  --rpm-arch x86_64
+```
+
+Reuse an already installed staging root instead of running `make unix-style`:
+
+```sh
+racket package-racket.rkt \
+  --target apt \
+  --target rpm \
+  --racket-root /path/to/racket.git \
+  --skip-build \
+  --install-root /tmp/racket-package-root \
+  --prefix /opt/racket9
+```
+
+The `--install-root` directory must contain the package filesystem root. For
+example, with `--prefix /opt/racket9`, the staged installation should be under
+`/tmp/racket-package-root/opt/racket9`.
+
+Use `--dry-run` to print the commands without writing package artifacts.

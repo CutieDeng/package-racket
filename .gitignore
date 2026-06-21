@@ -1,0 +1,8 @@
+.build/
+artifacts/
+*.deb
+*.rpm
+*.tgz
+*.tar.gz
+*.swp
+.DS_Store
