@@ -379,6 +379,25 @@ racket package-racket.rkt \
 `--rpm-arch arm64` is normalized to RPM's `aarch64` target. The accepted RPM
 architecture spellings are `x86_64`, `amd64`, `x64`, `aarch64`, and `arm64`.
 
+The RPM flow runs Racket's `make unix-style`, so `--racket-root` must point to a
+clean source checkout that has not already been built in `in-place` mode. If a
+host needs an already-built Racket just to run `package-racket.rkt`, keep that
+bootstrap build in a separate checkout and pass the clean checkout as
+`--racket-root`.
+
+For a faster RPM smoke build, pass an explicit package set through
+`--make-arg`. This is useful for validating RPM metadata, architecture, payload
+layout, and runtime startup without building the full distribution package set:
+
+```sh
+racket package-racket.rkt \
+  --target rpm \
+  --racket-root /path/to/clean-racket.git \
+  --prefix /opt/racket9 \
+  --rpm-arch arm64 \
+  --make-arg "PKGS=racket-lib sandbox-lib errortrace-lib source-syntax tstring racket-tstring"
+```
+
 Reuse an already installed staging root instead of running `make unix-style`:
 
 ```sh
