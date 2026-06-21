@@ -21,9 +21,11 @@ packaging flows:
 - `apt-release`: uploads the configured `.deb` from `--artifact-dir` to a
   GitHub release with the GitHub REST API. This target can be combined with
   `apt` or used to upload an already generated `.deb`.
-- `rpm-spec`: overwrites the configured `rpm-racket` repository with generated
-  RPM build definitions, scripts, `.repo`, README, and publishing directories.
-  This target does not require `--racket-root`.
+- `rpm-spec`: overwrites the configured `rpm-racket` SPEC repository scaffold:
+  `SPECS/`, `SOURCES/`, `scripts/`, README, and `.gitignore`. This target does
+  not require `--racket-root`; generated RPM scripts build from the stable
+  GitHub Release source archive by default, or from an explicitly named local
+  source archive.
 - `rpm`: installs into a staged root with `make unix-style` and builds a `.rpm`.
 - `rpm-repo`: copies the configured `.rpm` into an explicit RPM repository
   root and regenerates metadata with `createrepo_c`. This target can be
@@ -53,8 +55,9 @@ flow also validates generated workflow YAML and required workflow content before
 replacing files in the tap. The publish workflow updates release assets and the
 Formula only after every bottle runner succeeds.
 The `rpm-spec` flow checks that the target root is a writable Git repository,
-generates the complete build-definition layer, validates the generated spec and
-script contents, and marks generated shell entrypoints executable. The
+generates only the SPEC/SOURCES/scripts scaffold, validates the generated spec
+and script contents, pins the source archive URL/sha256 when available, and
+marks generated shell entrypoints executable. The
 `rpm-repo` flow checks the target repository root, checks RPM metadata before
 copying it, runs `createrepo_c --update`, and requires `repodata/repomd.xml` to
 exist before reporting success.
@@ -66,8 +69,8 @@ Those generated tap files include a generated-code header. Humans and LLM
 agents must not make production changes directly in `homebrew-racket`; change
 `package-racket` and regenerate the tap outputs instead.
 The same rule applies to `rpm-racket`: generated `SPECS/`, `SOURCES/`,
-`scripts/`, `.repo`, README, package, and metadata outputs are produced from
-this repository.
+`scripts/`, and README outputs are produced from this repository. `rpm-racket`
+is a SPEC/build-script repository, not an RPM artifact repository.
 
 ## Version Model
 
@@ -155,10 +158,10 @@ These tests combine brew unit checks with real `package-racket.rkt` CLI runs in
 temporary directories. They cover Homebrew Formula and workflow semantics,
 dry-run isolation between targets, release-upload validation without reading
 local tokens, and combined producer/release targets such as `apt + apt-release`
-and `brew + source-release`. They also cover `rpm-spec` dry-run isolation,
-complete `rpm-racket` definition generation, generated shell syntax checks, and
-`rpm + rpm-repo` dry-run isolation so repository generation cannot silently
-write files during planning.
+and `brew + source-release`. They also cover `rpm-spec` dry-run isolation, SPEC
+scaffold generation, generated shell syntax checks, and `rpm + rpm-repo`
+dry-run isolation so repository generation cannot silently write files during
+planning.
 
 `--dry-run` still performs safety checks for configured paths, but it does not
 write package artifacts, generated Homebrew workflow files, or tap Formula
@@ -179,8 +182,8 @@ updates.
   `Contents: Read and write`, stored locally as one Racket string datum in
   `secret/ghtoken.rktd`. The file is ignored by Git and should be mode `600`.
 - For `apt`: `dpkg-deb`, or `ar` + `tar` + `xz` through the automatic fallback.
-- For `rpm-spec`: an explicit `--rpm-repo-config` and an explicit repository
-  root in that config or `--rpm-repo-root`.
+- For `rpm-spec`: an explicit `--rpm-repo-config` and an explicit
+  repository root in that config or `--rpm-repo-root`.
 - For `rpm`: `rpmbuild`.
 - For `rpm-repo`: `rpm` for package metadata validation, `createrepo_c` for
   repository metadata, an explicit `--rpm-repo-config`, and an explicit
@@ -390,7 +393,7 @@ racket package-racket.rkt \
   --deb-backend ar
 ```
 
-Generate or refresh the `rpm-racket` build definition repository:
+Generate or refresh the `rpm-racket` SPEC repository scaffold:
 
 ```sh
 racket package-racket.rkt \
@@ -400,10 +403,9 @@ racket package-racket.rkt \
   --rpm-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-repo-config.rktd
 ```
 
-`rpm-spec` writes `SPECS/racket9.spec`, `scripts/build-rpm.sh`,
-`scripts/build-srpm.sh`, `scripts/verify-rpm.sh`, `scripts/update-repo.sh`,
-`racket9.repo`, README, and the `repo/x86_64` / `repo/aarch64` publishing
-directories in the configured `rpm-racket` root.
+`rpm-spec` writes only `.gitignore`, README, `SPECS/`, `SOURCES/`, and
+`scripts/` in the configured `rpm-racket` root. It must not create `repo/` or
+`racket9.repo`.
 
 Build an RPM from the generated `rpm-racket` repository:
 
@@ -426,17 +428,6 @@ Build the matching SRPM:
   --prefix /usr \
   --rpm-arch arm64
 ```
-
-Publish an existing RPM into `rpm-racket/repo/$basearch`:
-
-```sh
-/Users/cutiedeng/Y2026/M06/D22/rpm-racket/scripts/update-repo.sh \
-  --rpm /path/to/package-racket/artifacts/racket9-9.2.1.1-1.aarch64.rpm \
-  --rpm-arch arm64
-```
-
-The generated scripts support `--dry-run`, named mutable paths, and safety
-checks before build or publish actions.
 
 Create an RPM package directly from `package-racket` on a Linux x64 build:
 

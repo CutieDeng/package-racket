@@ -228,7 +228,8 @@
     (define single-quote (integer->char 39))
     (define double-quote (integer->char 34))
     (define quote-mark (string single-quote))
-    (define quote-escape (list->string (list single-quote double-quote single-quote double-quote single-quote)))
+    (define quote-escape
+      (list->string (list single-quote double-quote single-quote double-quote single-quote)))
     (string-append quote-mark
                    (string-join (string-split str quote-mark #:trim? #f) quote-escape)
                    quote-mark)
@@ -859,61 +860,124 @@ Description: {(cfg-summary c)}
   ) ; end begin build-deb-with-ar!
 ) ; end define build-deb-with-ar!
 
+(define (rpm-source-archive-name c)
+  (brew-source-tgz-name c))
+
 (define (rpm-payload-source-name c)
   f"{(cfg-package-name c)}-{(cfg-formula-version c)}-payload.tar.gz")
+
+(define (rpm-source-sha256 c)
+  (let ([source-path (brew-output-tgz c)])
+    (if (file-exists? source-path)
+        (sha256-file source-path)
+        "")
+  ) ; end let source path
+) ; end define rpm-source-sha256
 
 (define (rpm-file-list-source-name c)
   f"{(cfg-package-name c)}.files")
 
-(define (rpm-spec-content c [source-name (rpm-payload-source-name c)]
-                          [file-list-name (rpm-file-list-source-name c)])
+(define (rpm-spec-content c [source-url (formula-source-url c)])
   f"Name: {(cfg-package-name c)}
 Version: {(cfg-formula-version c)}
 Release: {(cfg-release c)}
 Summary: {(cfg-summary c)}
 License: {(cfg-license c)}
 URL: {(cfg-url c)}
-Source0: {source-name}
-Source1: {file-list-name}
+Source0: {source-url}
 AutoReqProv: no
 %global __brp_compress %{{nil}}
+%global package_prefix {(cfg-prefix c)}
+%global source_sha256 {(rpm-source-sha256 c)}
 
 %description
-Racket packaged from a local checkout.
+Racket packaged from a stable source release archive.
 
 %prep
+if [ -n \"%{{source_sha256}}\" ]; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum %{{SOURCE0}} | cut -d ' ' -f 1)
+  elif command -v shasum >/dev/null 2>&1; then
+    actual=$(shasum -a 256 %{{SOURCE0}} | cut -d ' ' -f 1)
+  else
+    echo \"sha256 checker not found: sha256sum or shasum\" >&2
+    exit 1
+  fi
+  if [ \"$actual\" != \"%{{source_sha256}}\" ]; then
+    echo \"Source0 sha256 mismatch: expected %{{source_sha256}} but got $actual\" >&2
+    exit 1
+  fi
+fi
+%setup -q -n racket-{(cfg-source-version c)}
 
 %build
+sed -i 's/))$/) (default-scope . \"installation\"))/' etc/config.rktd
+sed -i 's/\"1[.]1\"/\"3\"/g' collects/openssl/libssl.rkt collects/openssl/libcrypto.rkt
+cd src
+./configure \\
+  --disable-debug \\
+  --disable-dependency-tracking \\
+  --enable-origtree=no \\
+  --prefix=%{{package_prefix}} \\
+  --sysconfdir=%{{_sysconfdir}} \\
+  --enable-useprefix
+make %{{?_smp_mflags}}
 
 %install
 rm -rf %{{buildroot}}
-mkdir -p %{{buildroot}}
-tar -xzf %{{SOURCE0}} -C %{{buildroot}}
+cd src
+make install DESTDIR=%{{buildroot}}
+cd ..
 
-%files -f %{{SOURCE1}}
+manifest=\"%{{name}}.files\"
+paths=\"%{{name}}.paths\"
+: > \"$manifest\"
+find \"%{{buildroot}}\" -mindepth 1 | sort > \"$paths\"
+while IFS= read -r path; do
+  rel=${{path#\"%{{buildroot}}\"}}
+  [ -n \"$rel\" ] || continue
+  case \"$rel\" in
+    /usr|/usr/bin|/usr/lib|/usr/lib64|/usr/share) continue ;;
+  esac
+  if [ -d \"$path\" ] && [ ! -L \"$path\" ]; then
+    printf '%%dir %s\\n' \"$rel\" >> \"$manifest\"
+  elif [ -f \"$path\" ] || [ -L \"$path\" ]; then
+    printf '%s\\n' \"$rel\" >> \"$manifest\"
+  else
+    printf 'unsupported staged file type: %s\\n' \"$path\" >&2
+    exit 1
+  fi
+done < \"$paths\"
+grep -Eq '^(%dir )?/usr$' \"$manifest\" && exit 1
+grep -Eq '^(%dir )?/usr/(bin|lib|lib64|share)$' \"$manifest\" && exit 1
+
+%files -f %{{name}}.files
 %defattr(-,root,root,-)
 ")
 
-(define (write-rpm-spec! c spec-path [source-name (rpm-payload-source-name c)]
-                         [file-list-name (rpm-file-list-source-name c)])
+(define (write-rpm-spec! c spec-path [source-url (formula-source-url c)])
   (begin
-    (write-text-file! spec-path (rpm-spec-content c source-name file-list-name))
-    (validate-rpm-spec! c spec-path source-name file-list-name)
+    (write-text-file! spec-path (rpm-spec-content c source-url))
+    (validate-rpm-spec! c spec-path source-url)
   ) ; end begin write-rpm-spec!
 ) ; end define write-rpm-spec!
 
-(define (validate-rpm-spec! c spec-path source-name file-list-name)
+(define (validate-rpm-spec! c spec-path source-url)
   (begin
     (assert-nonempty-file 'validate-rpm-spec! spec-path)
     (define content (file->string spec-path))
     (for ([needle (in-list (list f"Name: {(cfg-package-name c)}"
                                  f"Version: {(cfg-formula-version c)}"
                                  f"Release: {(cfg-release c)}"
-                                 f"Source0: {source-name}"
-                                 f"Source1: {file-list-name}"
+                                 f"Source0: {source-url}"
                                  "%global __brp_compress %{nil}"
-                                 "tar -xzf %{SOURCE0} -C %{buildroot}"
-                                 "%files -f %{SOURCE1}"))])
+                                 "%global package_prefix"
+                                 "%global source_sha256"
+                                 "Source0 sha256 mismatch"
+                                 "%setup -q -n racket-"
+                                 "./configure"
+                                 "make install DESTDIR=%{buildroot}"
+                                 "%files -f %{name}.files"))])
       (unless (string-contains? content needle)
         (raise-user-error 'validate-rpm-spec!
                           f"generated RPM spec is missing: {needle}")
@@ -1036,6 +1100,9 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
 (define generated-rpm-repo-notice-marker
   "GENERATED RPM PACKAGING METADATA - DO NOT EDIT IN rpm-racket.")
 
+(define generated-rpm-repository-notice-marker
+  "GENERATED RPM REPOSITORY METADATA - DO NOT EDIT IN rpm-racket.")
+
 (define (rpm-spec-dir c)
   (build-path (cfg-rpm-repo-root c) "SPECS"))
 
@@ -1060,7 +1127,7 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
 (define (rpm-repo-packages-dir c [arch (cfg-rpm-arch c)])
   (build-path (rpm-repo-arch-root c arch) "Packages"))
 
-(define (rpm-repo-file-path c)
+(define (rpm-repository-file-path c)
   (build-path (cfg-rpm-repo-root c) f"{(cfg-package-name c)}.repo"))
 
 (define (rpm-repo-readme-path c)
@@ -1069,51 +1136,32 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
 (define (rpm-repo-gitignore-path c)
   (build-path (cfg-rpm-repo-root c) ".gitignore"))
 
-(define (rpm-repo-bool value)
-  (if value "1" "0"))
-
-(define (rpm-repo-file-content c)
-  f"# {generated-rpm-repo-notice-marker}
-# Generated by package-racket.rkt from {(clean-path-string (cfg-rpm-repo-config c))}.
-# Change package-racket configuration and regenerate instead of editing this file.
-
-[{(cfg-rpm-repo-id c)}]
-name={(cfg-rpm-repo-name c)}
-baseurl={(cfg-rpm-repo-baseurl c)}
-enabled={(rpm-repo-bool (cfg-rpm-repo-enabled? c))}
-gpgcheck={(rpm-repo-bool (cfg-rpm-repo-gpgcheck? c))}
-metadata_expire=300
-")
-
-(define (rpm-repo-readme-content c)
+(define (rpm-spec-readme-content c)
   f"# rpm-racket
 
 {generated-rpm-repo-notice-marker}
 
-This repository is the RPM packaging target generated by `package-racket`.
-Treat `SPECS/`, `SOURCES/`, `scripts/`, `{(cfg-package-name c)}.repo`,
-`README.md`, and generated `repo/*` metadata as outputs from `package-racket`;
-do not hand-edit them for production changes. Change the package-racket
+This repository is the RPM SPEC and build-script repository generated by
+`package-racket`. It is not an RPM artifact repository. Treat `SPECS/`,
+`SOURCES/`, `scripts/`, and `README.md` as outputs from `package-racket`; do
+not hand-edit them for production changes. Change the package-racket
 configuration and regenerate instead.
 
 ## Layout
 
 - `SPECS/{(cfg-package-name c)}.spec`: RPM build definition.
-- `SOURCES/.gitkeep`: placeholder; build scripts create source payloads in a
-  separate work directory.
+- `SOURCES/.gitkeep`: source placeholder; build scripts copy or download the
+  stable source archive into their explicit work directory.
+- `scripts/rpm-common.sh`: shared safety checks and staging helpers.
 - `scripts/build-rpm.sh`: builds a binary RPM from the generated spec.
-- `scripts/build-srpm.sh`: builds a source RPM containing the staged payload
-  tarball and generated file manifest.
+- `scripts/build-srpm.sh`: builds a source RPM from the same stable source
+  archive.
 - `scripts/verify-rpm.sh`: validates RPM name, metadata, arch, and payload
   ownership boundaries.
-- `scripts/update-repo.sh`: copies an existing RPM into `repo/$basearch` and
-  regenerates repodata.
-- `{(cfg-package-name c)}.repo`: repository config for yum/dnf compatible hosts.
-- `repo/x86_64` and `repo/aarch64`: optional binary publishing layer.
 
 ## Regenerate
 
-Run from `package-racket` to overwrite the build definitions:
+Run from `package-racket` to overwrite the SPEC and scripts:
 
 ```sh
 racket package-racket.rkt \\
@@ -1125,52 +1173,67 @@ racket package-racket.rkt \\
 
 ## Build
 
-Build a binary RPM on a target Linux host:
+Build a binary RPM on a target Linux host from the generated GitHub Release
+source URL:
 
 ```sh
 scripts/build-rpm.sh \\
-  --racket-root /path/to/clean-racket.git \\
   --artifact-dir /path/to/artifacts \\
   --work-dir /path/to/work \\
   --rpm-arch arm64 \\
   --prefix /usr
 ```
 
-Build an SRPM with the same staged payload model:
+Use a local source archive for offline or pinned local builds:
+
+```sh
+scripts/build-rpm.sh \\
+  --source-archive /path/to/{(brew-source-tgz-name c)} \\
+  --artifact-dir /path/to/artifacts \\
+  --work-dir /path/to/work \\
+  --rpm-arch arm64 \\
+  --prefix /usr
+```
+
+Build the matching SRPM from the generated GitHub Release source URL:
 
 ```sh
 scripts/build-srpm.sh \\
-  --racket-root /path/to/clean-racket.git \\
   --artifact-dir /path/to/artifacts \\
   --work-dir /path/to/work \\
   --rpm-arch arm64 \\
   --prefix /usr
 ```
 
-Publish an already built RPM into the optional repository layer:
+Use a local source archive for the matching SRPM:
 
 ```sh
-scripts/update-repo.sh \\
+scripts/build-srpm.sh \\
+  --source-archive /path/to/{(brew-source-tgz-name c)} \\
+  --artifact-dir /path/to/artifacts \\
+  --work-dir /path/to/work \\
+  --rpm-arch arm64 \\
+  --prefix /usr
+```
+
+Validate an existing RPM:
+
+```sh
+scripts/verify-rpm.sh \\
   --rpm /path/to/artifacts/{(cfg-package-name c)}-{(cfg-formula-version c)}-{(cfg-release c)}.aarch64.rpm \\
   --rpm-arch arm64
 ```
-
-## Consumer Setup
-
-Install the generated repository config on a compatible Linux host:
-
-```sh
-sudo curl -L -o /etc/yum.repos.d/{(cfg-package-name c)}.repo \\
-  https://raw.githubusercontent.com/CutieDeng/rpm-racket/main/{(cfg-package-name c)}.repo
-sudo dnf install {(cfg-package-name c)}
-```
 ")
 
-(define rpm-repo-gitignore-content
+(define rpm-spec-gitignore-content
   ".DS_Store
 *.tmp
+*.swp
+.*.swp
+.commit
 .build/
 artifacts/
+*.rpm
 ")
 
 (define (rpm-shared-directory-case-pattern)
@@ -1188,17 +1251,12 @@ set -euo pipefail
 (define (rpm-common-script-content c)
   f"{(rpm-script-header "rpm-common.sh")}PACKAGE_NAME={(shell-single-quoted (cfg-package-name c))}
 PACKAGE_VERSION={(shell-single-quoted (cfg-formula-version c))}
+PACKAGE_SOURCE_VERSION={(shell-single-quoted (cfg-source-version c))}
 PACKAGE_RELEASE={(shell-single-quoted (cfg-release c))}
-PACKAGE_SUMMARY={(shell-single-quoted (cfg-summary c))}
-PACKAGE_LICENSE={(shell-single-quoted (cfg-license c))}
-PACKAGE_URL={(shell-single-quoted (cfg-url c))}
 DEFAULT_PREFIX={(shell-single-quoted (cfg-prefix c))}
-DEFAULT_REPO_ID={(shell-single-quoted (cfg-rpm-repo-id c))}
-DEFAULT_REPO_NAME={(shell-single-quoted (cfg-rpm-repo-name c))}
-DEFAULT_REPO_BASEURL={(shell-single-quoted (cfg-rpm-repo-baseurl c))}
-DEFAULT_REPO_ENABLED={(shell-single-quoted (rpm-repo-bool (cfg-rpm-repo-enabled? c)))}
-DEFAULT_REPO_GPGCHECK={(shell-single-quoted (rpm-repo-bool (cfg-rpm-repo-gpgcheck? c)))}
-PAYLOAD_SOURCE_NAME={(shell-single-quoted (rpm-payload-source-name c))}
+SOURCE_ARCHIVE_NAME={(shell-single-quoted (rpm-source-archive-name c))}
+DEFAULT_SOURCE_URL={(shell-single-quoted (formula-source-url c))}
+SOURCE_SHA256={(shell-single-quoted (rpm-source-sha256 c))}
 FILE_LIST_SOURCE_NAME={(shell-single-quoted (rpm-file-list-source-name c))}
 SPEC_NAME={(shell-single-quoted (string-append (cfg-package-name c) ".spec"))}
 
@@ -1371,44 +1429,63 @@ prepare_rpmbuild_tree() {{
   fi
 }}
 
-stage_install_root() {{
+validate_source_archive() {{
   local dry_run=\"$1\"
-  local skip_build=\"$2\"
-  local racket_root=\"$3\"
-  local make_dir=\"$4\"
-  local install_root=\"$5\"
-  local jobs=\"$6\"
-  shift 6
-  local make_args=(\"$@\")
-  require_absolute_path \"$install_root\" \"install root\"
-  if [ \"$skip_build\" = 1 ]; then
-    require_nonempty_dir \"$install_root$PREFIX\"
+  local archive=\"$2\"
+  local expected_root=\"racket-$PACKAGE_SOURCE_VERSION\"
+  if [ \"$dry_run\" = 1 ]; then
+    printf 'Would validate source archive: %s\\n' \"$archive\"
     return
   fi
-  require_dir \"$racket_root/racket/src\"
-  require_dir \"$racket_root/racket/collects\"
-  require_file \"$racket_root/racket/src/version/racket_version.h\"
-  require_file \"$make_dir/Makefile\"
-  reset_output_dir \"$dry_run\" \"$install_root\"
-  run_cmd \"$dry_run\" make -C \"$make_dir\" unix-style \\
-    \"PREFIX=$PREFIX\" \"DESTDIR=$install_root\" \"JOBS=$jobs\" \"${{make_args[@]}}\"
+  require_nonempty_file \"$archive\"
+  tar -tzf \"$archive\" \"$expected_root/src/configure\" >/dev/null \\
+    || die \"source archive missing $expected_root/src/configure: $archive\"
+  tar -tzf \"$archive\" \"$expected_root/collects/racket/main.rkt\" >/dev/null \\
+    || die \"source archive missing $expected_root/collects/racket/main.rkt: $archive\"
 }}
 
-create_payload_sources() {{
+verify_source_sha256() {{
   local dry_run=\"$1\"
-  local install_root=\"$2\"
-  local sources_dir=\"$3\"
-  local payload_path=\"$sources_dir/$PAYLOAD_SOURCE_NAME\"
-  local manifest_path=\"$sources_dir/$FILE_LIST_SOURCE_NAME\"
-  if [ \"$dry_run\" = 0 ]; then
-    mkdir -p \"$sources_dir\"
+  local archive=\"$2\"
+  if [ -z \"$SOURCE_SHA256\" ]; then
+    printf 'No generated source sha256 is pinned; skipping source sha256 check.\\n'
+    return
   fi
-  run_cmd \"$dry_run\" tar -C \"$install_root\" -czf \"$payload_path\" .
   if [ \"$dry_run\" = 1 ]; then
-    printf 'Would generate RPM file manifest: %s\\n' \"$manifest_path\"
-  else
-    generate_file_list \"$install_root\" \"$manifest_path\"
+    printf 'Would verify source sha256: %s\\n' \"$SOURCE_SHA256\"
+    return
   fi
+  local actual
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum \"$archive\" | cut -d ' ' -f 1)
+  elif command -v shasum >/dev/null 2>&1; then
+    actual=$(shasum -a 256 \"$archive\" | cut -d ' ' -f 1)
+  else
+    die \"executable not found in PATH: sha256sum or shasum\"
+  fi
+  [ \"$actual\" = \"$SOURCE_SHA256\" ] \\
+    || die \"source sha256 mismatch: expected $SOURCE_SHA256 but got $actual\"
+}}
+
+prepare_source_archive() {{
+  local dry_run=\"$1\"
+  local source_archive=\"$2\"
+  local source_url=\"$3\"
+  local dest=\"$4\"
+  require_absolute_path \"$dest\" \"source archive destination\"
+  if [ \"$dry_run\" = 0 ]; then
+    mkdir -p \"$(dirname \"$dest\")\"
+  fi
+  if [ -n \"$source_archive\" ]; then
+    require_nonempty_file \"$source_archive\"
+    run_cmd \"$dry_run\" cp \"$source_archive\" \"$dest\"
+  else
+    [ -n \"$source_url\" ] || die \"source URL is empty\"
+    maybe_require_exe \"$dry_run\" curl
+    run_cmd \"$dry_run\" curl -fL --retry 3 --output \"$dest\" \"$source_url\"
+  fi
+  validate_source_archive \"$dry_run\" \"$dest\"
+  verify_source_sha256 \"$dry_run\" \"$dest\"
 }}
 ")
 
@@ -1418,49 +1495,45 @@ source \"$SCRIPT_DIR/rpm-common.sh\"
 
 usage() {{
   cat <<'USAGE'
-Usage: scripts/build-rpm.sh --racket-root PATH --artifact-dir PATH --work-dir PATH --rpm-arch ARCH [options]
+Usage: scripts/build-rpm.sh --artifact-dir PATH --work-dir PATH --rpm-arch ARCH [options]
 
-Build a binary RPM from SPECS/racket9.spec. All mutable paths are named.
+Build a binary RPM from SPECS/racket9.spec and a stable source archive. All
+mutable paths are named.
 
 Options:
-  --racket-root PATH     Racket source checkout used by make unix-style.
-  --make-dir PATH        Directory containing Makefile. Defaults to --racket-root.
-  --skip-build           Reuse --install-root instead of running make.
-  --install-root PATH    Staged filesystem root. Required with --skip-build.
+  --source-archive PATH  Local {(rpm-source-archive-name c)} to copy into rpmbuild.
+  --source-url URL       Source archive URL. Defaults to the generated release URL.
   --artifact-dir PATH    Directory that receives the final .rpm.
-  --work-dir PATH        Build work directory for rpmbuild and staging.
+  --work-dir PATH        Build work directory for rpmbuild.
   --prefix PATH          Install prefix inside the package. Defaults to generated /usr.
   --rpm-arch ARCH        x86_64, amd64, x64, aarch64, or arm64.
-  --jobs N               Parallel jobs passed to make unix-style.
-  --make-arg ARG         Extra make argument. May be repeated.
+  --jobs N               Parallel jobs passed to rpmbuild through _smp_mflags.
+  --rpmbuild-arg ARG     Extra rpmbuild argument. May be repeated.
   --dry-run              Print checks and commands without writing outputs.
 USAGE
 }}
 
 DRY_RUN=0
-SKIP_BUILD=0
-RACKET_ROOT=
-MAKE_DIR=
-INSTALL_ROOT=
+SOURCE_ARCHIVE=
+SOURCE_URL=\"$DEFAULT_SOURCE_URL\"
+SOURCE_URL_EXPLICIT=0
 ARTIFACT_DIR=
 WORK_DIR=
 RPM_ARCH=
 JOBS=1
 PREFIX=\"$DEFAULT_PREFIX\"
-MAKE_ARGS=()
+RPMBUILD_ARGS=()
 
 while [ $# -gt 0 ]; do
   case \"$1\" in
-    --racket-root) [ $# -ge 2 ] || usage_error \"missing value for --racket-root\"; RACKET_ROOT=\"$2\"; shift 2 ;;
-    --make-dir) [ $# -ge 2 ] || usage_error \"missing value for --make-dir\"; MAKE_DIR=\"$2\"; shift 2 ;;
-    --skip-build) SKIP_BUILD=1; shift ;;
-    --install-root) [ $# -ge 2 ] || usage_error \"missing value for --install-root\"; INSTALL_ROOT=\"$2\"; shift 2 ;;
+    --source-archive) [ $# -ge 2 ] || usage_error \"missing value for --source-archive\"; SOURCE_ARCHIVE=\"$2\"; shift 2 ;;
+    --source-url) [ $# -ge 2 ] || usage_error \"missing value for --source-url\"; SOURCE_URL=\"$2\"; SOURCE_URL_EXPLICIT=1; shift 2 ;;
     --artifact-dir) [ $# -ge 2 ] || usage_error \"missing value for --artifact-dir\"; ARTIFACT_DIR=\"$2\"; shift 2 ;;
     --work-dir) [ $# -ge 2 ] || usage_error \"missing value for --work-dir\"; WORK_DIR=\"$2\"; shift 2 ;;
     --prefix) [ $# -ge 2 ] || usage_error \"missing value for --prefix\"; PREFIX=\"$2\"; shift 2 ;;
     --rpm-arch) [ $# -ge 2 ] || usage_error \"missing value for --rpm-arch\"; RPM_ARCH=\"$2\"; shift 2 ;;
     --jobs) [ $# -ge 2 ] || usage_error \"missing value for --jobs\"; JOBS=\"$2\"; shift 2 ;;
-    --make-arg) [ $# -ge 2 ] || usage_error \"missing value for --make-arg\"; MAKE_ARGS+=(\"$2\"); shift 2 ;;
+    --rpmbuild-arg) [ $# -ge 2 ] || usage_error \"missing value for --rpmbuild-arg\"; RPMBUILD_ARGS+=(\"$2\"); shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --help) usage; exit 0 ;;
     *) usage_error \"unknown option: $1\" ;;
@@ -1473,33 +1546,45 @@ require_repo_root \"$REPO_ROOT\"
 [ -n \"$WORK_DIR\" ] || usage_error \"--work-dir is required\"
 [ -n \"$RPM_ARCH\" ] || usage_error \"--rpm-arch is required\"
 NORMALIZED_ARCH=$(normalize_arch \"$RPM_ARCH\")
-if [ \"$SKIP_BUILD\" = 0 ]; then
-  [ -n \"$RACKET_ROOT\" ] || usage_error \"--racket-root is required unless --skip-build is used\"
+if [ -n \"$SOURCE_ARCHIVE\" ] && [ \"$SOURCE_URL_EXPLICIT\" = 1 ]; then
+  usage_error \"use either --source-archive or --source-url, not both\"
 fi
-[ -n \"$MAKE_DIR\" ] || MAKE_DIR=\"$RACKET_ROOT\"
-[ -n \"$INSTALL_ROOT\" ] || INSTALL_ROOT=\"$WORK_DIR/install-root\"
 
-maybe_require_exe \"$DRY_RUN\" make
 maybe_require_exe \"$DRY_RUN\" tar
 maybe_require_exe \"$DRY_RUN\" rpm
 maybe_require_exe \"$DRY_RUN\" rpmbuild
 
 RPMBUILD_ROOT=\"$WORK_DIR/rpmbuild\"
 SPEC_PATH=\"$RPMBUILD_ROOT/SPECS/$SPEC_NAME\"
+SOURCE_PATH=\"$RPMBUILD_ROOT/SOURCES/$SOURCE_ARCHIVE_NAME\"
 RPM_NAME=$(rpm_name_for_arch \"$NORMALIZED_ARCH\")
 RPM_OUTPUT=\"$RPMBUILD_ROOT/RPMS/$NORMALIZED_ARCH/$RPM_NAME\"
 
 printf 'Repository root: %s\\n' \"$REPO_ROOT\"
+printf 'Source archive: %s\\n' \"${{SOURCE_ARCHIVE:-$SOURCE_URL}}\"
 printf 'RPM output: %s\\n' \"$ARTIFACT_DIR/$RPM_NAME\"
 
-stage_install_root \"$DRY_RUN\" \"$SKIP_BUILD\" \"$RACKET_ROOT\" \"$MAKE_DIR\" \"$INSTALL_ROOT\" \"$JOBS\" \"${{MAKE_ARGS[@]}}\"
 prepare_rpmbuild_tree \"$DRY_RUN\" \"$RPMBUILD_ROOT\"
 if [ \"$DRY_RUN\" = 0 ]; then
   cp \"$REPO_ROOT/SPECS/$SPEC_NAME\" \"$SPEC_PATH\"
 fi
-create_payload_sources \"$DRY_RUN\" \"$INSTALL_ROOT\" \"$RPMBUILD_ROOT/SOURCES\"
-run_cmd \"$DRY_RUN\" rpmbuild -bb --target \"$NORMALIZED_ARCH\" \\
-  --define \"_topdir $RPMBUILD_ROOT\" --define \"_build_id_links none\" \"$SPEC_PATH\"
+prepare_source_archive \"$DRY_RUN\" \"$SOURCE_ARCHIVE\" \"$SOURCE_URL\" \"$SOURCE_PATH\"
+if [ \"${{#RPMBUILD_ARGS[@]}}\" -gt 0 ]; then
+  run_cmd \"$DRY_RUN\" rpmbuild -bb --target \"$NORMALIZED_ARCH\" \\
+    --define \"_topdir $RPMBUILD_ROOT\" \\
+    --define \"_build_id_links none\" \\
+    --define \"package_prefix $PREFIX\" \\
+    --define \"_smp_mflags -j$JOBS\" \\
+    \"${{RPMBUILD_ARGS[@]}}\" \\
+    \"$SPEC_PATH\"
+else
+  run_cmd \"$DRY_RUN\" rpmbuild -bb --target \"$NORMALIZED_ARCH\" \\
+    --define \"_topdir $RPMBUILD_ROOT\" \\
+    --define \"_build_id_links none\" \\
+    --define \"package_prefix $PREFIX\" \\
+    --define \"_smp_mflags -j$JOBS\" \\
+    \"$SPEC_PATH\"
+fi
 
 if [ \"$DRY_RUN\" = 1 ]; then
   printf 'Would copy RPM artifact: %s -> %s\\n' \"$RPM_OUTPUT\" \"$ARTIFACT_DIR/$RPM_NAME\"
@@ -1518,37 +1603,44 @@ source \"$SCRIPT_DIR/rpm-common.sh\"
 
 usage() {{
   cat <<'USAGE'
-Usage: scripts/build-srpm.sh --racket-root PATH --artifact-dir PATH --work-dir PATH --rpm-arch ARCH [options]
+Usage: scripts/build-srpm.sh --artifact-dir PATH --work-dir PATH --rpm-arch ARCH [options]
 
-Build a source RPM from SPECS/racket9.spec. This SRPM contains the staged
-payload tarball and generated RPM file manifest used by the binary build.
+Build a source RPM from SPECS/racket9.spec and a stable source archive.
+
+Options:
+  --source-archive PATH  Local {(rpm-source-archive-name c)} to copy into rpmbuild.
+  --source-url URL       Source archive URL. Defaults to the generated release URL.
+  --artifact-dir PATH    Directory that receives the final .src.rpm.
+  --work-dir PATH        Build work directory for rpmbuild.
+  --prefix PATH          Install prefix inside the package. Defaults to generated /usr.
+  --rpm-arch ARCH        x86_64, amd64, x64, aarch64, or arm64.
+  --jobs N               Parallel jobs recorded in generated build macros.
+  --rpmbuild-arg ARG     Extra rpmbuild argument. May be repeated.
+  --dry-run              Print checks and commands without writing outputs.
 USAGE
 }}
 
 DRY_RUN=0
-SKIP_BUILD=0
-RACKET_ROOT=
-MAKE_DIR=
-INSTALL_ROOT=
+SOURCE_ARCHIVE=
+SOURCE_URL=\"$DEFAULT_SOURCE_URL\"
+SOURCE_URL_EXPLICIT=0
 ARTIFACT_DIR=
 WORK_DIR=
 RPM_ARCH=
 JOBS=1
 PREFIX=\"$DEFAULT_PREFIX\"
-MAKE_ARGS=()
+RPMBUILD_ARGS=()
 
 while [ $# -gt 0 ]; do
   case \"$1\" in
-    --racket-root) [ $# -ge 2 ] || usage_error \"missing value for --racket-root\"; RACKET_ROOT=\"$2\"; shift 2 ;;
-    --make-dir) [ $# -ge 2 ] || usage_error \"missing value for --make-dir\"; MAKE_DIR=\"$2\"; shift 2 ;;
-    --skip-build) SKIP_BUILD=1; shift ;;
-    --install-root) [ $# -ge 2 ] || usage_error \"missing value for --install-root\"; INSTALL_ROOT=\"$2\"; shift 2 ;;
+    --source-archive) [ $# -ge 2 ] || usage_error \"missing value for --source-archive\"; SOURCE_ARCHIVE=\"$2\"; shift 2 ;;
+    --source-url) [ $# -ge 2 ] || usage_error \"missing value for --source-url\"; SOURCE_URL=\"$2\"; SOURCE_URL_EXPLICIT=1; shift 2 ;;
     --artifact-dir) [ $# -ge 2 ] || usage_error \"missing value for --artifact-dir\"; ARTIFACT_DIR=\"$2\"; shift 2 ;;
     --work-dir) [ $# -ge 2 ] || usage_error \"missing value for --work-dir\"; WORK_DIR=\"$2\"; shift 2 ;;
     --prefix) [ $# -ge 2 ] || usage_error \"missing value for --prefix\"; PREFIX=\"$2\"; shift 2 ;;
     --rpm-arch) [ $# -ge 2 ] || usage_error \"missing value for --rpm-arch\"; RPM_ARCH=\"$2\"; shift 2 ;;
     --jobs) [ $# -ge 2 ] || usage_error \"missing value for --jobs\"; JOBS=\"$2\"; shift 2 ;;
-    --make-arg) [ $# -ge 2 ] || usage_error \"missing value for --make-arg\"; MAKE_ARGS+=(\"$2\"); shift 2 ;;
+    --rpmbuild-arg) [ $# -ge 2 ] || usage_error \"missing value for --rpmbuild-arg\"; RPMBUILD_ARGS+=(\"$2\"); shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --help) usage; exit 0 ;;
     *) usage_error \"unknown option: $1\" ;;
@@ -1561,32 +1653,42 @@ require_repo_root \"$REPO_ROOT\"
 [ -n \"$WORK_DIR\" ] || usage_error \"--work-dir is required\"
 [ -n \"$RPM_ARCH\" ] || usage_error \"--rpm-arch is required\"
 NORMALIZED_ARCH=$(normalize_arch \"$RPM_ARCH\")
-if [ \"$SKIP_BUILD\" = 0 ]; then
-  [ -n \"$RACKET_ROOT\" ] || usage_error \"--racket-root is required unless --skip-build is used\"
+if [ -n \"$SOURCE_ARCHIVE\" ] && [ \"$SOURCE_URL_EXPLICIT\" = 1 ]; then
+  usage_error \"use either --source-archive or --source-url, not both\"
 fi
-[ -n \"$MAKE_DIR\" ] || MAKE_DIR=\"$RACKET_ROOT\"
-[ -n \"$INSTALL_ROOT\" ] || INSTALL_ROOT=\"$WORK_DIR/install-root\"
 
-maybe_require_exe \"$DRY_RUN\" make
 maybe_require_exe \"$DRY_RUN\" tar
 maybe_require_exe \"$DRY_RUN\" rpmbuild
 
 RPMBUILD_ROOT=\"$WORK_DIR/rpmbuild-srpm\"
 SPEC_PATH=\"$RPMBUILD_ROOT/SPECS/$SPEC_NAME\"
+SOURCE_PATH=\"$RPMBUILD_ROOT/SOURCES/$SOURCE_ARCHIVE_NAME\"
 SRPM_NAME=$(srpm_name)
 SRPM_OUTPUT=\"$RPMBUILD_ROOT/SRPMS/$SRPM_NAME\"
 
 printf 'Repository root: %s\\n' \"$REPO_ROOT\"
+printf 'Source archive: %s\\n' \"${{SOURCE_ARCHIVE:-$SOURCE_URL}}\"
 printf 'SRPM output: %s\\n' \"$ARTIFACT_DIR/$SRPM_NAME\"
 
-stage_install_root \"$DRY_RUN\" \"$SKIP_BUILD\" \"$RACKET_ROOT\" \"$MAKE_DIR\" \"$INSTALL_ROOT\" \"$JOBS\" \"${{MAKE_ARGS[@]}}\"
 prepare_rpmbuild_tree \"$DRY_RUN\" \"$RPMBUILD_ROOT\"
 if [ \"$DRY_RUN\" = 0 ]; then
   cp \"$REPO_ROOT/SPECS/$SPEC_NAME\" \"$SPEC_PATH\"
 fi
-create_payload_sources \"$DRY_RUN\" \"$INSTALL_ROOT\" \"$RPMBUILD_ROOT/SOURCES\"
-run_cmd \"$DRY_RUN\" rpmbuild -bs --target \"$NORMALIZED_ARCH\" \\
-  --define \"_topdir $RPMBUILD_ROOT\" \"$SPEC_PATH\"
+prepare_source_archive \"$DRY_RUN\" \"$SOURCE_ARCHIVE\" \"$SOURCE_URL\" \"$SOURCE_PATH\"
+if [ \"${{#RPMBUILD_ARGS[@]}}\" -gt 0 ]; then
+  run_cmd \"$DRY_RUN\" rpmbuild -bs --target \"$NORMALIZED_ARCH\" \\
+    --define \"_topdir $RPMBUILD_ROOT\" \\
+    --define \"package_prefix $PREFIX\" \\
+    --define \"_smp_mflags -j$JOBS\" \\
+    \"${{RPMBUILD_ARGS[@]}}\" \\
+    \"$SPEC_PATH\"
+else
+  run_cmd \"$DRY_RUN\" rpmbuild -bs --target \"$NORMALIZED_ARCH\" \\
+    --define \"_topdir $RPMBUILD_ROOT\" \\
+    --define \"package_prefix $PREFIX\" \\
+    --define \"_smp_mflags -j$JOBS\" \\
+    \"$SPEC_PATH\"
+fi
 
 if [ \"$DRY_RUN\" = 1 ]; then
   printf 'Would copy SRPM artifact: %s -> %s\\n' \"$SRPM_OUTPUT\" \"$ARTIFACT_DIR/$SRPM_NAME\"
@@ -1655,60 +1757,6 @@ fi
 printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
 ")
 
-(define (rpm-update-repo-script-content c)
-  f"{(rpm-script-header "update-repo.sh")}SCRIPT_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)
-source \"$SCRIPT_DIR/rpm-common.sh\"
-
-usage() {{
-  cat <<'USAGE'
-Usage: scripts/update-repo.sh --rpm PATH --rpm-arch ARCH [--repo-root PATH] [--dry-run]
-
-Copy an existing RPM into repo/$basearch/Packages and regenerate repodata.
-USAGE
-}}
-
-DRY_RUN=0
-RPM_PATH=
-RPM_ARCH=
-REPO_ROOT=
-
-while [ $# -gt 0 ]; do
-  case \"$1\" in
-    --rpm) [ $# -ge 2 ] || usage_error \"missing value for --rpm\"; RPM_PATH=\"$2\"; shift 2 ;;
-    --rpm-arch) [ $# -ge 2 ] || usage_error \"missing value for --rpm-arch\"; RPM_ARCH=\"$2\"; shift 2 ;;
-    --repo-root) [ $# -ge 2 ] || usage_error \"missing value for --repo-root\"; REPO_ROOT=\"$2\"; shift 2 ;;
-    --dry-run) DRY_RUN=1; shift ;;
-    --help) usage; exit 0 ;;
-    *) usage_error \"unknown option: $1\" ;;
-  esac
-done
-
-[ -n \"$REPO_ROOT\" ] || REPO_ROOT=$(repo_root_from_script)
-require_repo_root \"$REPO_ROOT\"
-[ -n \"$RPM_PATH\" ] || usage_error \"--rpm is required\"
-[ -n \"$RPM_ARCH\" ] || usage_error \"--rpm-arch is required\"
-NORMALIZED_ARCH=$(normalize_arch \"$RPM_ARCH\")
-EXPECTED_RPM=$(rpm_name_for_arch \"$NORMALIZED_ARCH\")
-DEST_DIR=\"$REPO_ROOT/repo/$NORMALIZED_ARCH/Packages\"
-DEST_RPM=\"$DEST_DIR/$EXPECTED_RPM\"
-
-if [ \"$DRY_RUN\" = 1 ]; then
-  \"$REPO_ROOT/scripts/verify-rpm.sh\" --rpm \"$RPM_PATH\" --rpm-arch \"$NORMALIZED_ARCH\" --dry-run
-  printf 'Would copy RPM into repo: %s -> %s\\n' \"$RPM_PATH\" \"$DEST_RPM\"
-  printf 'Would run createrepo_c --update %s\\n' \"$REPO_ROOT/repo/$NORMALIZED_ARCH\"
-  exit 0
-fi
-
-require_exe createrepo_c
-\"$REPO_ROOT/scripts/verify-rpm.sh\" --rpm \"$RPM_PATH\" --rpm-arch \"$NORMALIZED_ARCH\"
-mkdir -p \"$DEST_DIR\"
-cp \"$RPM_PATH\" \"$DEST_RPM\"
-require_nonempty_file \"$DEST_RPM\"
-createrepo_c --update \"$REPO_ROOT/repo/$NORMALIZED_ARCH\"
-require_nonempty_file \"$REPO_ROOT/repo/$NORMALIZED_ARCH/repodata/repomd.xml\"
-printf 'Updated RPM repo: %s\\n' \"$REPO_ROOT/repo/$NORMALIZED_ARCH\"
-")
-
 (define (assert-rpm-repo-root! c #:write? [write? #t])
   (begin
     (define root (cfg-rpm-repo-root c))
@@ -1720,7 +1768,59 @@ printf 'Updated RPM repo: %s\\n' \"$REPO_ROOT/repo/$NORMALIZED_ARCH\"
   ) ; end begin assert-rpm-repo-root!
 ) ; end define assert-rpm-repo-root!
 
-(define (rpm-definition-output-paths c)
+(define (delete-generated-file-if-present! who path markers)
+  (begin
+    (define p (complete-path* path))
+    (when (file-exists? p)
+      (define content (file->string p))
+      (unless (for/or ([marker (in-list markers)])
+                (string-contains? content marker))
+        (raise-user-error who
+                          f"refusing to delete file without generated marker: {(clean-path-string p)}")
+      ) ; end unless generated marker present
+      (delete-file p)
+      (println/flush f"Removed stale generated file: {(clean-path-string p)}")
+    ) ; end when generated file exists
+  ) ; end begin delete-generated-file-if-present!
+) ; end define delete-generated-file-if-present!
+
+(define (delete-empty-directory-if-present! who path)
+  (begin
+    (define d (complete-path* path))
+    (cond
+      [(directory-exists? d)
+       (if (empty-directory? d)
+           (begin
+             (delete-directory d)
+             (println/flush f"Removed stale empty directory: {(clean-path-string d)}")
+           ) ; end begin delete empty directory
+           (raise-user-error who
+                             f"refusing to delete non-empty directory: {(clean-path-string d)}")
+       ) ; end if directory empty
+      ]
+      [(file-exists? d)
+       (raise-user-error who
+                         f"path exists but is not a directory: {(clean-path-string d)}")]
+      [else
+       (void)]
+    ) ; end cond directory state
+  ) ; end begin delete-empty-directory-if-present!
+) ; end define delete-empty-directory-if-present!
+
+(define (remove-rpm-spec-stale-outputs! c)
+  (begin
+    (delete-generated-file-if-present!
+     'write-rpm-spec-scaffold!
+     (rpm-repository-file-path c)
+     (list generated-rpm-repository-notice-marker
+           generated-rpm-repo-notice-marker))
+    (delete-empty-directory-if-present!
+     'write-rpm-spec-scaffold!
+     (build-path (cfg-rpm-repo-root c) "repo"))
+  ) ; end begin remove-rpm-spec-stale-outputs!
+) ; end define remove-rpm-spec-stale-outputs!
+
+(define (rpm-spec-output-paths c)
   (append
    (list (rpm-repo-gitignore-path c)
          (rpm-definition-spec-path c)
@@ -1729,68 +1829,53 @@ printf 'Updated RPM repo: %s\\n' \"$REPO_ROOT/repo/$NORMALIZED_ARCH\"
          (rpm-script-path c "build-rpm.sh")
          (rpm-script-path c "build-srpm.sh")
          (rpm-script-path c "verify-rpm.sh")
-         (rpm-script-path c "update-repo.sh")
-         (rpm-repo-file-path c)
          (rpm-repo-readme-path c))
-   (for/list ([arch (in-list rpm-repo-supported-arches)])
-     (build-path (rpm-repo-packages-dir c arch) ".gitkeep"))
-  ) ; end append rpm definition outputs
-) ; end define rpm-definition-output-paths
+  ) ; end append rpm spec outputs
+) ; end define rpm-spec-output-paths
 
 (define (validate-generated-rpm-script! c name required-needles)
   (begin
     (define path (rpm-script-path c name))
-    (assert-nonempty-file 'validate-rpm-definitions! path)
+    (assert-nonempty-file 'validate-rpm-spec-scaffold! path)
     (define content (file->string path))
     (define bits (file-or-directory-permissions path 'bits))
     (unless (not (zero? (bitwise-and bits #o111)))
-      (raise-user-error 'validate-rpm-definitions!
+      (raise-user-error 'validate-rpm-spec-scaffold!
                         f"generated script is not executable: {(clean-path-string path)}")
     ) ; end unless executable bit present
     (for ([needle (in-list (cons "set -euo pipefail" required-needles))])
       (unless (string-contains? content needle)
-        (raise-user-error 'validate-rpm-definitions!
+        (raise-user-error 'validate-rpm-spec-scaffold!
                           f"generated script {name} is missing: {needle}")
       ) ; end unless script content contains needle
     ) ; end for script needle
   ) ; end begin validate-generated-rpm-script!
 ) ; end define validate-generated-rpm-script!
 
-(define (validate-rpm-definitions! c)
+(define (validate-rpm-spec-scaffold! c)
   (begin
-    (assert-nonempty-file 'validate-rpm-definitions! (rpm-repo-file-path c))
-    (assert-nonempty-file 'validate-rpm-definitions! (rpm-repo-readme-path c))
-    (assert-nonempty-file 'validate-rpm-definitions! (rpm-repo-gitignore-path c))
-    (assert-file 'validate-rpm-definitions! (rpm-definition-source-keep-path c))
-    (validate-rpm-spec! c
-                        (rpm-definition-spec-path c)
-                        (rpm-payload-source-name c)
-                        (rpm-file-list-source-name c))
-    (define repo-content (file->string (rpm-repo-file-path c)))
-    (for ([needle (in-list (list generated-rpm-repo-notice-marker
-                                 f"[{(cfg-rpm-repo-id c)}]"
-                                 f"baseurl={(cfg-rpm-repo-baseurl c)}"))])
-      (unless (string-contains? repo-content needle)
-        (raise-user-error 'validate-rpm-definitions!
-                          f"generated repo file is missing: {needle}")
-      ) ; end unless repo content contains needle
-    ) ; end for repo file needle
+    (assert-nonempty-file 'validate-rpm-spec-scaffold! (rpm-repo-readme-path c))
+    (assert-nonempty-file 'validate-rpm-spec-scaffold! (rpm-repo-gitignore-path c))
+	    (assert-file 'validate-rpm-spec-scaffold! (rpm-definition-source-keep-path c))
+	    (validate-rpm-spec! c
+	                        (rpm-definition-spec-path c)
+	                        (formula-source-url c))
     (define readme-content (file->string (rpm-repo-readme-path c)))
-    (for ([needle (in-list (list "scripts/build-rpm.sh"
-                                 "scripts/build-srpm.sh"
-                                 "scripts/update-repo.sh"
-                                 "repo/x86_64"
-                                 "repo/aarch64"))])
+    (for ([needle (in-list (list "RPM SPEC and build-script repository"
+                                 "not an RPM artifact repository"
+                                 "SPECS/"
+                                 "SOURCES/"
+                                 "scripts/build-rpm.sh"))])
       (unless (string-contains? readme-content needle)
-        (raise-user-error 'validate-rpm-definitions!
+        (raise-user-error 'validate-rpm-spec-scaffold!
                           f"generated README is missing: {needle}")
       ) ; end unless readme content contains needle
     ) ; end for readme needle
-    (validate-generated-rpm-script! c
-                                    "rpm-common.sh"
-                                    '("generate_file_list"
-                                      "assert_manifest_safe"
-                                      "require_repo_root"))
+	    (validate-generated-rpm-script! c
+	                                    "rpm-common.sh"
+	                                    '("prepare_source_archive"
+	                                      "validate_source_archive"
+	                                      "require_repo_root"))
     (validate-generated-rpm-script! c
                                     "build-rpm.sh"
                                     '("Usage: scripts/build-rpm.sh"
@@ -1806,34 +1891,20 @@ printf 'Updated RPM repo: %s\\n' \"$REPO_ROOT/repo/$NORMALIZED_ARCH\"
                                     '("rpm -qip"
                                       "rpm -qpl"
                                       "--dry-run"))
-    (validate-generated-rpm-script! c
-                                    "update-repo.sh"
-                                    '("createrepo_c --update"
-                                      "scripts/verify-rpm.sh"
-                                      "--dry-run"))
-    (for ([arch (in-list rpm-repo-supported-arches)])
-      (assert-file 'validate-rpm-definitions!
-                   (build-path (rpm-repo-packages-dir c arch) ".gitkeep"))
-    ) ; end for supported arch package keep files
-  ) ; end begin validate-rpm-definitions!
-) ; end define validate-rpm-definitions!
+  ) ; end begin validate-rpm-spec-scaffold!
+) ; end define validate-rpm-spec-scaffold!
 
-(define (write-rpm-definitions! c)
+(define (write-rpm-spec-scaffold! c)
   (begin
     (assert-rpm-repo-root! c #:write? #t)
+    (remove-rpm-spec-stale-outputs! c)
     (make-directory* (rpm-spec-dir c))
     (make-directory* (rpm-sources-dir c))
     (make-directory* (rpm-scripts-dir c))
-    (for ([arch (in-list rpm-repo-supported-arches)])
-      (define packages-dir (rpm-repo-packages-dir c arch))
-      (make-directory* packages-dir)
-      (write-text-file! (build-path packages-dir ".gitkeep") "")
-    ) ; end for rpm repo arch
-    (write-text-file! (rpm-repo-gitignore-path c) rpm-repo-gitignore-content)
-    (write-rpm-spec! c
-                     (rpm-definition-spec-path c)
-                     (rpm-payload-source-name c)
-                     (rpm-file-list-source-name c))
+    (write-text-file! (rpm-repo-gitignore-path c) rpm-spec-gitignore-content)
+	    (write-rpm-spec! c
+	                     (rpm-definition-spec-path c)
+	                     (formula-source-url c))
     (write-text-file! (rpm-definition-source-keep-path c) "")
     (write-executable-text-file! (rpm-script-path c "rpm-common.sh")
                                  (rpm-common-script-content c))
@@ -1843,35 +1914,30 @@ printf 'Updated RPM repo: %s\\n' \"$REPO_ROOT/repo/$NORMALIZED_ARCH\"
                                  (rpm-build-srpm-script-content c))
     (write-executable-text-file! (rpm-script-path c "verify-rpm.sh")
                                  (rpm-verify-script-content c))
-    (write-executable-text-file! (rpm-script-path c "update-repo.sh")
-                                 (rpm-update-repo-script-content c))
-    (write-text-file! (rpm-repo-file-path c) (rpm-repo-file-content c))
-    (write-text-file! (rpm-repo-readme-path c) (rpm-repo-readme-content c))
-    (validate-rpm-definitions! c)
-    (println/flush f"Generated RPM build definitions: {(clean-path-string (cfg-rpm-repo-root c))}")
-  ) ; end begin write-rpm-definitions!
-) ; end define write-rpm-definitions!
+    (write-text-file! (rpm-repo-readme-path c) (rpm-spec-readme-content c))
+    (validate-rpm-spec-scaffold! c)
+    (println/flush f"Generated RPM SPEC scaffold: {(clean-path-string (cfg-rpm-repo-root c))}")
+  ) ; end begin write-rpm-spec-scaffold!
+) ; end define write-rpm-spec-scaffold!
 
-(define (print-rpm-definition-dry-run! c)
+(define (print-rpm-spec-scaffold-dry-run! c)
   (begin
     (assert-rpm-repo-root! c #:write? #f)
-    (println/flush f"Would generate RPM build definitions in: {(clean-path-string (cfg-rpm-repo-root c))}")
-    (for ([path (in-list (rpm-definition-output-paths c))])
-      (println/flush f"Would generate RPM build definition: {(clean-path-string path)}")
-    ) ; end for rpm definition output path
-  ) ; end begin print-rpm-definition-dry-run!
-) ; end define print-rpm-definition-dry-run!
+    (println/flush f"Would generate RPM SPEC scaffold in: {(clean-path-string (cfg-rpm-repo-root c))}")
+    (for ([path (in-list (rpm-spec-output-paths c))])
+      (println/flush f"Would generate RPM SPEC file: {(clean-path-string path)}")
+    ) ; end for rpm spec output path
+  ) ; end begin print-rpm-spec-scaffold-dry-run!
+) ; end define print-rpm-spec-scaffold-dry-run!
 
 (define (build-rpm-spec! c)
   (begin
-    (println/flush f"RPM definition config: {(clean-path-string (cfg-rpm-repo-config c))}")
-    (println/flush f"RPM definition root: {(clean-path-string (cfg-rpm-repo-root c))}")
-    (println/flush f"RPM definition package: {(cfg-package-name c)}")
-    (println/flush f"RPM definition version: {(cfg-formula-version c)}")
-    (println/flush f"RPM definition release: {(cfg-release c)}")
+    (println/flush f"RPM SPEC config: {(clean-path-string (cfg-rpm-repo-config c))}")
+    (println/flush f"RPM SPEC root: {(clean-path-string (cfg-rpm-repo-root c))}")
+    (println/flush f"RPM SPEC package: {(cfg-package-name c)}")
     (if (cfg-dry-run? c)
-        (print-rpm-definition-dry-run! c)
-        (write-rpm-definitions! c))
+        (print-rpm-spec-scaffold-dry-run! c)
+        (write-rpm-spec-scaffold! c))
   ) ; end begin build-rpm-spec!
 ) ; end define build-rpm-spec!
 
@@ -4613,7 +4679,7 @@ jobs:
    [("--ruby-bin") path "Ruby executable for YAML validation (default: ruby)"
                   (set! ruby-bin-arg path)]
    #:multi
-   [("--target") target "Packaging target: brew, brew-ci, source-release, apt, apt-release, rpm-spec, rpm, rpm-repo, or all. May be repeated."
+   [("--target") target "Packaging target: brew, brew-ci, source-release, apt, apt-release, rpm, rpm-spec, rpm-repo, or all. May be repeated."
                 (set! target-args (append target-args (list target)))]
    [("--brew-package") name "Extra package to include in the Homebrew source archive"
                      (set! brew-package-args (append brew-package-args (list name)))]
@@ -5006,14 +5072,16 @@ jobs:
         (write-text-file! (build-path (cfg-install-root c) "usr" "lib" "racket" "collects" "main.rkt")
                           "#lang racket/base\n")
         (define spec-path (build-path rpm-root "racket9.spec"))
-        (write-rpm-spec! c spec-path "racket9-9.2.1.1-payload.tar.gz")
+        (write-rpm-spec! c spec-path "https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz")
         (define file-list (rpm-file-list c))
         (define spec-content (file->string spec-path))
         (check-true (string-contains? spec-content "Version: 9.2.1.1"))
-        (check-true (string-contains? spec-content "Source0: racket9-9.2.1.1-payload.tar.gz"))
-        (check-true (string-contains? spec-content "Source1: racket9.files"))
+        (check-true (string-contains? spec-content "Source0: https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz"))
+        (check-false (string-contains? spec-content "Source1:"))
         (check-true (string-contains? spec-content "%global __brp_compress %{nil}"))
-        (check-true (string-contains? spec-content "%files -f %{SOURCE1}"))
+        (check-true (string-contains? spec-content "%global source_sha256"))
+        (check-true (string-contains? spec-content "Source0 sha256 mismatch"))
+        (check-true (string-contains? spec-content "%files -f %{name}.files"))
         (check-false (string-contains? spec-content "/usr/bin/racket"))
         (check-true (and (member "/usr/bin/racket" file-list string=?) #t))
         (check-true (and (member "%dir /usr/lib/racket" file-list string=?) #t))
