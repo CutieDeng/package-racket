@@ -140,6 +140,64 @@ end
       (rpm-repo-gpgcheck . #f))
 "))
 
+  (define (write-rpm-ci-config! path)
+    (write-text!
+     path
+     "#hash((release-tag . \"v9.2.1\")
+      (release-name . \"Racket 9.2.1 RPM packages\")
+      (artifact-prefix . \"rpm\")
+      (create-release . #t)
+      (targets . (#hash((id . \"el9-x86_64\")
+                        (rpm-system . \"el9\")
+                        (rpm-release . \"1\")
+                        (rpm-arch . \"x86_64\")
+                        (runner . \"ubuntu-24.04\")
+                        (container . \"quay.io/centos/centos:stream9\")
+                        (jobs . 2)
+                        (setup-packages . (\"bash\" \"curl\" \"rpm\" \"rpm-build\" \"tar\")))
+                  #hash((id . \"fc40-x86_64\")
+                        (rpm-system . \"fc40\")
+                        (rpm-release . \"1\")
+                        (rpm-arch . \"x86_64\")
+                        (runner . \"ubuntu-24.04\")
+                        (container . \"fedora:40\")
+                        (jobs . 2)
+                        (setup-packages . (\"bash\" \"curl\" \"rpm\" \"rpm-build\" \"tar\")))
+                  #hash((id . \"openeuler2203-aarch64\")
+                        (rpm-system . \"openeuler2203\")
+                        (rpm-release . \"1\")
+                        (rpm-arch . \"arm64\")
+                        (runner . \"ubuntu-24.04-arm\")
+                        (container . \"openeuler/openeuler:22.03-lts\")
+                        (jobs . 2)
+                        (setup-packages . (\"bash\" \"curl\" \"rpm\" \"rpm-build\" \"tar\")))
+                  #hash((id . \"openeuler2403-aarch64\")
+                        (rpm-system . \"openeuler2403\")
+                        (rpm-release . \"1\")
+                        (rpm-arch . \"arm64\")
+                        (runner . \"ubuntu-24.04-arm\")
+                        (container . \"openeuler/openeuler:24.03-lts\")
+                        (jobs . 2)
+                        (setup-packages . (\"bash\" \"curl\" \"rpm\" \"rpm-build\" \"tar\"))))))
+"))
+
+  (define (write-invalid-rpm-ci-config! path)
+    (write-text!
+     path
+     "#hash((release-tag . \"v9.2.1\")
+      (release-name . \"Racket 9.2.1 RPM packages\")
+      (artifact-prefix . \"rpm\")
+      (create-release . #t)
+      (targets . (#hash((id . \"bad-openeuler\")
+                        (rpm-system . \"openeuler\")
+                        (rpm-release . \"1\")
+                        (rpm-arch . \"arm64\")
+                        (runner . \"ubuntu-24.04-arm\")
+                        (container . \"openeuler/openeuler:24.03-lts\")
+                        (jobs . 2)
+                        (setup-packages . (\"bash\" \"curl\" \"rpm\" \"rpm-build\" \"tar\"))))))
+"))
+
 (define (run-command! who program args #:cwd [cwd #f])
   (begin
     (define out (open-output-string))
@@ -466,6 +524,95 @@ actual output:
       ) ; end lambda temp dir
     ) ; end with-temp-dir
   ) ; end test-case rpm-spec writes scaffold
+
+  (test-case "rpm-ci dry-run validates matrix config and writes no workflow"
+    (with-temp-dir
+     (lambda (tmp)
+       (define rpm-repo-root (make-fake-rpm-repo! tmp))
+       (define repo-config-path (build-path tmp "rpm-repo-config.rktd"))
+       (define ci-config-path (build-path tmp "rpm-ci-config.rktd"))
+       (define work-dir (build-path tmp "work"))
+       (write-rpm-repo-config! repo-config-path rpm-repo-root)
+       (write-rpm-ci-config! ci-config-path)
+       (define-values (out err)
+         (run-package/success
+          (list "--target" "rpm-ci"
+                "--prefix" "/usr"
+                "--work-dir" (path-arg work-dir)
+                "--rpm-repo-config" (path-arg repo-config-path)
+                "--rpm-ci-config" (path-arg ci-config-path)
+                "--dry-run")))
+       (define text (combined-output out err))
+       (check-contains text "Targets: rpm-ci")
+       (check-contains text "RPM CI config:")
+       (check-contains text "Would read RPM CI config:")
+       (check-contains text "Would generate RPM CI workflow:")
+       (check-contains text "Would configure RPM CI target count: 4")
+       (check-contains text "openeuler2203 aarch64 on ubuntu-24.04-arm in openeuler/openeuler:22.03-lts")
+       (check-not-contains text "RPM target system:")
+       (check-false (file-exists? (build-path rpm-repo-root ".github" "workflows" "build-rpm.yml")))
+       (check-false (directory-exists? work-dir))
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case rpm-ci dry-run
+
+  (test-case "rpm-ci installs generated workflow into a temporary rpm repository"
+    (with-temp-dir
+     (lambda (tmp)
+       (define rpm-repo-root (make-fake-rpm-repo! tmp))
+       (define repo-config-path (build-path tmp "rpm-repo-config.rktd"))
+       (define ci-config-path (build-path tmp "rpm-ci-config.rktd"))
+       (write-rpm-repo-config! repo-config-path rpm-repo-root)
+       (write-rpm-ci-config! ci-config-path)
+       (define-values (out err)
+         (run-package/success
+          (list "--target" "rpm-ci"
+                "--prefix" "/usr"
+                "--rpm-repo-config" (path-arg repo-config-path)
+                "--rpm-ci-config" (path-arg ci-config-path))))
+       (define text (combined-output out err))
+       (define workflow-path (build-path rpm-repo-root ".github" "workflows" "build-rpm.yml"))
+       (check-contains text "Generated RPM CI workflow:")
+       (check-true (file-exists? workflow-path))
+       (define workflow-content (file->string workflow-path))
+       (check-contains workflow-content "GENERATED RPM PACKAGING METADATA - DO NOT EDIT IN rpm-racket.")
+       (check-contains workflow-content "name: rpm build and release")
+       (check-contains workflow-content "actions/checkout@v6")
+       (check-contains workflow-content "actions/upload-artifact@v6")
+       (check-contains workflow-content "actions/download-artifact@v6")
+       (check-contains workflow-content "openeuler2203")
+       (check-contains workflow-content "openeuler/openeuler:24.03-lts")
+       (check-contains workflow-content "EXPECTED_RPM_COUNT: 4")
+       (check-contains workflow-content "racket -e '(displayln f\"rpm-ci-ok\")'")
+       (check-contains workflow-content "gh release upload")
+       (check-false (directory-exists? (build-path rpm-repo-root "repo")))
+       (check-false (file-exists? (build-path rpm-repo-root "racket9.repo")))
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case rpm-ci workflow install
+
+  (test-case "rpm-ci rejects generic openeuler system in matrix config"
+    (with-temp-dir
+     (lambda (tmp)
+       (define rpm-repo-root (make-fake-rpm-repo! tmp))
+       (define repo-config-path (build-path tmp "rpm-repo-config.rktd"))
+       (define ci-config-path (build-path tmp "rpm-ci-config.rktd"))
+       (write-rpm-repo-config! repo-config-path rpm-repo-root)
+       (write-invalid-rpm-ci-config! ci-config-path)
+       (define-values (exit-code out err)
+         (run-package
+          (list "--target" "rpm-ci"
+                "--prefix" "/usr"
+                "--rpm-repo-config" (path-arg repo-config-path)
+                "--rpm-ci-config" (path-arg ci-config-path)
+                "--dry-run")))
+       (check-not-equal? exit-code 0)
+       (check-contains (combined-output out err)
+                       "--rpm-system must be one of el9, fc40, openeuler2203, openeuler2403")
+       (check-false (file-exists? (build-path rpm-repo-root ".github" "workflows" "build-rpm.yml")))
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case rpm-ci generic openeuler
 
   (test-case "rpm plus rpm-repo dry-run uses planned rpm output and writes no repo files"
     (with-temp-dir

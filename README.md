@@ -26,7 +26,11 @@ packaging flows:
   not require `--racket-root`; generated RPM scripts build from the stable
   GitHub Release source archive by default, or from an explicitly named local
   source archive.
-- `rpm`: installs into a staged root with `make unix-style` and builds a `.rpm`.
+- `rpm-ci`: generates `rpm-racket/.github/workflows/build-rpm.yml` from
+  `rpm-ci-config.rktd`, validates the workflow YAML, and publishes RPM release
+  assets only after all configured matrix builds pass.
+- `rpm`: builds a `.rpm` from the same source-archive SPEC model used by the
+  generated `rpm-racket` scripts.
 - `rpm-repo`: copies the configured `.rpm` into an explicit RPM repository
   root and regenerates metadata with `createrepo_c`. This target can be
   combined with `rpm` or used to publish an already generated `.rpm`.
@@ -58,7 +62,13 @@ The `rpm-spec` flow checks that the target root is a writable Git repository,
 generates only the SPEC/SOURCES/scripts scaffold, validates the generated spec
 and script contents, resolves the source archive sha256 before writing `.spec`,
 and marks generated shell entrypoints executable. The
-`rpm-repo` flow checks the target repository root, checks RPM metadata before
+`rpm-ci` flow checks the target repository root, validates generated workflow
+YAML, and requires every configured target to name its system, release, arch,
+runner, container, dependency list, and job count. The generated workflow checks
+the repository layout, builds with the generated RPM scripts, performs an
+install/uninstall smoke test, checks Release asset count and duplicate names,
+then uploads with the workflow `GITHUB_TOKEN`.
+The `rpm-repo` flow checks the target repository root, checks RPM metadata before
 copying it, runs `createrepo_c --update`, and requires `repodata/repomd.xml` to
 exist before reporting success.
 
@@ -69,8 +79,9 @@ Those generated tap files include a generated-code header. Humans and LLM
 agents must not make production changes directly in `homebrew-racket`; change
 `package-racket` and regenerate the tap outputs instead.
 The same rule applies to `rpm-racket`: generated `SPECS/`, `SOURCES/`,
-`scripts/`, and README outputs are produced from this repository. `rpm-racket`
-is a SPEC/build-script repository, not an RPM artifact repository.
+`scripts/`, `.github/workflows/`, and README outputs are produced from this
+repository. `rpm-racket` is a SPEC/build-script repository, not an RPM artifact
+repository.
 
 ## Version Model
 
@@ -166,9 +177,9 @@ temporary directories. They cover Homebrew Formula and workflow semantics,
 dry-run isolation between targets, release-upload validation without reading
 local tokens, and combined producer/release targets such as `apt + apt-release`
 and `brew + source-release`. They also cover `rpm-spec` dry-run isolation, SPEC
-scaffold generation, generated shell syntax checks, and `rpm + rpm-repo`
-dry-run isolation so repository generation cannot silently write files during
-planning.
+scaffold generation, generated shell syntax checks, generated `rpm-ci` workflow
+validation, and `rpm + rpm-repo` dry-run isolation so repository generation
+cannot silently write files during planning.
 
 `--dry-run` still performs safety checks for configured paths, but it does not
 write package artifacts, generated Homebrew workflow files, or tap Formula
@@ -189,8 +200,11 @@ updates.
   `Contents: Read and write`, stored locally as one Racket string datum in
   `secret/ghtoken.rktd`. The file is ignored by Git and should be mode `600`.
 - For `apt`: `dpkg-deb`, or `ar` + `tar` + `xz` through the automatic fallback.
-- For `rpm-spec`: an explicit `--rpm-repo-config` and an explicit
+- For `rpm-spec` and `rpm-ci`: an explicit `--rpm-repo-config` and an explicit
   repository root in that config or `--rpm-repo-root`.
+- For `rpm-ci`: Ruby for YAML validation. GitHub Actions uses the generated
+  workflow's same-repository `GITHUB_TOKEN` with `contents: write` to create or
+  update release assets; no local token is read for this target.
 - For `rpm`: `rpmbuild`.
 - For `rpm-repo`: `rpm` for package metadata validation, `createrepo_c` for
   repository metadata, an explicit `--rpm-repo-config`, and an explicit
@@ -412,9 +426,41 @@ racket package-racket.rkt \
   --rpm-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-repo-config.rktd
 ```
 
+Generate or refresh the `rpm-racket` GitHub Actions RPM workflow:
+
+```sh
+racket package-racket.rkt \
+  --target rpm-ci \
+  --prefix /usr \
+  --rpm-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-repo-config.rktd \
+  --rpm-ci-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-ci-config.rktd
+```
+
+Refresh both the SPEC/scripts scaffold and the CI workflow in one run:
+
+```sh
+racket package-racket.rkt \
+  --target rpm-spec \
+  --target rpm-ci \
+  --prefix /usr \
+  --rpm-system openeuler2403 \
+  --rpm-release 1 \
+  --rpm-arch arm64 \
+  --rpm-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-repo-config.rktd \
+  --rpm-ci-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-ci-config.rktd
+```
+
 `rpm-spec` writes only `.gitignore`, README, `SPECS/`, `SOURCES/`, and
 `scripts/` in the configured `rpm-racket` root. It must not create `repo/` or
 `racket9.repo`.
+
+`rpm-ci` writes only `.github/workflows/build-rpm.yml` in the same
+`rpm-racket` root. The matrix lives in `rpm-ci-config.rktd`; each target
+explicitly names `rpm-system`, `rpm-release`, `rpm-arch`, GitHub runner,
+container image, dependency package list, and job count. The generated workflow
+runs on push to `main` and manual dispatch, builds all matrix RPMs, installs and
+uninstalls each package inside its target container, uploads Actions artifacts,
+then publishes the RPM files to the configured GitHub Release with `--clobber`.
 
 When writing `SPECS/racket9.spec`, `package-racket` resolves the `Source0`
 sha256 in this order:
