@@ -57,6 +57,7 @@
    homebrew-tap
    formula
    update-formula?
+   formula-build-mode
    brew-ci-config
    source-release-config
    source-release-repo
@@ -299,7 +300,7 @@
       ) ; end append-map
     ) ; end define expanded
     (filter (lambda (target) (member target expanded string=?))
-            '("brew-ci" "source-release" "brew" "apt" "rpm"))
+            '("brew-ci" "brew" "source-release" "apt" "rpm"))
   ) ; end begin normalize-targets
 ) ; end define normalize-targets
 
@@ -347,6 +348,16 @@
     ) ; end when trailing slash bottle root url
   ) ; end begin assert-bottle-root-url
 ) ; end define assert-bottle-root-url
+
+(define formula-build-modes
+  '("incremental" "full"))
+
+(define (assert-formula-build-mode mode)
+  (unless (member mode formula-build-modes string=?)
+    (raise-user-error 'main
+                      f"--formula-build-mode must be incremental or full: {mode}")
+  ) ; end unless valid formula build mode
+) ; end define assert-formula-build-mode
 
 (define (path-contained-in? child parent)
   (define parent-str (path->string (path->directory-path (complete-path* parent))))
@@ -742,6 +753,13 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
     "\"errortrace-lib\""
     "\"source-syntax\""))
 
+(define brew-racket-lib-excluded-dependency
+  "(\"racket-aarch64-macosx-4\" #:platform \"aarch64-macosx\")")
+
+(define brew-racket-lib-excluded-dependency-line
+  f"    {brew-racket-lib-excluded-dependency}
+")
+
 (define (brew-source-packages c)
   (remove-duplicates
    (append brew-default-packages brew-custom-core-packages (cfg-brew-packages c))
@@ -961,6 +979,29 @@ information.
   ) ; end begin write-brew-pkgs-db!
 ) ; end define write-brew-pkgs-db!
 
+(define (patch-brew-racket-lib-info! pkgs-dir)
+  (begin
+    (define info-path (build-path pkgs-dir "racket-lib" "info.rkt"))
+    (assert-file 'patch-brew-racket-lib-info! info-path)
+    (define content (file->string info-path))
+    (define excluded-dependency-line-rx
+      (regexp (regexp-quote brew-racket-lib-excluded-dependency-line)))
+    (define dependency-count
+      (regexp-match-count excluded-dependency-line-rx content))
+    (unless (= dependency-count 1)
+      (raise-user-error 'patch-brew-racket-lib-info!
+                        f"expected exactly one excluded platform dependency in {(clean-path-string info-path)}, found {dependency-count}")
+    ) ; end unless exactly one excluded dependency
+    (define patched-content
+      (regexp-replace excluded-dependency-line-rx content ""))
+    (when (string-contains? patched-content brew-racket-lib-excluded-dependency)
+      (raise-user-error 'patch-brew-racket-lib-info!
+                        f"excluded platform dependency still present after patch: {(clean-path-string info-path)}")
+    ) ; end when dependency still present
+    (write-text-file! info-path patched-content)
+  ) ; end begin patch-brew-racket-lib-info!
+) ; end define patch-brew-racket-lib-info!
+
 (define (copy-brew-licenses! racket-root dest-share)
   (begin
     (for ([name (in-list '("LICENSE-APACHE.txt"
@@ -1008,6 +1049,7 @@ information.
       (copy-brew-tree! (brew-package-source (cfg-racket-root c) name)
                        (build-path pkgs-dir name))
     ) ; end for package copy
+    (patch-brew-racket-lib-info! pkgs-dir)
     dist-root
   ) ; end begin stage-brew-source!
 ) ; end define stage-brew-source!
@@ -1108,8 +1150,20 @@ information.
                           f"brew source tgz pkgs.rktd is missing: {needle}")
       ) ; end unless pkgs db needle
     ) ; end for required pkgs db entries
+    (define racket-lib-info-content
+      (brew-tgz-file-content c "share/pkgs/racket-lib/info.rkt"))
+    (when (string-contains? racket-lib-info-content brew-racket-lib-excluded-dependency)
+      (raise-user-error 'validate-brew-tgz!
+                        f"brew source tgz racket-lib/info.rkt still depends on excluded package: {brew-racket-lib-excluded-dependency}")
+    ) ; end when excluded dependency still present
   ) ; end begin validate-brew-tgz-content!
 ) ; end define validate-brew-tgz-content!
+
+(define (formula-mode-incremental? c)
+  (string=? (cfg-formula-build-mode c) "incremental"))
+
+(define (formula-mode-full? c)
+  (string=? (cfg-formula-build-mode c) "full"))
 
 (define (assert-homebrew-tap! c)
   (begin
@@ -1117,7 +1171,9 @@ information.
     (assert-directory 'assert-homebrew-tap! (build-path (cfg-homebrew-tap c) ".git"))
     (assert-directory 'assert-homebrew-tap! (build-path (cfg-homebrew-tap c) "Formula"))
     (when (cfg-update-formula? c)
-      (assert-file 'assert-homebrew-tap! (cfg-formula c))
+      (when (formula-mode-incremental? c)
+        (assert-file 'assert-homebrew-tap! (cfg-formula c))
+      ) ; end when incremental formula requires existing file
       (unless (path-contained-in? (cfg-formula c) (build-path (cfg-homebrew-tap c) "Formula"))
         (raise-user-error 'assert-homebrew-tap!
                           f"formula must be inside tap Formula directory: {(clean-path-string (cfg-formula c))}")
@@ -1162,7 +1218,8 @@ information.
     (define content (file->string formula-path))
     (for ([needle (in-list (list "class RacketAT9 < Formula"
                                  f"url \"{(formula-source-url c)}\""
-                                 (formula-root-url c)
+                                 "depends_on \"openssl@3\""
+                                 "depends_on \"ncurses\""
                                  "test do"
                                  f"assert_match \"{(cfg-version c)}\""))])
       (unless (string-contains? content needle)
@@ -1174,10 +1231,10 @@ information.
       (raise-user-error 'validate-formula-file!
                         f"formula must contain exactly one source sha256 line: {(clean-path-string formula-path)}")
     ) ; end unless one source sha
-    (unless (= 1 (regexp-match-count #px"(?m:^    root_url \"[^\"]+\")" content))
+    (when (> (regexp-match-count #px"(?m:^    root_url \"[^\"]+\")" content) 1)
       (raise-user-error 'validate-formula-file!
-                        f"formula must contain exactly one bottle root_url line: {(clean-path-string formula-path)}")
-    ) ; end unless one root_url
+                        f"formula must contain at most one bottle root_url line: {(clean-path-string formula-path)}")
+    ) ; end when too many root_url lines
     (formula-sha256 formula-path)
     (void)
   ) ; end begin validate-formula-file!
@@ -1203,10 +1260,10 @@ information.
       (raise-user-error 'validate-formula-template!
                         f"formula template must contain exactly one source sha256 line: {(clean-path-string formula-path)}")
     ) ; end unless one source sha
-    (unless (= 1 (regexp-match-count #px"(?m:^    root_url \"[^\"]+\")" content))
+    (when (> (regexp-match-count #px"(?m:^    root_url \"[^\"]+\")" content) 1)
       (raise-user-error 'validate-formula-template!
-                        f"formula template must contain exactly one bottle root_url line: {(clean-path-string formula-path)}")
-    ) ; end unless one root_url
+                        f"formula template must contain at most one bottle root_url line: {(clean-path-string formula-path)}")
+    ) ; end when too many root_url lines
   ) ; end begin validate-formula-template!
 ) ; end define validate-formula-template!
 
@@ -1215,12 +1272,17 @@ information.
     (assert-nonempty-file 'set-formula-bottle-root-url! formula-path)
     (define content (file->string formula-path))
     (define root-url-rx #px"(?m:^    root_url \"[^\"]+\")")
-    (unless (= 1 (regexp-match-count root-url-rx content))
-      (raise-user-error 'set-formula-bottle-root-url!
-                        f"formula must contain exactly one bottle root_url line: {(clean-path-string formula-path)}")
-    ) ; end unless exactly one root_url
-    (write-text-file! formula-path (regexp-replace root-url-rx content (formula-root-url-line c)))
-    (validate-formula-file! c formula-path)
+    (define root-url-count (regexp-match-count root-url-rx content))
+    (cond
+      [(= root-url-count 0)
+       (validate-formula-file! c formula-path)]
+      [(= root-url-count 1)
+       (write-text-file! formula-path (regexp-replace root-url-rx content (formula-root-url-line c)))
+       (validate-formula-file! c formula-path)]
+      [else
+       (raise-user-error 'set-formula-bottle-root-url!
+                         f"formula must contain at most one bottle root_url line: {(clean-path-string formula-path)}")]
+    ) ; end cond root_url count
   ) ; end begin set-formula-bottle-root-url!
 ) ; end define set-formula-bottle-root-url!
 
@@ -1247,6 +1309,207 @@ information.
     (validate-formula-file! c formula-path)
   ) ; end begin set-formula-source!
 ) ; end define set-formula-source!
+
+(define (ruby-interpolate expression)
+  (string-append "#{" expression "}"))
+
+(define (formula-content/full c digest)
+  (begin
+    (define version (cfg-version c))
+    (define rb-prefix (ruby-interpolate "prefix"))
+    (define rb-man (ruby-interpolate "man"))
+    (define rb-etc (ruby-interpolate "etc"))
+    (define rb-openssl-rpath (ruby-interpolate "Formula[\"openssl@3\"].opt_lib"))
+    (define rb-openssl-libssl (ruby-interpolate "Formula[\"openssl@3\"].opt_lib/shared_library(\"libssl\")"))
+    (define rb-bin (ruby-interpolate "bin"))
+    (define rb-test-script (ruby-interpolate "testpath/\"interactive-packages.rkt\""))
+    (define rb-racket-config (ruby-interpolate "racket_config"))
+    (define rb-cellar-regexp
+      (string-append "%r{"
+                     (ruby-interpolate "Regexp.escape(HOMEBREW_CELLAR)")
+                     "/racket@9/[^/]+}o"))
+    (define macos-openssl-rx "%r{.*openssl@3/.*/libssl.*\\.dylib}")
+    f"class RacketAT9 < Formula
+  desc \"Modern programming language in the Lisp/Scheme family\"
+  homepage \"https://racket-lang.org/\"
+  url \"{(formula-source-url c)}\"
+  sha256 \"{digest}\"
+  license any_of: [\"MIT\", \"Apache-2.0\"]
+
+  livecheck do
+    skip \"Private Racket fork releases are managed manually\"
+  end
+
+  depends_on \"openssl@3\"
+
+  uses_from_macos \"libffi\"
+
+  on_linux do
+    depends_on \"libedit\"
+    depends_on \"ncurses\"
+    depends_on \"zlib-ng-compat\"
+  end
+
+  # These files are amended when packages are installed or removed.
+  skip_clean \"lib/racket/launchers.rktd\", \"lib/racket/mans.rktd\"
+
+  def racket_config
+    etc/\"racket/config.rktd\"
+  end
+
+  def install
+    # Configure racket's package tool (raco) to use installation scope.
+    inreplace \"etc/config.rktd\", /\\)\\)\\n$/, \") (default-scope . \\\"installation\\\"))\\n\"
+
+    # Prefer Homebrew OpenSSL 3 over older OpenSSL variants.
+    inreplace %w[libssl.rkt libcrypto.rkt].map {{ |file| buildpath/\"collects/openssl\"/file }},
+              '\"1.1\"', '\"3\"'
+
+    cd \"src\" do
+      args = %W[
+        --disable-debug
+        --disable-dependency-tracking
+        --enable-origtree=no
+        --enable-macprefix
+        --prefix={rb-prefix}
+        --mandir={rb-man}
+        --sysconfdir={rb-etc}
+        --enable-useprefix
+      ]
+
+      ENV[\"LDFLAGS\"] = \"-rpath {rb-openssl-rpath}\"
+      ENV[\"LDFLAGS\"] = \"-Wl,-rpath={rb-openssl-rpath}\" if OS.linux?
+
+      system \"./configure\", *args
+      system \"make\"
+      system \"make\", \"install\"
+
+      if OS.mac?
+        openssl = Formula[\"openssl@3\"]
+        racket_libdir = lib/\"racket\"
+
+        %w[libssl.3.dylib libcrypto.3.dylib].each do |dylib|
+          path = racket_libdir/dylib
+          path.unlink if path.exist?
+        end
+
+        ln_s openssl.opt_lib/\"libssl.3.dylib\",    racket_libdir/\"libssl.3.dylib\"
+        ln_s openssl.opt_lib/\"libcrypto.3.dylib\", racket_libdir/\"libcrypto.3.dylib\"
+      end
+    end
+
+    inreplace racket_config, prefix, opt_prefix
+  end
+
+  def post_install
+    system bin/\"raco\", \"setup\"
+
+    return unless racket_config.read.include?(HOMEBREW_CELLAR)
+
+    ohai \"Fixing up Cellar references in {rb-racket-config}...\"
+    inreplace racket_config, {rb-cellar-regexp}, opt_prefix
+  end
+
+  def caveats
+    <<~EOS
+      This formula is intended to provide the active Homebrew `racket` and
+      `raco` commands.
+
+      If an official Racket formula or cask is already installed, remove it
+      before installing this formula:
+        brew uninstall minimal-racket
+        brew uninstall --cask racket
+    EOS
+  end
+
+  test do
+    require \"pty\"
+    require \"timeout\"
+
+    assert_match \"{version}\", shell_output(\"{rb-bin}/racket -e '(displayln (version))'\")
+
+    output = shell_output(\"{rb-bin}/racket -e '(require racket/pvector) (displayln (pvector->list (pvector 1 2 3)))'\")
+    assert_match \"(1 2 3)\", output
+
+    (testpath/\"interactive-packages.rkt\").write <<~RACKET
+      #lang racket/base
+      (for ([p '((\"main.rkt\" \"xrepl\")
+                 (\"main.rkt\" \"expeditor\")
+                 (\"pread.rkt\" \"readline\"))])
+        (unless (collection-file-path (car p) (cadr p) #:fail (lambda _ #f))
+          (error (cadr p) \"collection missing\")))
+      (displayln \"interactive-packages-ok\")
+    RACKET
+    output = shell_output(\"{rb-bin}/racket {rb-test-script}\")
+    assert_match \"interactive-packages-ok\", output
+
+    output = shell_output(\"printf '1\\\\n' | {rb-bin}/racket\")
+    assert_match \"Welcome to Racket v{version} [cs].\", output
+    assert_match(/^> 1$/, output)
+
+    output = shell_output(\"printf 'f\\\"hi\\\"\\\\n' | {rb-bin}/racket\")
+    assert_match(/^> \"hi\"$/, output)
+
+    pty_output = +\"\"
+    read_available = lambda do |reader, timeout|
+      loop do
+        pty_output << Timeout.timeout(timeout) {{ reader.readpartial(4096) }}
+        timeout = 0.1
+      end
+    rescue Timeout::Error, EOFError
+      pty_output
+    end
+    read_until_result = lambda do |reader|
+      loop do
+        pty_output << Timeout.timeout(0.5) {{ reader.readpartial(4096) }}
+        break if pty_output.include?(\"#t\")
+      end
+    rescue Timeout::Error, EOFError
+      pty_output
+    end
+    Timeout.timeout(5) do
+      PTY.spawn({{ \"TERM\" => \"xterm-256color\" }}, \"{rb-bin}/racket\") do |r, w, pid|
+        read_available.call(r, 0.5)
+        w.write \"\\n\"
+        read_available.call(r, 0.5)
+        w.puts \"(= 1 1)\"
+        read_until_result.call(r)
+        w.write \"\\x04\"
+        Process.kill(\"KILL\", pid)
+        Process.detach(pid)
+      end
+    end
+    assert_match \"Welcome to Racket v{version} [cs].\", pty_output
+    assert_match \"\\n#t\", pty_output
+    if OS.mac?
+      assert_match(/\\e\\[/, pty_output)
+    else
+      refute_match(/no readline support/, pty_output)
+    end
+    assert !pty_output.match?(/> \\r?\\n\\(/), \"empty input fell back to the plain REPL reader\"
+
+    assert_match '(default-scope . \"installation\")', racket_config.read
+
+    if OS.mac?
+      output = shell_output(\"DYLD_PRINT_LIBRARIES=1 {rb-bin}/racket -e '(require openssl)' 2>&1\")
+      assert_match({macos-openssl-rx}, output)
+    else
+      output = shell_output(\"LD_DEBUG=libs {rb-bin}/racket -e '(require openssl)' 2>&1\")
+      assert_match \"init: {rb-openssl-libssl}\", output
+    end
+  end
+end
+"
+  ) ; end begin formula-content/full
+) ; end define formula-content/full
+
+(define (write-full-formula! c formula-path digest)
+  (begin
+    (make-directory* (path-only formula-path))
+    (write-text-file! formula-path (formula-content/full c digest))
+    (validate-formula-file! c formula-path)
+  ) ; end begin write-full-formula!
+) ; end define write-full-formula!
 
 (define (validate-brew-tgz! c)
   (begin
@@ -1280,11 +1543,25 @@ information.
     (assert-homebrew-tap! c)
     (define work-root (brew-work-root c))
     (define generated (brew-generated-formula c))
-    (define original-digest (sha256-file (cfg-formula c)))
+    (define original-digest
+      (and (file-exists? (cfg-formula c))
+           (sha256-file (cfg-formula c))))
     (reset-managed-dir! 'prepare-generated-formula! work-root)
     (make-directory* (path-only generated))
-    (copy-file (cfg-formula c) generated #t)
-    (validate-formula-template! generated)
+    (cond
+      [(formula-mode-incremental? c)
+       (unless original-digest
+         (raise-user-error 'prepare-generated-formula!
+                           f"incremental formula mode requires an existing formula: {(clean-path-string (cfg-formula c))}")
+       ) ; end unless existing formula digest
+       (copy-file (cfg-formula c) generated #t)
+       (validate-formula-template! generated)]
+      [(formula-mode-full? c)
+       (void)]
+      [else
+       (raise-user-error 'prepare-generated-formula!
+                         f"unsupported formula build mode: {(cfg-formula-build-mode c)}")]
+    ) ; end cond formula mode
     (values generated original-digest)
   ) ; end begin prepare-generated-formula!
 ) ; end define prepare-generated-formula!
@@ -1296,11 +1573,21 @@ information.
     (assert-homebrew-tap! c)
     (assert-writable-directory 'install-generated-formula! dest-dir)
     (validate-brew-artifact! c generated)
-    (define current-digest (sha256-file dest))
-    (unless (string=? current-digest original-digest)
-      (raise-user-error 'install-generated-formula!
-                        f"refusing to replace formula because it changed during this run: {(clean-path-string dest)}")
-    ) ; end unless formula unchanged
+    (cond
+      [original-digest
+       (let ([current-digest (sha256-file dest)])
+         (unless (string=? current-digest original-digest)
+           (raise-user-error 'install-generated-formula!
+                             f"refusing to replace formula because it changed during this run: {(clean-path-string dest)}")
+         ) ; end unless formula unchanged
+       ) ; end let current digest
+      ]
+      [(file-exists? dest)
+       (raise-user-error 'install-generated-formula!
+                         f"refusing to replace formula because it appeared during this run: {(clean-path-string dest)}")]
+      [else
+       (void)]
+    ) ; end cond existing destination
     (define temp (make-temporary-file ".racket@9.rb.tmp~a" #f dest-dir))
     (copy-file generated temp #t)
     (validate-formula-file! c temp)
@@ -1336,8 +1623,16 @@ information.
       (define digest (sha256-file (brew-output-tgz c)))
       (println/flush f"sha256: {digest}")
       (when (cfg-update-formula? c)
-        (set-formula-source! c generated-formula digest)
-        (set-formula-bottle-root-url! c generated-formula)
+        (cond
+          [(formula-mode-incremental? c)
+           (set-formula-source! c generated-formula digest)
+           (set-formula-bottle-root-url! c generated-formula)]
+          [(formula-mode-full? c)
+           (write-full-formula! c generated-formula digest)]
+          [else
+           (raise-user-error 'build-brew!
+                             f"unsupported formula build mode: {(cfg-formula-build-mode c)}")]
+        ) ; end cond formula mode
       ) ; end when update formula fields
     ) ; end unless dry-run prepare brew
     (when (and (cfg-dry-run? c) (cfg-update-formula? c))
@@ -1360,6 +1655,7 @@ information.
 
 (define github-api-host "api.github.com")
 (define github-api-version "2022-11-28")
+(define github-max-request-attempts 5)
 
 (define (read-single-rktd who path)
   (begin
@@ -1577,17 +1873,23 @@ information.
 ) ; end define read-github-impure-response!
 
 (define (http-send/port! who method host path headers data)
-  (begin
+  (let loop ([attempt 1])
     (with-handlers ([exn:fail?
                      (lambda (exn)
-                       (raise-user-error who
-                                         f"HTTP request failed: {method} https://{host}{path}
-{(exn-message exn)}")
+                       (cond
+                         [(< attempt github-max-request-attempts)
+                          (sleep (min attempt 5))
+                          (loop (add1 attempt))]
+                         [else
+                          (raise-user-error who
+                                            f"HTTP request failed after {attempt} attempts: {method} https://{host}{path}
+{(exn-message exn)}")]
+                       ) ; end cond retry
                      )])
       (define url (string->url f"https://{host}{path}"))
       (define response-port (github-response-port method url headers data))
       (read-github-impure-response! who response-port))
-  ) ; end begin http-send/port!
+  ) ; end let loop http send
 ) ; end define http-send/port!
 
 (define (github-json-request! who method host path token
@@ -2309,6 +2611,7 @@ jobs:
   (define homebrew-tap-arg #f)
   (define formula-arg #f)
   (define update-formula? #t)
+  (define formula-build-mode-arg "incremental")
   (define brew-ci-config-arg #f)
   (define source-release-config-arg #f)
   (define source-release-repo-arg #f)
@@ -2386,6 +2689,8 @@ jobs:
                 (set! formula-arg path)]
    [("--no-update-formula") "Do not update the Homebrew formula"
                           (set! update-formula? #f)]
+   [("--formula-build-mode") mode "Formula build mode: incremental or full (default: incremental)"
+                             (set! formula-build-mode-arg mode)]
    [("--brew-ci-config") path "Package-racket source config for generated tap workflows (default: ./brew-ci-config.rktd)"
                        (set! brew-ci-config-arg path)]
    [("--source-release-config") path "Config for uploading the source release asset (default: ./source-release-config.rktd)"
@@ -2430,6 +2735,7 @@ jobs:
   (when bottle-root-url-arg
     (assert-bottle-root-url bottle-root-url-arg)
   ) ; end when bottle root url provided
+  (assert-formula-build-mode formula-build-mode-arg)
   (define homebrew-tap (and homebrew-tap-arg (complete-path* homebrew-tap-arg)))
   (define formula
     (cond
@@ -2485,6 +2791,7 @@ jobs:
        homebrew-tap
        formula
        update-formula?
+       formula-build-mode-arg
        brew-ci-config
        source-release-config
        source-release-repo-arg
@@ -2517,6 +2824,9 @@ jobs:
   (when (cfg-bottle-root-url c)
     (println/flush f"Bottle root URL: {(cfg-bottle-root-url c)}")
   ) ; end when bottle root url
+  (when (member "brew" (cfg-targets c) string=?)
+    (println/flush f"Formula build mode: {(cfg-formula-build-mode c)}")
+  ) ; end when brew target
   (when (member "source-release" (cfg-targets c) string=?)
     (println/flush f"Source release config: {(clean-path-string (cfg-source-release-config c))}")
   ) ; end when source release target

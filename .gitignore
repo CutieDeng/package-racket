@@ -8,3 +8,4 @@ artifacts/
 .DS_Store
 secret/
 compiled
+local-script/
