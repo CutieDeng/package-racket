@@ -52,6 +52,8 @@
    rpm-bin
    createrepo-bin
    deb-arch
+   rpm-system
+   rpm-release
    rpm-arch
    maintainer
    summary
@@ -398,6 +400,11 @@
   (or (member "rpm-spec" targets string=?)
       (member "rpm-repo" targets string=?)))
 
+(define (needs-rpm-target? targets)
+  (or (member "rpm-spec" targets string=?)
+      (member "rpm" targets string=?)
+      (member "rpm-repo" targets string=?)))
+
 (define (prefix-relative-elements prefix)
   (define trimmed (regexp-replace #rx"^/+" prefix ""))
   (when (string=? trimmed "")
@@ -586,6 +593,34 @@
     ) ; end match normalized arch
   ) ; end begin normalize-rpm-arch
 ) ; end define normalize-rpm-arch
+
+(define rpm-supported-systems
+  '("el9" "fc40" "openeuler" "openeuler2403"))
+
+(define (assert-rpm-system system)
+  (begin
+    (unless (and (string? system)
+                 (member system rpm-supported-systems string=?))
+      (raise-user-error 'main
+                        f"--rpm-system must be one of {(string-join rpm-supported-systems ", ")}: {system}")
+    ) ; end unless supported rpm system
+    system
+  ) ; end begin assert-rpm-system
+) ; end define assert-rpm-system
+
+(define (assert-rpm-release release)
+  (begin
+    (unless (and (string? release)
+                 (regexp-match? #px"^[0-9][0-9A-Za-z_+~-]*$" release))
+      (raise-user-error 'main
+                        f"--rpm-release must start with a digit and use only letters, digits, _, +, ~, or -: {release}")
+    ) ; end unless syntactically safe rpm release
+    release
+  ) ; end begin assert-rpm-release
+) ; end define assert-rpm-release
+
+(define (rpm-full-release release system)
+  f"{release}.{system}")
 
 (define (path-contained-in? child parent)
   (define parent-str (path->string (path->directory-path (complete-path* parent))))
@@ -875,7 +910,10 @@ Description: {(cfg-summary c)}
   (cfg-source-version c))
 
 (define (rpm-release c)
-  (cfg-release c))
+  (rpm-full-release (cfg-rpm-release c) (cfg-rpm-system c)))
+
+(define (rpm-spec-default-macro name value)
+  (string-append "%{!?" name ":%global " name " " value "}"))
 
 (define (rpm-source-sha256/local c)
   (let ([source-path (brew-output-tgz c)])
@@ -889,7 +927,9 @@ Description: {(cfg-summary c)}
                           [source-sha256 (rpm-source-sha256/local c)])
   f"Name: {(cfg-package-name c)}
 Version: {(rpm-version c)}
-Release: {(rpm-release c)}
+{(rpm-spec-default-macro "package_system" (cfg-rpm-system c))}
+{(rpm-spec-default-macro "package_release" (cfg-rpm-release c))}
+Release: %{{package_release}}.%{{package_system}}
 Summary: {(cfg-summary c)}
 License: {(cfg-license c)}
 URL: {(cfg-url c)}
@@ -978,7 +1018,9 @@ grep -Eq '^(%dir )?/usr/(bin|lib|lib64|share)$' \"$manifest\" && exit 1
     (define content (file->string spec-path))
     (for ([needle (in-list (list f"Name: {(cfg-package-name c)}"
                                  f"Version: {(rpm-version c)}"
-                                 f"Release: {(rpm-release c)}"
+                                 (rpm-spec-default-macro "package_system" (cfg-rpm-system c))
+                                 (rpm-spec-default-macro "package_release" (cfg-rpm-release c))
+                                 "Release: %{package_release}.%{package_system}"
                                  f"Source0: {source-url}"
                                  "%global __brp_compress %{nil}"
                                  "%global package_prefix"
@@ -1167,6 +1209,8 @@ grep -Eq '^(%dir )?/usr/(bin|lib|lib64|share)$' \"$manifest\" && exit 1
                 "--define" f"_topdir {(clean-path-string rpm-root)}"
                 "--define" "_build_id_links none"
                 "--define" f"package_prefix {(cfg-prefix c)}"
+                "--define" f"package_system {(cfg-rpm-system c)}"
+                "--define" f"package_release {(cfg-rpm-release c)}"
                 "--define" f"_smp_mflags -j{(cfg-jobs c)}"
                 (clean-path-string spec-path))
           #:dry-run? (cfg-dry-run? c))
@@ -1249,6 +1293,8 @@ Run from `package-racket` to overwrite the SPEC and scripts:
 racket package-racket.rkt \\
   --target rpm-spec \\
   --prefix /usr \\
+  --rpm-system {(cfg-rpm-system c)} \\
+  --rpm-release {(cfg-rpm-release c)} \\
   --rpm-arch arm64 \\
   --rpm-repo-config {(clean-path-string (cfg-rpm-repo-config c))}
 ```
@@ -1262,6 +1308,8 @@ source URL:
 scripts/build-rpm.sh \\
   --artifact-dir /path/to/artifacts \\
   --work-dir /path/to/work \\
+  --rpm-system {(cfg-rpm-system c)} \\
+  --rpm-release {(cfg-rpm-release c)} \\
   --rpm-arch arm64 \\
   --prefix /usr
 ```
@@ -1273,6 +1321,8 @@ scripts/build-rpm.sh \\
   --source-archive /path/to/{(brew-source-tgz-name c)} \\
   --artifact-dir /path/to/artifacts \\
   --work-dir /path/to/work \\
+  --rpm-system {(cfg-rpm-system c)} \\
+  --rpm-release {(cfg-rpm-release c)} \\
   --rpm-arch arm64 \\
   --prefix /usr
 ```
@@ -1283,6 +1333,8 @@ Build the matching SRPM from the generated GitHub Release source URL:
 scripts/build-srpm.sh \\
   --artifact-dir /path/to/artifacts \\
   --work-dir /path/to/work \\
+  --rpm-system {(cfg-rpm-system c)} \\
+  --rpm-release {(cfg-rpm-release c)} \\
   --rpm-arch arm64 \\
   --prefix /usr
 ```
@@ -1294,6 +1346,8 @@ scripts/build-srpm.sh \\
   --source-archive /path/to/{(brew-source-tgz-name c)} \\
   --artifact-dir /path/to/artifacts \\
   --work-dir /path/to/work \\
+  --rpm-system {(cfg-rpm-system c)} \\
+  --rpm-release {(cfg-rpm-release c)} \\
   --rpm-arch arm64 \\
   --prefix /usr
 ```
@@ -1303,6 +1357,8 @@ Validate an existing RPM:
 ```sh
 scripts/verify-rpm.sh \\
   --rpm /path/to/artifacts/{(cfg-package-name c)}-{(rpm-version c)}-{(rpm-release c)}.aarch64.rpm \\
+  --rpm-system {(cfg-rpm-system c)} \\
+  --rpm-release {(cfg-rpm-release c)} \\
   --rpm-arch arm64
 ```
 ")
@@ -1331,7 +1387,8 @@ set -euo pipefail
   f"{(rpm-script-header "rpm-common.sh")}PACKAGE_NAME={(shell-single-quoted (cfg-package-name c))}
 PACKAGE_VERSION={(shell-single-quoted (rpm-version c))}
 PACKAGE_SOURCE_VERSION={(shell-single-quoted (cfg-source-version c))}
-PACKAGE_RELEASE={(shell-single-quoted (rpm-release c))}
+DEFAULT_RPM_SYSTEM={(shell-single-quoted (cfg-rpm-system c))}
+DEFAULT_RPM_RELEASE={(shell-single-quoted (cfg-rpm-release c))}
 DEFAULT_PREFIX={(shell-single-quoted (cfg-prefix c))}
 SOURCE_ARCHIVE_NAME={(shell-single-quoted (rpm-source-archive-name c))}
 DEFAULT_SOURCE_URL={(shell-single-quoted (formula-source-url c))}
@@ -1421,13 +1478,43 @@ normalize_arch() {{
   esac
 }}
 
+validate_rpm_system() {{
+  case \"$1\" in
+    el9|fc40|openeuler|openeuler2403) ;;
+    *) die \"rpm system must be el9, fc40, openeuler, or openeuler2403: $1\" ;;
+  esac
+}}
+
+validate_rpm_release() {{
+  local release=\"$1\"
+  [ -n \"$release\" ] || die \"rpm release is required\"
+  case \"$release\" in
+    *.*) die \"rpm release must not contain . because system is appended separately: $release\" ;;
+    [0-9]*) ;;
+    *) die \"rpm release must start with a digit: $release\" ;;
+  esac
+  case \"$release\" in
+    *[!A-Za-z0-9_+~-]*) die \"rpm release contains unsupported characters: $release\" ;;
+  esac
+}}
+
+rpm_full_release() {{
+  local release=\"$1\"
+  local system=\"$2\"
+  printf '%s.%s\\n' \"$release\" \"$system\"
+}}
+
 rpm_name_for_arch() {{
   local arch=\"$1\"
-  printf '%s-%s-%s.%s.rpm\\n' \"$PACKAGE_NAME\" \"$PACKAGE_VERSION\" \"$PACKAGE_RELEASE\" \"$arch\"
+  local release=\"$2\"
+  local system=\"$3\"
+  printf '%s-%s-%s.%s.rpm\\n' \"$PACKAGE_NAME\" \"$PACKAGE_VERSION\" \"$(rpm_full_release \"$release\" \"$system\")\" \"$arch\"
 }}
 
 srpm_name() {{
-  printf '%s-%s-%s.src.rpm\\n' \"$PACKAGE_NAME\" \"$PACKAGE_VERSION\" \"$PACKAGE_RELEASE\"
+  local release=\"$1\"
+  local system=\"$2\"
+  printf '%s-%s-%s.src.rpm\\n' \"$PACKAGE_NAME\" \"$PACKAGE_VERSION\" \"$(rpm_full_release \"$release\" \"$system\")\"
 }}
 
 reset_output_dir() {{
@@ -1521,7 +1608,7 @@ source \"$SCRIPT_DIR/rpm-common.sh\"
 
 usage() {{
   cat <<'USAGE'
-Usage: scripts/build-rpm.sh --artifact-dir PATH --work-dir PATH --rpm-arch ARCH [options]
+Usage: scripts/build-rpm.sh --artifact-dir PATH --work-dir PATH --rpm-system SYSTEM --rpm-release RELEASE --rpm-arch ARCH [options]
 
 Build a binary RPM from SPECS/racket9.spec and a stable source archive. All
 mutable paths are named.
@@ -1531,6 +1618,8 @@ Options:
   --source-url URL       Source archive URL. Defaults to the generated release URL.
   --artifact-dir PATH    Directory that receives the final .rpm.
   --work-dir PATH        Build work directory for rpmbuild.
+  --rpm-system SYSTEM    el9, fc40, openeuler, or openeuler2403.
+  --rpm-release RELEASE  Package release base, for example 1. The system suffix is appended separately.
   --prefix PATH          Install prefix inside the package. Defaults to generated /usr.
   --rpm-arch ARCH        x86_64, amd64, x64, aarch64, or arm64.
   --jobs N               Parallel jobs passed to rpmbuild through _smp_mflags.
@@ -1545,6 +1634,8 @@ SOURCE_URL=\"$DEFAULT_SOURCE_URL\"
 SOURCE_URL_EXPLICIT=0
 ARTIFACT_DIR=
 WORK_DIR=
+RPM_SYSTEM=
+RPM_RELEASE=
 RPM_ARCH=
 JOBS=1
 PREFIX=\"$DEFAULT_PREFIX\"
@@ -1556,6 +1647,8 @@ while [ $# -gt 0 ]; do
     --source-url) [ $# -ge 2 ] || usage_error \"missing value for --source-url\"; SOURCE_URL=\"$2\"; SOURCE_URL_EXPLICIT=1; shift 2 ;;
     --artifact-dir) [ $# -ge 2 ] || usage_error \"missing value for --artifact-dir\"; ARTIFACT_DIR=\"$2\"; shift 2 ;;
     --work-dir) [ $# -ge 2 ] || usage_error \"missing value for --work-dir\"; WORK_DIR=\"$2\"; shift 2 ;;
+    --rpm-system) [ $# -ge 2 ] || usage_error \"missing value for --rpm-system\"; RPM_SYSTEM=\"$2\"; shift 2 ;;
+    --rpm-release) [ $# -ge 2 ] || usage_error \"missing value for --rpm-release\"; RPM_RELEASE=\"$2\"; shift 2 ;;
     --prefix) [ $# -ge 2 ] || usage_error \"missing value for --prefix\"; PREFIX=\"$2\"; shift 2 ;;
     --rpm-arch) [ $# -ge 2 ] || usage_error \"missing value for --rpm-arch\"; RPM_ARCH=\"$2\"; shift 2 ;;
     --jobs) [ $# -ge 2 ] || usage_error \"missing value for --jobs\"; JOBS=\"$2\"; shift 2 ;;
@@ -1570,7 +1663,11 @@ REPO_ROOT=$(repo_root_from_script)
 require_repo_root \"$REPO_ROOT\"
 [ -n \"$ARTIFACT_DIR\" ] || usage_error \"--artifact-dir is required\"
 [ -n \"$WORK_DIR\" ] || usage_error \"--work-dir is required\"
+[ -n \"$RPM_SYSTEM\" ] || usage_error \"--rpm-system is required\"
+[ -n \"$RPM_RELEASE\" ] || usage_error \"--rpm-release is required\"
 [ -n \"$RPM_ARCH\" ] || usage_error \"--rpm-arch is required\"
+validate_rpm_system \"$RPM_SYSTEM\"
+validate_rpm_release \"$RPM_RELEASE\"
 NORMALIZED_ARCH=$(normalize_arch \"$RPM_ARCH\")
 if [ -n \"$SOURCE_ARCHIVE\" ] && [ \"$SOURCE_URL_EXPLICIT\" = 1 ]; then
   usage_error \"use either --source-archive or --source-url, not both\"
@@ -1583,10 +1680,14 @@ maybe_require_exe \"$DRY_RUN\" rpmbuild
 RPMBUILD_ROOT=\"$WORK_DIR/rpmbuild\"
 SPEC_PATH=\"$RPMBUILD_ROOT/SPECS/$SPEC_NAME\"
 SOURCE_PATH=\"$RPMBUILD_ROOT/SOURCES/$SOURCE_ARCHIVE_NAME\"
-RPM_NAME=$(rpm_name_for_arch \"$NORMALIZED_ARCH\")
+RPM_FULL_RELEASE=$(rpm_full_release \"$RPM_RELEASE\" \"$RPM_SYSTEM\")
+RPM_NAME=$(rpm_name_for_arch \"$NORMALIZED_ARCH\" \"$RPM_RELEASE\" \"$RPM_SYSTEM\")
 RPM_OUTPUT=\"$RPMBUILD_ROOT/RPMS/$NORMALIZED_ARCH/$RPM_NAME\"
 
 printf 'Repository root: %s\\n' \"$REPO_ROOT\"
+printf 'RPM system: %s\\n' \"$RPM_SYSTEM\"
+printf 'RPM release: %s\\n' \"$RPM_RELEASE\"
+printf 'RPM full release: %s\\n' \"$RPM_FULL_RELEASE\"
 printf 'Source archive: %s\\n' \"${{SOURCE_ARCHIVE:-$SOURCE_URL}}\"
 printf 'RPM output: %s\\n' \"$ARTIFACT_DIR/$RPM_NAME\"
 
@@ -1600,6 +1701,8 @@ if [ \"${{#RPMBUILD_ARGS[@]}}\" -gt 0 ]; then
     --define \"_topdir $RPMBUILD_ROOT\" \\
     --define \"_build_id_links none\" \\
     --define \"package_prefix $PREFIX\" \\
+    --define \"package_system $RPM_SYSTEM\" \\
+    --define \"package_release $RPM_RELEASE\" \\
     --define \"_smp_mflags -j$JOBS\" \\
     \"${{RPMBUILD_ARGS[@]}}\" \\
     \"$SPEC_PATH\"
@@ -1608,6 +1711,8 @@ else
     --define \"_topdir $RPMBUILD_ROOT\" \\
     --define \"_build_id_links none\" \\
     --define \"package_prefix $PREFIX\" \\
+    --define \"package_system $RPM_SYSTEM\" \\
+    --define \"package_release $RPM_RELEASE\" \\
     --define \"_smp_mflags -j$JOBS\" \\
     \"$SPEC_PATH\"
 fi
@@ -1618,7 +1723,7 @@ else
   require_nonempty_file \"$RPM_OUTPUT\"
   mkdir -p \"$ARTIFACT_DIR\"
   cp \"$RPM_OUTPUT\" \"$ARTIFACT_DIR/$RPM_NAME\"
-  \"$REPO_ROOT/scripts/verify-rpm.sh\" --rpm \"$ARTIFACT_DIR/$RPM_NAME\" --rpm-arch \"$NORMALIZED_ARCH\"
+  \"$REPO_ROOT/scripts/verify-rpm.sh\" --rpm \"$ARTIFACT_DIR/$RPM_NAME\" --rpm-system \"$RPM_SYSTEM\" --rpm-release \"$RPM_RELEASE\" --rpm-arch \"$NORMALIZED_ARCH\"
   printf 'RPM package: %s\\n' \"$ARTIFACT_DIR/$RPM_NAME\"
 fi
 ")
@@ -1629,7 +1734,7 @@ source \"$SCRIPT_DIR/rpm-common.sh\"
 
 usage() {{
   cat <<'USAGE'
-Usage: scripts/build-srpm.sh --artifact-dir PATH --work-dir PATH --rpm-arch ARCH [options]
+Usage: scripts/build-srpm.sh --artifact-dir PATH --work-dir PATH --rpm-system SYSTEM --rpm-release RELEASE --rpm-arch ARCH [options]
 
 Build a source RPM from SPECS/racket9.spec and a stable source archive.
 
@@ -1638,6 +1743,8 @@ Options:
   --source-url URL       Source archive URL. Defaults to the generated release URL.
   --artifact-dir PATH    Directory that receives the final .src.rpm.
   --work-dir PATH        Build work directory for rpmbuild.
+  --rpm-system SYSTEM    el9, fc40, openeuler, or openeuler2403.
+  --rpm-release RELEASE  Package release base, for example 1. The system suffix is appended separately.
   --prefix PATH          Install prefix inside the package. Defaults to generated /usr.
   --rpm-arch ARCH        x86_64, amd64, x64, aarch64, or arm64.
   --jobs N               Parallel jobs recorded in generated build macros.
@@ -1652,6 +1759,8 @@ SOURCE_URL=\"$DEFAULT_SOURCE_URL\"
 SOURCE_URL_EXPLICIT=0
 ARTIFACT_DIR=
 WORK_DIR=
+RPM_SYSTEM=
+RPM_RELEASE=
 RPM_ARCH=
 JOBS=1
 PREFIX=\"$DEFAULT_PREFIX\"
@@ -1663,6 +1772,8 @@ while [ $# -gt 0 ]; do
     --source-url) [ $# -ge 2 ] || usage_error \"missing value for --source-url\"; SOURCE_URL=\"$2\"; SOURCE_URL_EXPLICIT=1; shift 2 ;;
     --artifact-dir) [ $# -ge 2 ] || usage_error \"missing value for --artifact-dir\"; ARTIFACT_DIR=\"$2\"; shift 2 ;;
     --work-dir) [ $# -ge 2 ] || usage_error \"missing value for --work-dir\"; WORK_DIR=\"$2\"; shift 2 ;;
+    --rpm-system) [ $# -ge 2 ] || usage_error \"missing value for --rpm-system\"; RPM_SYSTEM=\"$2\"; shift 2 ;;
+    --rpm-release) [ $# -ge 2 ] || usage_error \"missing value for --rpm-release\"; RPM_RELEASE=\"$2\"; shift 2 ;;
     --prefix) [ $# -ge 2 ] || usage_error \"missing value for --prefix\"; PREFIX=\"$2\"; shift 2 ;;
     --rpm-arch) [ $# -ge 2 ] || usage_error \"missing value for --rpm-arch\"; RPM_ARCH=\"$2\"; shift 2 ;;
     --jobs) [ $# -ge 2 ] || usage_error \"missing value for --jobs\"; JOBS=\"$2\"; shift 2 ;;
@@ -1677,7 +1788,11 @@ REPO_ROOT=$(repo_root_from_script)
 require_repo_root \"$REPO_ROOT\"
 [ -n \"$ARTIFACT_DIR\" ] || usage_error \"--artifact-dir is required\"
 [ -n \"$WORK_DIR\" ] || usage_error \"--work-dir is required\"
+[ -n \"$RPM_SYSTEM\" ] || usage_error \"--rpm-system is required\"
+[ -n \"$RPM_RELEASE\" ] || usage_error \"--rpm-release is required\"
 [ -n \"$RPM_ARCH\" ] || usage_error \"--rpm-arch is required\"
+validate_rpm_system \"$RPM_SYSTEM\"
+validate_rpm_release \"$RPM_RELEASE\"
 NORMALIZED_ARCH=$(normalize_arch \"$RPM_ARCH\")
 if [ -n \"$SOURCE_ARCHIVE\" ] && [ \"$SOURCE_URL_EXPLICIT\" = 1 ]; then
   usage_error \"use either --source-archive or --source-url, not both\"
@@ -1689,10 +1804,14 @@ maybe_require_exe \"$DRY_RUN\" rpmbuild
 RPMBUILD_ROOT=\"$WORK_DIR/rpmbuild-srpm\"
 SPEC_PATH=\"$RPMBUILD_ROOT/SPECS/$SPEC_NAME\"
 SOURCE_PATH=\"$RPMBUILD_ROOT/SOURCES/$SOURCE_ARCHIVE_NAME\"
-SRPM_NAME=$(srpm_name)
+RPM_FULL_RELEASE=$(rpm_full_release \"$RPM_RELEASE\" \"$RPM_SYSTEM\")
+SRPM_NAME=$(srpm_name \"$RPM_RELEASE\" \"$RPM_SYSTEM\")
 SRPM_OUTPUT=\"$RPMBUILD_ROOT/SRPMS/$SRPM_NAME\"
 
 printf 'Repository root: %s\\n' \"$REPO_ROOT\"
+printf 'RPM system: %s\\n' \"$RPM_SYSTEM\"
+printf 'RPM release: %s\\n' \"$RPM_RELEASE\"
+printf 'RPM full release: %s\\n' \"$RPM_FULL_RELEASE\"
 printf 'Source archive: %s\\n' \"${{SOURCE_ARCHIVE:-$SOURCE_URL}}\"
 printf 'SRPM output: %s\\n' \"$ARTIFACT_DIR/$SRPM_NAME\"
 
@@ -1705,6 +1824,8 @@ if [ \"${{#RPMBUILD_ARGS[@]}}\" -gt 0 ]; then
   run_cmd \"$DRY_RUN\" rpmbuild -bs --target \"$NORMALIZED_ARCH\" \\
     --define \"_topdir $RPMBUILD_ROOT\" \\
     --define \"package_prefix $PREFIX\" \\
+    --define \"package_system $RPM_SYSTEM\" \\
+    --define \"package_release $RPM_RELEASE\" \\
     --define \"_smp_mflags -j$JOBS\" \\
     \"${{RPMBUILD_ARGS[@]}}\" \\
     \"$SPEC_PATH\"
@@ -1712,6 +1833,8 @@ else
   run_cmd \"$DRY_RUN\" rpmbuild -bs --target \"$NORMALIZED_ARCH\" \\
     --define \"_topdir $RPMBUILD_ROOT\" \\
     --define \"package_prefix $PREFIX\" \\
+    --define \"package_system $RPM_SYSTEM\" \\
+    --define \"package_release $RPM_RELEASE\" \\
     --define \"_smp_mflags -j$JOBS\" \\
     \"$SPEC_PATH\"
 fi
@@ -1732,7 +1855,7 @@ source \"$SCRIPT_DIR/rpm-common.sh\"
 
 usage() {{
   cat <<'USAGE'
-Usage: scripts/verify-rpm.sh --rpm PATH --rpm-arch ARCH [--dry-run]
+Usage: scripts/verify-rpm.sh --rpm PATH --rpm-system SYSTEM --rpm-release RELEASE --rpm-arch ARCH [--dry-run]
 
 Validate RPM metadata and payload ownership boundaries.
 USAGE
@@ -1740,11 +1863,15 @@ USAGE
 
 DRY_RUN=0
 RPM_PATH=
+RPM_SYSTEM=
+RPM_RELEASE=
 RPM_ARCH=
 
 while [ $# -gt 0 ]; do
   case \"$1\" in
     --rpm) [ $# -ge 2 ] || usage_error \"missing value for --rpm\"; RPM_PATH=\"$2\"; shift 2 ;;
+    --rpm-system) [ $# -ge 2 ] || usage_error \"missing value for --rpm-system\"; RPM_SYSTEM=\"$2\"; shift 2 ;;
+    --rpm-release) [ $# -ge 2 ] || usage_error \"missing value for --rpm-release\"; RPM_RELEASE=\"$2\"; shift 2 ;;
     --rpm-arch) [ $# -ge 2 ] || usage_error \"missing value for --rpm-arch\"; RPM_ARCH=\"$2\"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --help) usage; exit 0 ;;
@@ -1755,12 +1882,20 @@ done
 REPO_ROOT=$(repo_root_from_script)
 require_repo_root \"$REPO_ROOT\"
 [ -n \"$RPM_PATH\" ] || usage_error \"--rpm is required\"
+[ -n \"$RPM_SYSTEM\" ] || usage_error \"--rpm-system is required\"
+[ -n \"$RPM_RELEASE\" ] || usage_error \"--rpm-release is required\"
 [ -n \"$RPM_ARCH\" ] || usage_error \"--rpm-arch is required\"
+validate_rpm_system \"$RPM_SYSTEM\"
+validate_rpm_release \"$RPM_RELEASE\"
 NORMALIZED_ARCH=$(normalize_arch \"$RPM_ARCH\")
-EXPECTED_RPM=$(rpm_name_for_arch \"$NORMALIZED_ARCH\")
+RPM_FULL_RELEASE=$(rpm_full_release \"$RPM_RELEASE\" \"$RPM_SYSTEM\")
+EXPECTED_RPM=$(rpm_name_for_arch \"$NORMALIZED_ARCH\" \"$RPM_RELEASE\" \"$RPM_SYSTEM\")
 
 if [ \"$DRY_RUN\" = 1 ]; then
   printf 'Would verify RPM: %s\\n' \"$RPM_PATH\"
+  printf 'Would expect RPM system: %s\\n' \"$RPM_SYSTEM\"
+  printf 'Would expect RPM release: %s\\n' \"$RPM_RELEASE\"
+  printf 'Would expect RPM full release: %s\\n' \"$RPM_FULL_RELEASE\"
   printf 'Would expect RPM basename: %s\\n' \"$EXPECTED_RPM\"
   exit 0
 fi
@@ -1773,7 +1908,7 @@ metadata=$(rpm -qip \"$RPM_PATH\")
 printf '%s\\n' \"$metadata\"
 printf '%s\\n' \"$metadata\" | grep -F \"Name        : $PACKAGE_NAME\" >/dev/null || die \"RPM metadata missing expected name\"
 printf '%s\\n' \"$metadata\" | grep -F \"Version     : $PACKAGE_VERSION\" >/dev/null || die \"RPM metadata missing expected version\"
-printf '%s\\n' \"$metadata\" | grep -F \"Release     : $PACKAGE_RELEASE\" >/dev/null || die \"RPM metadata missing expected release\"
+printf '%s\\n' \"$metadata\" | grep -F \"Release     : $RPM_FULL_RELEASE\" >/dev/null || die \"RPM metadata missing expected release\"
 printf '%s\\n' \"$metadata\" | grep -F \"Architecture: $NORMALIZED_ARCH\" >/dev/null || die \"RPM metadata missing expected architecture\"
 
 payload=$(rpm -qpl \"$RPM_PATH\")
@@ -4685,7 +4820,9 @@ jobs:
   (define rpm-bin-arg "rpm")
   (define createrepo-bin-arg "createrepo_c")
   (define deb-arch-arg "amd64")
-  (define rpm-arch-arg "x86_64")
+  (define rpm-system-arg #f)
+  (define rpm-release-arg #f)
+  (define rpm-arch-arg #f)
   (define maintainer-arg "Cutie Deng <cutiedeng@users.noreply.github.com>")
   (define summary-arg "Racket programming language")
   (define license-arg "MIT OR Apache-2.0")
@@ -4732,7 +4869,7 @@ jobs:
                 (set! formula-version-arg version)]
    [("--package-name") name "Package name (default: racket9)"
                       (set! package-name-arg name)]
-   [("--release") release "Package release value (default: 1)"
+   [("--release") release "Debian package release value (default: 1)"
                  (set! release-arg release)]
    [("--prefix") path "Install prefix inside the package (default: /usr)"
                 (set! prefix-arg path)]
@@ -4772,7 +4909,11 @@ jobs:
                          (set! createrepo-bin-arg path)]
    [("--deb-arch") arch "Debian architecture (default: amd64)"
                   (set! deb-arch-arg arch)]
-   [("--rpm-arch") arch "RPM target architecture: x86_64, amd64, x64, aarch64, or arm64 (default: x86_64)"
+   [("--rpm-system") system "RPM target system: el9, fc40, openeuler, or openeuler2403. Required for RPM targets"
+                     (set! rpm-system-arg system)]
+   [("--rpm-release") release "RPM release base before .rpm-system, for example 1. Required for RPM targets"
+                     (set! rpm-release-arg release)]
+   [("--rpm-arch") arch "RPM target architecture: x86_64, amd64, x64, aarch64, or arm64. Required for RPM targets"
                   (set! rpm-arch-arg arch)]
    [("--maintainer") value "Debian Maintainer field"
                     (set! maintainer-arg value)]
@@ -4920,6 +5061,42 @@ jobs:
                                      rpm-repo-gpgcheck-arg)
         (values #f #f #f #f #t #f))
   ) ; end define-values rpm repo config
+  (define rpm-system
+    (cond
+      [(needs-rpm-target? targets)
+       (unless rpm-system-arg
+         (raise-user-error 'main "--rpm-system is required when --target includes rpm, rpm-spec, or rpm-repo")
+       ) ; end unless missing rpm system
+       (assert-rpm-system rpm-system-arg)]
+      [rpm-system-arg
+       (assert-rpm-system rpm-system-arg)]
+      [else #f]
+    ) ; end cond rpm system
+  ) ; end define rpm-system
+  (define rpm-release
+    (cond
+      [(needs-rpm-target? targets)
+       (unless rpm-release-arg
+         (raise-user-error 'main "--rpm-release is required when --target includes rpm, rpm-spec, or rpm-repo")
+       ) ; end unless missing rpm release
+       (assert-rpm-release rpm-release-arg)]
+      [rpm-release-arg
+       (assert-rpm-release rpm-release-arg)]
+      [else #f]
+    ) ; end cond rpm release
+  ) ; end define rpm-release
+  (define rpm-arch
+    (cond
+      [(needs-rpm-target? targets)
+       (unless rpm-arch-arg
+         (raise-user-error 'main "--rpm-arch is required when --target includes rpm, rpm-spec, or rpm-repo")
+       ) ; end unless missing rpm arch
+       (normalize-rpm-arch rpm-arch-arg)]
+      [rpm-arch-arg
+       (normalize-rpm-arch rpm-arch-arg)]
+      [else #f]
+    ) ; end cond rpm arch
+  ) ; end define rpm-arch
   (cfg targets
        racket-root
        make-dir
@@ -4947,7 +5124,9 @@ jobs:
        rpm-bin-arg
        createrepo-bin-arg
        deb-arch-arg
-       (normalize-rpm-arch rpm-arch-arg)
+       rpm-system
+       rpm-release
+       rpm-arch
        maintainer-arg
        summary-arg
        license-arg
@@ -5003,7 +5182,9 @@ jobs:
             (member "rpm" (cfg-targets c) string=?)
             (member "rpm-repo" (cfg-targets c) string=?))
     (println/flush f"RPM target arch: {(cfg-rpm-arch c)}")
+    (println/flush f"RPM target system: {(cfg-rpm-system c)}")
     (println/flush f"RPM package version: {(rpm-version c)}")
+    (println/flush f"RPM package release base: {(cfg-rpm-release c)}")
     (println/flush f"RPM package release: {(rpm-release c)}")
     (println/flush f"RPM package prefix: {(cfg-prefix c)}")
   ) ; end when rpm target or repo target
@@ -5075,6 +5256,9 @@ jobs:
                     #:formula-build-mode [formula-build-mode "full"]
                     #:source-version [source-version "9.2.1"]
                     #:formula-version [formula-version "9.2.1"]
+                    #:rpm-system [rpm-system "el9"]
+                    #:rpm-release [rpm-release "1"]
+                    #:rpm-arch [rpm-arch "x86_64"]
                     #:brew-packages [brew-packages '()])
     (cfg targets
          (build-path test-root "racket-root")
@@ -5103,7 +5287,9 @@ jobs:
          "rpm"
          "createrepo_c"
          "amd64"
-         "x86_64"
+         rpm-system
+         rpm-release
+         rpm-arch
          "Cutie Deng <cutiedeng@users.noreply.github.com>"
          "Racket programming language"
          "MIT OR Apache-2.0"
@@ -5168,7 +5354,7 @@ jobs:
     (check-equal? (normalize-rpm-arch "arm64") "aarch64")
     (check-equal? (normalize-rpm-arch "amd64") "x86_64")
     (check-equal? (brew-source-tgz-name c) "racket-minimal-9.2.1-src.tgz")
-    (check-equal? (rpm-package-name c) "racket9-9.2.1-1.x86_64.rpm")
+    (check-equal? (rpm-package-name c) "racket9-9.2.1-1.el9.x86_64.rpm")
     (check-true (and (member "sandbox-lib" packages string=?) #t))
     (check-true (and (member "errortrace-lib" packages string=?) #t))
     (check-true (and (member "source-syntax" packages string=?) #t))
@@ -5176,6 +5362,24 @@ jobs:
     (check-equal? (count (lambda (name) (string=? name "sandbox-lib")) packages) 1)
     (check-false (member "racket-aarch64-macosx-4" packages string=?))
   ) ; end test-case brew package closure
+
+  (test-case "rpm system release and arch stay explicit"
+    (define el9 (test-cfg #:rpm-system "el9"
+                          #:rpm-release "1"
+                          #:rpm-arch "x86_64"))
+    (define fc40 (test-cfg #:rpm-system "fc40"
+                           #:rpm-release "2"
+                           #:rpm-arch "x86_64"))
+    (define openeuler (test-cfg #:rpm-system "openeuler2403"
+                                #:rpm-release "1"
+                                #:rpm-arch "aarch64"))
+    (check-equal? (rpm-release el9) "1.el9")
+    (check-equal? (rpm-package-name el9) "racket9-9.2.1-1.el9.x86_64.rpm")
+    (check-equal? (rpm-release fc40) "2.fc40")
+    (check-equal? (rpm-package-name fc40) "racket9-9.2.1-2.fc40.x86_64.rpm")
+    (check-equal? (rpm-release openeuler) "1.openeuler2403")
+    (check-equal? (rpm-package-name openeuler) "racket9-9.2.1-1.openeuler2403.aarch64.rpm")
+  ) ; end test-case rpm explicit system release arch
 
   (test-case "deb md5sums track payload files only"
     (define deb-root (make-temporary-file "package-racket-deb-root~a" 'directory))
@@ -5209,7 +5413,7 @@ jobs:
                         #:formula-version "9.2.1.1"))
     (check-equal? (brew-source-tgz-name c) "racket-minimal-9.2.1-src.tgz")
     (check-equal? (apt-deb-name c) "racket9_9.2.1.1-1_amd64.deb")
-    (check-equal? (rpm-package-name c) "racket9-9.2.1-1.x86_64.rpm")
+    (check-equal? (rpm-package-name c) "racket9-9.2.1-1.el9.x86_64.rpm")
     (check-equal? (brew-tgz-member-path c "src/README.txt")
                   "racket-9.2.1/src/README.txt")
     (define content (formula-content/full c test-sha256))
@@ -5241,7 +5445,9 @@ jobs:
         (define spec-content (file->string spec-path))
         (check-true (string-contains? spec-content "Version: 9.2.1"))
         (check-false (string-contains? spec-content "Version: 9.2.1.1"))
-        (check-true (string-contains? spec-content "Release: 1"))
+        (check-true (string-contains? spec-content "%{!?package_system:%global package_system el9}"))
+        (check-true (string-contains? spec-content "%{!?package_release:%global package_release 1}"))
+        (check-true (string-contains? spec-content "Release: %{package_release}.%{package_system}"))
         (check-true (string-contains? spec-content "Source0: https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz"))
         (check-false (string-contains? spec-content "Source1:"))
         (check-true (string-contains? spec-content "%global __brp_compress %{nil}"))

@@ -277,18 +277,24 @@ actual output:
           (list "--target" "rpm"
                 "--artifact-dir" (path-arg artifact-dir)
                 "--work-dir" (path-arg work-dir)
+                "--rpm-system" "openeuler2403"
+                "--rpm-release" "1"
                 "--rpm-arch" "arm64"
                 "--dry-run")))
        (define text (combined-output out err))
        (check-contains text "Targets: rpm")
        (check-contains text "Formula/package version: 9.2.1.1")
        (check-contains text "RPM target arch: aarch64")
+       (check-contains text "RPM target system: openeuler2403")
        (check-contains text "RPM package version: 9.2.1")
-       (check-contains text "RPM package release: 1")
+       (check-contains text "RPM package release base: 1")
+       (check-contains text "RPM package release: 1.openeuler2403")
        (check-contains text "RPM package prefix: /usr")
        (check-contains text "RPM source archive: https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz")
-       (check-contains text "racket9-9.2.1-1.aarch64.rpm")
+       (check-contains text "racket9-9.2.1-1.openeuler2403.aarch64.rpm")
        (check-contains text "--target aarch64")
+       (check-contains text "package_system openeuler2403")
+       (check-contains text "package_release 1")
        (check-not-contains text "make -C")
        (check-not-contains text "payload.tar.gz")
        (check-false (directory-exists? artifact-dir))
@@ -296,6 +302,25 @@ actual output:
       ) ; end lambda temp dir
     ) ; end with-temp-dir
   ) ; end test-case rpm arm64 dry-run
+
+  (test-case "rpm dry-run rejects missing explicit system"
+    (with-temp-dir
+     (lambda (tmp)
+       (define-values (exit-code out err)
+         (run-package
+          (list "--target" "rpm"
+                "--artifact-dir" (path-arg (build-path tmp "artifacts"))
+                "--work-dir" (path-arg (build-path tmp "work"))
+                "--rpm-release" "1"
+                "--rpm-arch" "arm64"
+                "--dry-run")))
+       (check-not-equal? exit-code 0)
+       (check-contains (combined-output out err) "--rpm-system is required")
+       (check-false (directory-exists? (build-path tmp "artifacts")))
+       (check-false (directory-exists? (build-path tmp "work")))
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case rpm missing system
 
   (test-case "rpm-spec dry-run generates no files and does not require racket root"
     (with-temp-dir
@@ -306,12 +331,16 @@ actual output:
        (define-values (out err)
          (run-package/success
           (list "--target" "rpm-spec"
+                "--rpm-system" "openeuler2403"
+                "--rpm-release" "1"
                 "--rpm-arch" "arm64"
                 "--rpm-repo-config" (path-arg config-path)
                 "--dry-run")))
        (define text (combined-output out err))
        (check-contains text "Targets: rpm-spec")
        (check-contains text "RPM target arch: aarch64")
+       (check-contains text "RPM target system: openeuler2403")
+       (check-contains text "RPM package release: 1.openeuler2403")
        (check-contains text "RPM repo config:")
        (check-contains text "Would generate RPM SPEC scaffold in:")
        (check-contains text "Would generate RPM SPEC file:")
@@ -338,6 +367,8 @@ actual output:
        (define-values (out err)
          (run-package/success
           (list "--target" "rpm-spec"
+                "--rpm-system" "openeuler2403"
+                "--rpm-release" "1"
                 "--rpm-arch" "arm64"
                 "--artifact-dir" (path-arg artifact-dir)
                 "--rpm-repo-config" (path-arg config-path))))
@@ -364,10 +395,13 @@ actual output:
                      f"expected executable script: {(path-arg path)}")
        ) ; end for executable script
        (define spec-content (file->string spec-path))
-	       (check-contains spec-content "Source0: https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz")
-	       (check-contains spec-content "%global source_sha256")
-	       (check-contains spec-content "Source0 sha256 mismatch")
-	       (check-contains spec-content "%setup -q -n racket-9.2.1")
+       (check-contains spec-content "%{!?package_system:%global package_system openeuler2403}")
+       (check-contains spec-content "%{!?package_release:%global package_release 1}")
+       (check-contains spec-content "Release: %{package_release}.%{package_system}")
+       (check-contains spec-content "Source0: https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz")
+       (check-contains spec-content "%global source_sha256")
+       (check-contains spec-content "Source0 sha256 mismatch")
+       (check-contains spec-content "%setup -q -n racket-9.2.1")
        (check-contains spec-content "make install DESTDIR=%{buildroot}")
        (check-contains spec-content "%files -f %{name}.files")
        (check-not-contains spec-content "Source1:")
@@ -392,6 +426,8 @@ actual output:
                        (list (path-arg build-path*)
                              "--artifact-dir" (path-arg (build-path tmp "artifacts"))
                              "--work-dir" (path-arg (build-path tmp "rpm-work"))
+                             "--rpm-system" "openeuler2403"
+                             "--rpm-release" "1"
                              "--rpm-arch" "arm64"
                              "--prefix" "/usr"
                              "--dry-run"))
@@ -400,6 +436,8 @@ actual output:
                        (list (path-arg srpm-path)
                              "--artifact-dir" (path-arg (build-path tmp "artifacts"))
                              "--work-dir" (path-arg (build-path tmp "srpm-work"))
+                             "--rpm-system" "openeuler2403"
+                             "--rpm-release" "1"
                              "--rpm-arch" "arm64"
                              "--prefix" "/usr"
                              "--dry-run"))
@@ -411,7 +449,6 @@ actual output:
   (test-case "rpm plus rpm-repo dry-run uses planned rpm output and writes no repo files"
     (with-temp-dir
      (lambda (tmp)
-       (define racket-root (make-fake-racket-root! tmp))
        (define rpm-repo-root (make-fake-rpm-repo! tmp))
        (define config-path (build-path tmp "rpm-repo-config.rktd"))
        (define artifact-dir (build-path tmp "artifacts"))
@@ -421,20 +458,23 @@ actual output:
          (run-package/success
           (list "--target" "rpm"
                 "--target" "rpm-repo"
-                "--racket-root" (path-arg racket-root)
                 "--artifact-dir" (path-arg artifact-dir)
                 "--work-dir" (path-arg work-dir)
+                "--rpm-system" "openeuler2403"
+                "--rpm-release" "1"
                 "--rpm-arch" "arm64"
                 "--rpm-repo-config" (path-arg config-path)
                 "--dry-run")))
        (define text (combined-output out err))
        (check-contains text "Targets: rpm, rpm-repo")
        (check-contains text "RPM target arch: aarch64")
+       (check-contains text "RPM target system: openeuler2403")
        (check-contains text "RPM repo config:")
        (check-contains text "RPM repo root:")
        (check-contains text "RPM package version: 9.2.1")
-       (check-contains text "RPM package release: 1")
-       (check-contains text "RPM repo package: racket9-9.2.1-1.aarch64.rpm")
+       (check-contains text "RPM package release base: 1")
+       (check-contains text "RPM package release: 1.openeuler2403")
+       (check-contains text "RPM repo package: racket9-9.2.1-1.openeuler2403.aarch64.rpm")
        (check-contains text "RPM repo sha256: <dry-run: artifact not built>")
        (check-contains text "Would update RPM repo from planned rpm output")
        (check-contains text "Would copy RPM into repo:")

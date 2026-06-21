@@ -87,9 +87,11 @@ value such as `9.2.1.1` when those package managers need users to see an update
 even though the Racket runtime still reports `9.2.1`.
 
 RPM intentionally uses a different model. The RPM `Version:` field stays equal
-to `source-version`, while the RPM `Release:` field is the package-maintainer
-revision from `--release`. For example, source version `9.2.1` with release `1`
-produces `racket9-9.2.1-1.<arch>.rpm`, not `racket9-9.2.1.1-1.<arch>.rpm`.
+to `source-version`, while the RPM `Release:` field is derived from explicit
+`--rpm-release` and `--rpm-system` fields. For example, source version `9.2.1`
+with `--rpm-release 1` and `--rpm-system el9` produces
+`racket9-9.2.1-1.el9.<arch>.rpm`, not
+`racket9-9.2.1.1-1.<arch>.rpm`.
 
 The Racket source/runtime version is read from
 `racket/src/version/racket_version.h` in `--racket-root`, and must match
@@ -404,6 +406,8 @@ Generate or refresh the `rpm-racket` SPEC repository scaffold:
 racket package-racket.rkt \
   --target rpm-spec \
   --prefix /usr \
+  --rpm-system openeuler2403 \
+  --rpm-release 1 \
   --rpm-arch arm64 \
   --rpm-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-repo-config.rktd
 ```
@@ -427,6 +431,8 @@ Build an RPM from the generated `rpm-racket` repository:
 /Users/cutiedeng/Y2026/M06/D22/rpm-racket/scripts/build-rpm.sh \
   --artifact-dir /path/to/package-racket/artifacts \
   --work-dir /path/to/package-racket/.build/rpm-racket \
+  --rpm-system openeuler2403 \
+  --rpm-release 1 \
   --prefix /usr \
   --rpm-arch arm64
 ```
@@ -437,6 +443,8 @@ Build the matching SRPM:
 /Users/cutiedeng/Y2026/M06/D22/rpm-racket/scripts/build-srpm.sh \
   --artifact-dir /path/to/package-racket/artifacts \
   --work-dir /path/to/package-racket/.build/rpm-racket-srpm \
+  --rpm-system openeuler2403 \
+  --rpm-release 1 \
   --prefix /usr \
   --rpm-arch arm64
 ```
@@ -446,6 +454,8 @@ Create an RPM package directly from `package-racket` on a Linux x64 build:
 ```sh
 racket package-racket.rkt \
   --target rpm \
+  --rpm-system el9 \
+  --rpm-release 1 \
   --prefix /usr \
   --rpm-arch x86_64
 ```
@@ -455,12 +465,26 @@ Create an RPM package directly from `package-racket` on a Linux arm64 build:
 ```sh
 racket package-racket.rkt \
   --target rpm \
+  --rpm-system openeuler2403 \
+  --rpm-release 1 \
   --prefix /usr \
   --rpm-arch arm64
 ```
 
-`--rpm-arch arm64` is normalized to RPM's `aarch64` target. The accepted RPM
-architecture spellings are `x86_64`, `amd64`, `x64`, `aarch64`, and `arm64`.
+`--rpm-system` must be explicit. Supported values are `el9`, `fc40`,
+`openeuler`, and `openeuler2403`. `--rpm-release` is the release base before the
+system suffix, so `--rpm-release 1 --rpm-system fc40` becomes RPM
+`Release: 1.fc40`. `--rpm-arch arm64` is normalized to RPM's `aarch64` target.
+The accepted RPM architecture spellings are `x86_64`, `amd64`, `x64`,
+`aarch64`, and `arm64`.
+
+Common RPM target examples:
+
+```sh
+--rpm-system el9 --rpm-release 1 --rpm-arch x86_64
+--rpm-system fc40 --rpm-release 1 --rpm-arch x86_64
+--rpm-system openeuler2403 --rpm-release 1 --rpm-arch arm64
+```
 
 Create an RPM package directly from `package-racket` and update the generated
 RPM repository:
@@ -469,6 +493,8 @@ RPM repository:
 racket package-racket.rkt \
   --target rpm \
   --target rpm-repo \
+  --rpm-system openeuler2403 \
+  --rpm-release 1 \
   --prefix /usr \
   --rpm-arch arm64 \
   --artifact-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/artifacts \
@@ -482,6 +508,8 @@ Update the RPM repository from an already generated RPM:
 racket package-racket.rkt \
   --target rpm-repo \
   --artifact-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/artifacts \
+  --rpm-system openeuler2403 \
+  --rpm-release 1 \
   --rpm-arch arm64 \
   --rpm-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-repo-config.rktd
 ```
