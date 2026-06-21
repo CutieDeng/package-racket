@@ -366,6 +366,19 @@ racket package-racket.rkt \
   --rpm-arch x86_64
 ```
 
+Create an RPM package from a Linux arm64 build:
+
+```sh
+racket package-racket.rkt \
+  --target rpm \
+  --racket-root /path/to/racket.git \
+  --prefix /opt/racket9 \
+  --rpm-arch arm64
+```
+
+`--rpm-arch arm64` is normalized to RPM's `aarch64` target. The accepted RPM
+architecture spellings are `x86_64`, `amd64`, `x64`, `aarch64`, and `arm64`.
+
 Reuse an already installed staging root instead of running `make unix-style`:
 
 ```sh

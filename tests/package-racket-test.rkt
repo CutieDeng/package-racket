@@ -248,6 +248,33 @@ actual output:
     ) ; end with-temp-dir
   ) ; end test-case apt dry-run isolation
 
+  (test-case "rpm arm64 dry-run normalizes to aarch64 and writes no artifacts"
+    (with-temp-dir
+     (lambda (tmp)
+       (define racket-root (make-fake-racket-root! tmp))
+       (define artifact-dir (build-path tmp "artifacts"))
+       (define work-dir (build-path tmp "work"))
+       (define-values (out err)
+         (run-package/success
+          (list "--target" "rpm"
+                "--racket-root" (path-arg racket-root)
+                "--artifact-dir" (path-arg artifact-dir)
+                "--work-dir" (path-arg work-dir)
+                "--rpm-arch" "arm64"
+                "--dry-run")))
+       (define text (combined-output out err))
+       (check-contains text "Targets: rpm")
+       (check-contains text "Formula/package version: 9.2.1.1")
+       (check-contains text "Racket source version: 9.2.1")
+       (check-contains text "RPM target arch: aarch64")
+       (check-contains text "racket9-9.2.1.1-payload.tar.gz")
+       (check-contains text "--target aarch64")
+       (check-false (directory-exists? artifact-dir))
+       (check-false (directory-exists? work-dir))
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case rpm arm64 dry-run
+
   (test-case "formula-version override drives apt package version"
     (with-temp-dir
      (lambda (tmp)

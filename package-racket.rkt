@@ -404,6 +404,18 @@
   ) ; end unless valid formula build mode
 ) ; end define assert-formula-build-mode
 
+(define (normalize-rpm-arch arch)
+  (begin
+    (define normalized (string-downcase (string-trim arch)))
+    (match normalized
+      [(or "x86_64" "x64" "amd64") "x86_64"]
+      [(or "aarch64" "arm64") "aarch64"]
+      [_ (raise-user-error 'main
+                           f"--rpm-arch must be x86_64, amd64, x64, aarch64, or arm64: {arch}")]
+    ) ; end match normalized arch
+  ) ; end begin normalize-rpm-arch
+) ; end define normalize-rpm-arch
+
 (define (path-contained-in? child parent)
   (define parent-str (path->string (path->directory-path (complete-path* parent))))
   (define child-str (path->string (complete-path* child)))
@@ -652,7 +664,8 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
     ) ; end define metadata
     (for ([needle (in-list (list f"Name        : {(cfg-package-name c)}"
                                  f"Version     : {(cfg-formula-version c)}"
-                                 f"Release     : {(cfg-release c)}"))])
+                                 f"Release     : {(cfg-release c)}"
+                                 f"Architecture: {(cfg-rpm-arch c)}"))])
       (unless (string-contains? metadata needle)
         (raise-user-error 'validate-rpm!
                           f"RPM metadata is missing: {needle}")
@@ -3248,7 +3261,7 @@ jobs:
                 (set! rpm-bin-arg path)]
    [("--deb-arch") arch "Debian architecture (default: amd64)"
                   (set! deb-arch-arg arch)]
-   [("--rpm-arch") arch "RPM target architecture (default: x86_64)"
+   [("--rpm-arch") arch "RPM target architecture: x86_64, amd64, x64, aarch64, or arm64 (default: x86_64)"
                   (set! rpm-arch-arg arch)]
    [("--maintainer") value "Debian Maintainer field"
                     (set! maintainer-arg value)]
@@ -3392,7 +3405,7 @@ jobs:
        rpmbuild-bin-arg
        rpm-bin-arg
        deb-arch-arg
-       rpm-arch-arg
+       (normalize-rpm-arch rpm-arch-arg)
        maintainer-arg
        summary-arg
        license-arg
@@ -3438,6 +3451,9 @@ jobs:
     (println/flush f"Install root: {(clean-path-string (cfg-install-root c))}")
     (println/flush f"Prefix: {(cfg-prefix c)}")
   ) ; end when install-root target
+  (when (member "rpm" (cfg-targets c) string=?)
+    (println/flush f"RPM target arch: {(cfg-rpm-arch c)}")
+  ) ; end when rpm target
   (when (cfg-bottle-root-url c)
     (println/flush f"Bottle root URL: {(cfg-bottle-root-url c)}")
   ) ; end when bottle root url
@@ -3569,6 +3585,8 @@ jobs:
     (define packages (brew-source-packages c))
     (check-equal? (normalize-targets '("all" "brew-ci" "source-release" "apt-release"))
                   '("brew-ci" "brew" "source-release" "apt" "apt-release" "rpm"))
+    (check-equal? (normalize-rpm-arch "arm64") "aarch64")
+    (check-equal? (normalize-rpm-arch "amd64") "x86_64")
     (check-equal? (brew-source-tgz-name c) "racket-minimal-9.2.1-src.tgz")
     (check-true (and (member "sandbox-lib" packages string=?) #t))
     (check-true (and (member "errortrace-lib" packages string=?) #t))
