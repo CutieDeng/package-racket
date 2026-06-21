@@ -295,6 +295,95 @@ actual output:
     ) ; end with-temp-dir
   ) ; end test-case rpm arm64 dry-run
 
+  (test-case "rpm-spec dry-run generates no files and does not require racket root"
+    (with-temp-dir
+     (lambda (tmp)
+       (define rpm-repo-root (make-fake-rpm-repo! tmp))
+       (define config-path (build-path tmp "rpm-repo-config.rktd"))
+       (write-rpm-repo-config! config-path rpm-repo-root)
+       (define-values (out err)
+         (run-package/success
+          (list "--target" "rpm-spec"
+                "--rpm-arch" "arm64"
+                "--rpm-repo-config" (path-arg config-path)
+                "--dry-run")))
+       (define text (combined-output out err))
+       (check-contains text "Targets: rpm-spec")
+       (check-contains text "RPM target arch: aarch64")
+       (check-contains text "RPM repo config:")
+       (check-contains text "RPM definition root:")
+       (check-contains text "Would generate RPM build definitions in:")
+       (check-contains text "Would generate RPM build definition:")
+       (check-not-contains text "Racket root:")
+       (check-false (directory-exists? (build-path rpm-repo-root "SPECS")))
+       (check-false (directory-exists? (build-path rpm-repo-root "scripts")))
+       (check-false (file-exists? (build-path rpm-repo-root "racket9.repo")))
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case rpm-spec dry-run
+
+  (test-case "rpm-spec writes complete rpm-racket build definitions"
+    (with-temp-dir
+     (lambda (tmp)
+       (define rpm-repo-root (make-fake-rpm-repo! tmp))
+       (define config-path (build-path tmp "rpm-repo-config.rktd"))
+       (write-rpm-repo-config! config-path rpm-repo-root)
+       (define-values (out err)
+         (run-package/success
+          (list "--target" "rpm-spec"
+                "--rpm-arch" "arm64"
+                "--rpm-repo-config" (path-arg config-path))))
+       (define text (combined-output out err))
+       (check-contains text "Generated RPM build definitions:")
+       (define spec-path (build-path rpm-repo-root "SPECS" "racket9.spec"))
+       (define common-path (build-path rpm-repo-root "scripts" "rpm-common.sh"))
+       (define build-path* (build-path rpm-repo-root "scripts" "build-rpm.sh"))
+       (define srpm-path (build-path rpm-repo-root "scripts" "build-srpm.sh"))
+       (define verify-path (build-path rpm-repo-root "scripts" "verify-rpm.sh"))
+       (define update-path (build-path rpm-repo-root "scripts" "update-repo.sh"))
+       (define repo-file (build-path rpm-repo-root "racket9.repo"))
+       (define readme-file (build-path rpm-repo-root "README.md"))
+       (for ([path (in-list (list spec-path
+                                   common-path
+                                   build-path*
+                                   srpm-path
+                                   verify-path
+                                   update-path
+                                   repo-file
+                                   readme-file
+                                   (build-path rpm-repo-root "SOURCES" ".gitkeep")
+                                   (build-path rpm-repo-root "repo" "x86_64" "Packages" ".gitkeep")
+                                   (build-path rpm-repo-root "repo" "aarch64" "Packages" ".gitkeep")))])
+         (check-true (file-exists? path) f"expected generated file: {(path-arg path)}")
+       ) ; end for generated file
+       (for ([path (in-list (list common-path build-path* srpm-path verify-path update-path))])
+         (check-true (not (zero? (bitwise-and (file-or-directory-permissions path 'bits) #o111)))
+                     f"expected executable script: {(path-arg path)}")
+       ) ; end for executable script
+       (define spec-content (file->string spec-path))
+       (check-contains spec-content "Source0: racket9-9.2.1.1-payload.tar.gz")
+       (check-contains spec-content "Source1: racket9.files")
+       (check-contains spec-content "%files -f %{SOURCE1}")
+       (check-not-contains spec-content "/usr/bin/racket")
+       (check-contains (file->string common-path) "generate_file_list")
+       (check-contains (file->string build-path*) "rpmbuild -bb")
+       (check-contains (file->string srpm-path) "rpmbuild -bs")
+       (check-contains (file->string verify-path) "rpm -qip")
+       (check-contains (file->string update-path) "createrepo_c --update")
+       (check-contains (file->string repo-file) "baseurl=https://raw.githubusercontent.com/CutieDeng/rpm-racket/main/repo/$basearch")
+       (check-contains (file->string readme-file) "scripts/build-rpm.sh")
+       (check-contains (file->string readme-file) "repo/x86_64")
+       (define bash-bin (find-executable-path "bash"))
+       (when bash-bin
+         (for ([path (in-list (list common-path build-path* srpm-path verify-path update-path))])
+           (run-command! 'rpm-spec-script-syntax bash-bin (list "-n" (path-arg path)))
+         ) ; end for bash syntax
+         (run-command! 'rpm-spec-script-help bash-bin (list (path-arg build-path*) "--help"))
+       ) ; end when bash exists
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case rpm-spec writes definitions
+
   (test-case "rpm plus rpm-repo dry-run uses planned rpm output and writes no repo files"
     (with-temp-dir
      (lambda (tmp)
@@ -322,6 +411,8 @@ actual output:
        (check-contains text "RPM repo package: racket9-9.2.1.1-1.aarch64.rpm")
        (check-contains text "RPM repo sha256: <dry-run: artifact not built>")
        (check-contains text "Would update RPM repo from planned rpm output")
+       (check-contains text "Would copy RPM into repo:")
+       (check-contains text "Would run createrepo_c --update")
        (check-false (file-exists? (build-path rpm-repo-root "racket9.repo")))
        (check-false (directory-exists? (build-path rpm-repo-root "repo")))
        (check-false (directory-exists? artifact-dir))
