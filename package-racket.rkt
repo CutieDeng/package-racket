@@ -2440,8 +2440,10 @@ jobs:
           git commit -F - <<'COMMIT_MESSAGE'
           (BUILD \"Update racket@9 bottles\"
 
-          ((CI \"brew publish bottles\" update-bottle-metadata))
-          \"Update Homebrew bottle metadata. [skip bottles]\"
+          ((CI \"brew publish bottles\" update-bottle-metadata)
+           \"[skip bottles]\"
+           \"[skip ci]\")
+          \"Update Homebrew bottle metadata.\"
           )
           COMMIT_MESSAGE
           git push origin HEAD:main
@@ -2495,6 +2497,7 @@ jobs:
                                  "gh release upload"
                                  "brew bottle --merge --write --no-commit"
                                  "[skip bottles]"
+                                 "[skip ci]"
                                  "contents: write"))])
       (unless (string-contains? content needle)
         (raise-user-error 'validate-publish-workflow! f"publish workflow missing: {needle}")

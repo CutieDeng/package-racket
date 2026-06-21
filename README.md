@@ -231,7 +231,8 @@ workflows. The generated workflows pass `--bottle-root-url` to Homebrew as
 The generated `publish.yml` runs on pushes to `main`, builds macOS arm64 and
 Linux x64 bottles, uploads them to the release selected by
 `--bottle-root-url`, merges the bottle JSON back into `Formula/racket@9.rb`,
-then pushes a `[skip bottles]` Formula update to avoid a publish loop.
+then pushes a Formula update whose feature metadata includes `[skip bottles]`
+and `[skip ci]` to avoid a publish loop.
 
 ### Package Prefix
 
