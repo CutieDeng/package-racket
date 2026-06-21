@@ -821,6 +821,7 @@ License: {(cfg-license c)}
 URL: {(cfg-url c)}
 Source0: {source-name}
 AutoReqProv: no
+%global __brp_compress %{{nil}}
 
 %description
 Racket packaged from a local checkout.
@@ -854,6 +855,7 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
                                  f"Version: {(cfg-formula-version c)}"
                                  f"Release: {(cfg-release c)}"
                                  f"Source0: {source-name}"
+                                 "%global __brp_compress %{nil}"
                                  "tar -xzf %{SOURCE0} -C %{buildroot}"
                                  (car file-list)))])
       (unless (string-contains? content needle)
@@ -3871,6 +3873,7 @@ jobs:
         (define spec-content (file->string spec-path))
         (check-true (string-contains? spec-content "Version: 9.2.1.1"))
         (check-true (string-contains? spec-content "Source0: racket9-9.2.1.1-payload.tar.gz"))
+        (check-true (string-contains? spec-content "%global __brp_compress %{nil}"))
         (check-true (and (member "/usr/bin/racket" file-list string=?) #t))
         (check-true (and (member "%dir /usr/lib/racket" file-list string=?) #t))
         (check-true (and (member "/usr/lib/racket/collects/main.rkt" file-list string=?) #t))
