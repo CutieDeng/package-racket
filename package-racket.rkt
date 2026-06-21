@@ -49,6 +49,7 @@
    summary
    license
    url
+   bottle-root-url
    homebrew-tap
    brew-helper
    formula
@@ -298,6 +299,10 @@
   (or (member "brew" targets string=?)
       (member "brew-ci" targets string=?)))
 
+(define (needs-bottle-root-url? targets)
+  (or (member "brew" targets string=?)
+      (member "brew-ci" targets string=?)))
+
 (define (prefix-relative-elements prefix)
   (define trimmed (regexp-replace #rx"^/+" prefix ""))
   (when (string=? trimmed "")
@@ -311,6 +316,25 @@
   (unless (absolute-path? (string->path prefix))
     (raise-user-error 'main f"--prefix must be absolute: {prefix}"))
   (void))
+
+(define (assert-bottle-root-url root-url)
+  (begin
+    (unless (and (string? root-url) (not (string=? root-url "")))
+      (raise-user-error 'main "--bottle-root-url must be a non-empty string")
+    ) ; end unless non-empty bottle root url
+    (unless (string-prefix? root-url "https://")
+      (raise-user-error 'main f"--bottle-root-url must start with https://: {root-url}")
+    ) ; end unless https bottle root url
+    (when (or (string-contains? root-url " ")
+              (string-contains? root-url "\"")
+              (string-contains? root-url "'"))
+      (raise-user-error 'main f"--bottle-root-url contains unsafe characters: {root-url}")
+    ) ; end when unsafe bottle root url
+    (when (string-suffix? root-url "/")
+      (raise-user-error 'main f"--bottle-root-url must not end with /: {root-url}")
+    ) ; end when trailing slash bottle root url
+  ) ; end begin assert-bottle-root-url
+) ; end define assert-bottle-root-url
 
 (define (path-contained-in? child parent)
   (define parent-str (path->string (path->directory-path (complete-path* parent))))
@@ -665,7 +689,10 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
   f"https://github.com/CutieDeng/racket/releases/download/v{(cfg-version c)}/{(brew-source-tgz-name c)}")
 
 (define (formula-root-url c)
-  f"root_url \"https://github.com/CutieDeng/racket/releases/download/v{(cfg-version c)}\"")
+  f"root_url \"{(cfg-bottle-root-url c)}\"")
+
+(define (formula-root-url-line c)
+  f"    {(formula-root-url c)}")
 
 (define (formula-sha256 formula-path)
   (begin
@@ -731,6 +758,20 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
     ) ; end unless one root_url
   ) ; end begin validate-formula-template!
 ) ; end define validate-formula-template!
+
+(define (set-formula-bottle-root-url! c formula-path)
+  (begin
+    (assert-nonempty-file 'set-formula-bottle-root-url! formula-path)
+    (define content (file->string formula-path))
+    (define root-url-rx #px"(?m:^    root_url \"[^\"]+\")")
+    (unless (= 1 (regexp-match-count root-url-rx content))
+      (raise-user-error 'set-formula-bottle-root-url!
+                        f"formula must contain exactly one bottle root_url line: {(clean-path-string formula-path)}")
+    ) ; end unless exactly one root_url
+    (write-text-file! formula-path (regexp-replace root-url-rx content (formula-root-url-line c)))
+    (validate-formula-file! c formula-path)
+  ) ; end begin set-formula-bottle-root-url!
+) ; end define set-formula-bottle-root-url!
 
 (define (validate-brew-tgz! c)
   (begin
@@ -840,6 +881,9 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
     ) ; end define args
     (run! 'build-brew! (clean-path-string (cfg-racket-bin c)) args #:dry-run? (cfg-dry-run? c))
     (unless (cfg-dry-run? c)
+      (when (cfg-update-formula? c)
+        (set-formula-bottle-root-url! c formula-for-helper)
+      ) ; end when update formula root url
       (if (cfg-update-formula? c)
           (validate-brew-artifact! c formula-for-helper)
           (validate-brew-tgz! c))
@@ -900,7 +944,6 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
   (begin
     (required-config-string config 'formula)
     (required-config-string config 'artifact-prefix)
-    (required-config-string config 'publish-label)
     (define bottle-runners (config-ref* config 'bottle-runners '()))
     (define syntax-runners (config-ref* config 'syntax-runners '()))
     (assert-runner-list 'validate-brew-ci-config! bottle-runners)
@@ -933,18 +976,32 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
   ) ; end begin workflow-runner-lines
 ) ; end define workflow-runner-lines
 
+(define (workflow-bottle-runner-lines runner)
+  (begin
+    (define os (runner-ref runner 'os #f))
+    (define container (runner-ref runner 'container #f))
+    (string-append
+     f"          - os: {os}
+"
+     (if container
+         f"            container: {container}
+"
+         "")
+    ) ; end string-append bottle runner lines
+  ) ; end begin workflow-bottle-runner-lines
+) ; end define workflow-bottle-runner-lines
+
 (define (tests-workflow-content c config)
   (begin
     (define formula (required-config-string config 'formula))
     (define artifact-prefix (required-config-string config 'artifact-prefix))
     (define bottle-runners (config-ref* config 'bottle-runners '()))
     (define syntax-runners (config-ref* config 'syntax-runners '()))
-    (define root-url (formula-source-root-url c))
+    (define root-url (cfg-bottle-root-url c))
     (define matrix-os "${{ matrix.os }}")
     (define container-expr "${{ matrix.container }}")
     (define token-expr "${{ secrets.GITHUB_TOKEN }}")
     (define test-formula-if "matrix.test_formula")
-    (define event-name-if "github.event_name")
     (define runner-lines
       (string-append
        (apply string-append (map (lambda (runner) (workflow-runner-lines runner #t)) bottle-runners))
@@ -954,9 +1011,6 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
     f"name: brew test-bot
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
 
 jobs:
@@ -988,7 +1042,7 @@ jobs:
         if: {test-formula-if}
 
       - name: Upload bottles as artifact
-        if: always() && {event-name-if} == 'pull_request'
+        if: {test-formula-if}
         uses: actions/upload-artifact@v6
         with:
           name: {artifact-prefix}_{matrix-os}
@@ -999,31 +1053,70 @@ jobs:
 
 (define (publish-workflow-content c config)
   (begin
-    (define publish-label (required-config-string config 'publish-label))
-    (define root-url (formula-source-root-url c))
-    (define label-if "github.event.pull_request.labels.*.name")
+    (define formula (required-config-string config 'formula))
+    (define artifact-prefix (required-config-string config 'artifact-prefix))
+    (define bottle-runners (config-ref* config 'bottle-runners '()))
+    (define root-url (cfg-bottle-root-url c))
+    (define release-tag f"v{(cfg-version c)}")
+    (define matrix-os "${{ matrix.os }}")
+    (define container-expr "${{ matrix.container }}")
     (define token-expr "${{ secrets.GITHUB_TOKEN }}")
-    (define repo-expr "$GITHUB_REPOSITORY")
-    (define pr-expr "${{ github.event.pull_request.number }}")
-    (define fork-if "github.event.pull_request.head.repo.fork == false")
-    (define branch-expr "${{ github.event.pull_request.head.ref }}")
-    f"name: brew pr-pull
+    (define github-repository-expr "${{ github.repository }}")
+    (define skip-bottles-if "github.event_name != 'push' || contains(github.event.head_commit.message, '[skip bottles]') == false")
+    (define runner-lines
+      (apply string-append (map workflow-bottle-runner-lines bottle-runners))
+    ) ; end define runner-lines
+    (define bottle-json-count "${#bottle_jsons[@]}")
+    (define bottle-tarball-count "${#bottle_tarballs[@]}")
+    (define bottle-json-array "\"${bottle_jsons[@]}\"")
+    (define bottle-tarball-array "\"${bottle_tarballs[@]}\"")
+    f"name: brew publish bottles
 
 on:
-  pull_request_target:
-    types:
-      - labeled
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
 jobs:
-  pr-pull:
-    if: contains({label-if}, '{publish-label}')
+  build-bottles:
+    if: {skip-bottles-if}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+{runner-lines}    runs-on: {matrix-os}
+    container: {container-expr}
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@main
+        with:
+          token: {token-expr}
+
+      - run: brew test-bot --only-cleanup-before
+
+      - run: brew test-bot --only-setup
+
+      - run: brew test-bot --only-tap-syntax
+
+      - run: brew test-bot --only-formulae --testing-formulae={formula} --skip-dependents --root-url={root-url}
+
+      - name: Upload bottles as artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: {artifact-prefix}_{matrix-os}
+          path: '*.bottle.*'
+
+  publish-bottles:
+    needs: build-bottles
+    if: {skip-bottles-if}
     runs-on: ubuntu-latest
     permissions:
       actions: read
-      checks: read
       contents: write
-      issues: read
-      pull-requests: write
     steps:
       - name: Set up Homebrew
         uses: Homebrew/actions/setup-homebrew@main
@@ -1033,28 +1126,53 @@ jobs:
       - name: Set up git
         uses: Homebrew/actions/git-user-config@main
 
-      - name: Pull bottles
-        env:
-          HOMEBREW_GITHUB_API_TOKEN: {token-expr}
-          PULL_REQUEST: {pr-expr}
-        run: brew pr-pull --debug --tap=\"{repo-expr}\" --root-url=\"{root-url}\" \"$PULL_REQUEST\"
-
-      - name: Push commits
-        uses: Homebrew/actions/git-try-push@main
+      - name: Download bottle artifacts
+        uses: actions/download-artifact@v6
         with:
-          branch: main
+          pattern: {artifact-prefix}_*
+          path: bottles
+          merge-multiple: true
 
-      - name: Delete branch
-        if: {fork-if}
+      - name: Publish bottles and update Formula
         env:
-          BRANCH: {branch-expr}
-        run: git push --delete origin \"$BRANCH\"
+          GH_TOKEN: {token-expr}
+          GH_REPO: {github-repository-expr}
+          BOTTLE_ROOT_URL: {root-url}
+          RELEASE_TAG: {release-tag}
+        run: |
+          set -euo pipefail
+
+          mapfile -t bottle_jsons < <(find \"$GITHUB_WORKSPACE/bottles\" -name '*.bottle.json' -type f | sort)
+          mapfile -t bottle_tarballs < <(find \"$GITHUB_WORKSPACE/bottles\" -name '*.bottle.tar.gz' -type f | sort)
+
+          if [ \"{bottle-json-count}\" -eq 0 ]; then
+            echo \"No bottle JSON files were produced.\"
+            exit 1
+          fi
+
+          if [ \"{bottle-tarball-count}\" -eq 0 ]; then
+            echo \"No bottle tarballs were produced.\"
+            exit 1
+          fi
+
+          gh release view \"$RELEASE_TAG\" >/dev/null
+
+          cd \"$(brew --repository \"$GITHUB_REPOSITORY\")\"
+          brew bottle --merge --write --no-commit --root-url=\"$BOTTLE_ROOT_URL\" {bottle-json-array}
+
+          gh release upload \"$RELEASE_TAG\" {bottle-tarball-array} --clobber
+
+          if git diff --quiet -- Formula/racket@9.rb; then
+            echo \"Formula bottle block is already current.\"
+            exit 0
+          fi
+
+          git add Formula/racket@9.rb
+          git commit -m '(BUILD \"Update racket@9 bottles\") [skip bottles]'
+          git push origin HEAD:main
 "
   ) ; end begin publish-workflow-content
 ) ; end define publish-workflow-content
-
-(define (formula-source-root-url c)
-  f"https://github.com/CutieDeng/racket/releases/download/v{(cfg-version c)}")
 
 (define (validate-yaml! c path)
   (begin
@@ -1072,11 +1190,11 @@ jobs:
     (define content (file->string path))
     (define formula (required-config-string config 'formula))
     (for ([needle (in-list (list "name: brew test-bot"
+                                 "pull_request:"
                                  f"--testing-formulae={formula}"
-                                 f"--root-url={(formula-source-root-url c)}"
+                                 f"--root-url={(cfg-bottle-root-url c)}"
                                  "test_formula: true"
                                  "if: matrix.test_formula"
-                                 "if: always() && github.event_name == 'pull_request'"
                                  "actions/upload-artifact@v6"))])
       (unless (string-contains? content needle)
         (raise-user-error 'validate-tests-workflow! f"tests workflow missing: {needle}")
@@ -1089,12 +1207,19 @@ jobs:
   (begin
     (validate-yaml! c path)
     (define content (file->string path))
-    (define publish-label (required-config-string config 'publish-label))
-    (for ([needle (in-list (list "name: brew pr-pull"
-                                 f"contains(github.event.pull_request.labels.*.name, '{publish-label}')"
-                                 "brew pr-pull --debug"
-                                 f"--root-url=\"{(formula-source-root-url c)}\""
-                                 "if: github.event.pull_request.head.repo.fork == false"
+    (define formula (required-config-string config 'formula))
+    (for ([needle (in-list (list "name: brew publish bottles"
+                                 "push:"
+                                 "workflow_dispatch:"
+                                 "build-bottles:"
+                                 "publish-bottles:"
+                                 f"--testing-formulae={formula}"
+                                 f"--root-url={(cfg-bottle-root-url c)}"
+                                 "actions/download-artifact@v6"
+                                 "GH_REPO:"
+                                 "gh release upload"
+                                 "brew bottle --merge --write --no-commit"
+                                 "[skip bottles]"
                                  "contents: write"))])
       (unless (string-contains? content needle)
         (raise-user-error 'validate-publish-workflow! f"publish workflow missing: {needle}")
@@ -1207,6 +1332,7 @@ jobs:
   (define summary-arg "Racket programming language")
   (define license-arg "MIT OR Apache-2.0")
   (define url-arg "https://racket-lang.org/")
+  (define bottle-root-url-arg #f)
   (define homebrew-tap-arg #f)
   (define brew-helper-arg #f)
   (define formula-arg #f)
@@ -1275,6 +1401,8 @@ jobs:
                 (set! license-arg value)]
    [("--url") value "Package URL/Homepage"
             (set! url-arg value)]
+   [("--bottle-root-url") url "Required for brew and brew-ci; bottle release root URL"
+                         (set! bottle-root-url-arg url)]
    [("--homebrew-tap") path "Required for brew and brew-ci; Homebrew tap root"
                       (set! homebrew-tap-arg path)]
    [("--brew-helper") path "Homebrew source helper (derived from --homebrew-tap when omitted)"
@@ -1309,6 +1437,12 @@ jobs:
   (when (and (needs-homebrew-tap? targets) (not homebrew-tap-arg))
     (raise-user-error 'main "--homebrew-tap is required when --target includes brew or brew-ci")
   ) ; end when missing homebrew tap
+  (when (and (needs-bottle-root-url? targets) (not bottle-root-url-arg))
+    (raise-user-error 'main "--bottle-root-url is required when --target includes brew or brew-ci")
+  ) ; end when missing bottle root url
+  (when bottle-root-url-arg
+    (assert-bottle-root-url bottle-root-url-arg)
+  ) ; end when bottle root url provided
   (define homebrew-tap (and homebrew-tap-arg (complete-path* homebrew-tap-arg)))
   (define brew-helper
     (cond
@@ -1363,6 +1497,7 @@ jobs:
        summary-arg
        license-arg
        url-arg
+       bottle-root-url-arg
        homebrew-tap
        brew-helper
        formula
@@ -1387,6 +1522,9 @@ jobs:
   (println/flush f"Work dir: {(clean-path-string (cfg-work-dir c))}")
   (println/flush f"Install root: {(clean-path-string (cfg-install-root c))}")
   (println/flush f"Prefix: {(cfg-prefix c)}")
+  (when (cfg-bottle-root-url c)
+    (println/flush f"Bottle root URL: {(cfg-bottle-root-url c)}")
+  ) ; end when bottle root url
 ) ; end define print-config
 
 (define (main)
