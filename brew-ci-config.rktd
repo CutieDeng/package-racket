@@ -2,5 +2,7 @@
       (artifact-prefix . "bottles")
       (bottle-runners . (#hash((os . "macos-26"))
                          #hash((os . "ubuntu-latest")
+                               (container . "ghcr.io/homebrew/brew:main"))
+                         #hash((os . "ubuntu-24.04-arm")
                                (container . "ghcr.io/homebrew/brew:main"))))
       (syntax-runners . (#hash((os . "macos-15-intel")))))
