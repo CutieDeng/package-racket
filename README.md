@@ -18,6 +18,9 @@ packaging flows:
   automatically on each push to `main`. This target is intentionally not part
   of `all`.
 - `apt`: installs into a staged root with `make unix-style` and builds a `.deb`.
+- `apt-release`: uploads the configured `.deb` from `--artifact-dir` to a
+  GitHub release with the GitHub REST API. This target can be combined with
+  `apt` or used to upload an already generated `.deb`.
 - `rpm`: installs into a staged root with `make unix-style` and builds a `.rpm`.
 
 All inputs are passed by named options. There are no positional arguments.
@@ -108,10 +111,10 @@ racket tools/check-commit-message.rkt --message-file .commit
 - For `brew-ci`: Ruby for YAML validation, plus an explicit
   `--bottle-root-url` for `brew test-bot`, release uploads, and
   `brew bottle --merge`.
-- For `source-release`: a fine-grained GitHub personal access token for
-  `CutieDeng/racket` with `Contents: Read and write`, stored locally as one
-  Racket string datum in `secret/ghtoken.rktd`. The file is ignored by Git and
-  should be mode `600`.
+- For `source-release` and `apt-release`: a fine-grained GitHub personal
+  access token for the configured release repository, with
+  `Contents: Read and write`, stored locally as one Racket string datum in
+  `secret/ghtoken.rktd`. The file is ignored by Git and should be mode `600`.
 - For `apt`: `dpkg-deb`, or `ar` + `tar` + `xz` through the automatic fallback.
 - For `rpm`: `rpmbuild`.
 
@@ -162,6 +165,32 @@ racket package-racket.rkt \
   --artifact-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/artifacts
 ```
 
+Create a Debian package and upload the resulting `.deb` to the configured
+GitHub release:
+
+```sh
+racket package-racket.rkt \
+  --target apt \
+  --target apt-release \
+  --racket-root /path/to/racket.git \
+  --package-name racket9 \
+  --release 1 \
+  --prefix /opt/racket9 \
+  --deb-arch amd64 \
+  --artifact-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/artifacts \
+  --work-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/.build \
+  --apt-release-config /Users/cutiedeng/Y2026/M06/D21/package-racket/apt-release-config.rktd
+```
+
+Upload an already generated `.deb` without rebuilding it:
+
+```sh
+racket package-racket.rkt \
+  --target apt-release \
+  --artifact-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/artifacts \
+  --apt-release-config /Users/cutiedeng/Y2026/M06/D21/package-racket/apt-release-config.rktd
+```
+
 Generate the Homebrew tap CI workflows from `brew-ci-config.rktd` and overwrite
 the tap workflow files after validation:
 
@@ -177,7 +206,7 @@ Use `--dry-run` with any entrypoint to print the resolved paths and planned
 actions without writing artifacts, replacing tap files, or uploading release
 assets.
 
-### Source Release Token
+### GitHub Release Token
 
 The stable GitHub release settings live in `source-release-config.rktd`. The
 default token file is `secret/ghtoken.rktd`, and it must contain exactly one
@@ -195,6 +224,10 @@ chmod 700 secret
 $EDITOR secret/ghtoken.rktd
 chmod 600 secret/ghtoken.rktd
 ```
+
+The stable Debian package release settings live in `apt-release-config.rktd`.
+Its asset name must match the `.deb` basename under `--artifact-dir`, for
+example `racket9_9.2.1-1_amd64.deb`.
 
 For `brew`, `--formula` means the final tap formula path. When omitted, it is
 derived from the explicit `--homebrew-tap` as `Formula/racket@9.rb`.
@@ -239,6 +272,9 @@ and `[skip ci]` to avoid a publish loop.
 `--prefix` controls where the staged installation is rooted inside `apt` and
 `rpm` packages. For example, with `--prefix /opt/racket9`, the staged
 installation should be under `/tmp/racket-package-root/opt/racket9`.
+The generated `.deb` file itself is written to `--artifact-dir`, not to `/opt`.
+After a user installs that `.deb`, the package payload is installed under the
+configured prefix, such as `/opt/racket9`.
 
 This value is not the Homebrew installation prefix. Homebrew chooses its own
 Cellar and opt paths when building the Formula, and `source-release` only

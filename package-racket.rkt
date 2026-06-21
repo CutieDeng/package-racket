@@ -64,6 +64,11 @@
    source-release-tag
    source-release-asset
    source-release-token-file
+   apt-release-config
+   apt-release-repo
+   apt-release-tag
+   apt-release-asset
+   apt-release-token-file
    replace-release-asset
    ruby-bin
    brew-packages
@@ -285,14 +290,14 @@
       ) ; end for*/list pieces
     ) ; end define pieces
     (when (null? pieces)
-      (raise-user-error 'main "missing --target; use brew, brew-ci, source-release, apt, rpm, or all")
+      (raise-user-error 'main "missing --target; use brew, brew-ci, source-release, apt, apt-release, rpm, or all")
     ) ; end when missing target
     (define expanded
       (append-map
        (lambda (target)
          (match target
            ["all" '("brew" "apt" "rpm")]
-           [(or "brew" "apt" "rpm" "brew-ci" "source-release") (list target)]
+           [(or "brew" "apt" "apt-release" "rpm" "brew-ci" "source-release") (list target)]
            [_ (raise-user-error 'main f"unknown --target: {target}")]
          ) ; end match target
        ) ; end lambda target
@@ -300,13 +305,16 @@
       ) ; end append-map
     ) ; end define expanded
     (filter (lambda (target) (member target expanded string=?))
-            '("brew-ci" "brew" "source-release" "apt" "rpm"))
+            '("brew-ci" "brew" "source-release" "apt" "apt-release" "rpm"))
   ) ; end begin normalize-targets
 ) ; end define normalize-targets
 
+(define (upload-only-target? target)
+  (or (string=? target "source-release")
+      (string=? target "apt-release")))
+
 (define (needs-racket-root? targets)
-  (not (and (= (length targets) 1)
-            (member "source-release" targets string=?))))
+  (not (andmap upload-only-target? targets)))
 
 (define (needs-homebrew-tap? targets)
   (or (member "brew" targets string=?)
@@ -457,12 +465,17 @@ Description: {(cfg-summary c)}
   ) ; end begin validate-deb!
 ) ; end define validate-deb!
 
+(define (apt-deb-name c)
+  f"{(cfg-package-name c)}_{(cfg-version c)}-{(cfg-release c)}_{(cfg-deb-arch c)}.deb")
+
+(define (apt-deb-path c)
+  (build-path (cfg-artifact-dir c) (apt-deb-name c)))
+
 (define (build-apt! c)
   (begin
     (define install-root (cfg-install-root c))
     (define deb-root (build-path (cfg-work-dir c) "apt-root"))
-    (define deb-name f"{(cfg-package-name c)}_{(cfg-version c)}-{(cfg-release c)}_{(cfg-deb-arch c)}.deb")
-    (define deb-path (build-path (cfg-artifact-dir c) deb-name))
+    (define deb-path (apt-deb-path c))
     (println/flush f"APT package: {(clean-path-string deb-path)}")
     (unless (cfg-dry-run? c)
       (make-directory* (cfg-artifact-dir c))
@@ -1694,21 +1707,21 @@ end
   ) ; end begin config-required-string
 ) ; end define config-required-string
 
-(define (config-optional-string config key default)
+(define (config-optional-string who config key default)
   (begin
     (define value (hash-ref config key default))
     (unless (and (string? value) (not (string=? value "")))
-      (raise-user-error 'source-release-config f"config key must be a non-empty string: {key}")
+      (raise-user-error who f"config key must be a non-empty string: {key}")
     ) ; end unless optional string
     value
   ) ; end begin config-optional-string
 ) ; end define config-optional-string
 
-(define (config-optional-boolean config key default)
+(define (config-optional-boolean who config key default)
   (begin
     (define value (hash-ref config key default))
     (unless (boolean? value)
-      (raise-user-error 'source-release-config f"config key must be boolean: {key}")
+      (raise-user-error who f"config key must be boolean: {key}")
     ) ; end unless boolean
     value
   ) ; end begin config-optional-boolean
@@ -1978,7 +1991,8 @@ body: {(safe-response-body body)}")]
                         #:query "per_page=100")
    token))
 
-(define (github-upload-asset! upload-url asset-name asset-path token)
+(define (github-upload-asset! upload-url asset-name asset-path token
+                              #:content-type [content-type "application/octet-stream"])
   (begin
     (define clean-upload-url (regexp-replace #rx"\\{.*\\}$" upload-url ""))
     (define-values (host path)
@@ -1992,7 +2006,7 @@ body: {(safe-response-body body)}")]
      path
      token
      #:data data
-     #:content-type "application/gzip"
+     #:content-type content-type
      #:ok '(201))
   ) ; end begin github-upload-asset!
 ) ; end define github-upload-asset!
@@ -2020,21 +2034,21 @@ body: {(safe-response-body body)}")]
   ) ; end begin release-asset-by-name
 ) ; end define release-asset-by-name
 
-(define (source-release-config c)
+(define (release-upload-config c who config-path repo-arg tag-arg asset-arg token-file-arg
+                               repo-key tag-key asset-key token-key)
   (begin
-    (define config-path (cfg-source-release-config c))
-    (define raw (read-rktd-hash 'source-release-config config-path))
-    (define repo (or (cfg-source-release-repo c)
-                     (config-required-string 'source-release-config raw 'source-release-repo)))
-    (define tag (or (cfg-source-release-tag c)
-                    (config-required-string 'source-release-config raw 'source-release-tag)))
-    (define asset-name (or (cfg-source-release-asset c)
-                           (config-required-string 'source-release-config raw 'source-release-asset)))
-    (define token-file-value (or (cfg-source-release-token-file c)
-                                 (config-optional-string raw 'source-release-token-file "secret/ghtoken.rktd")))
+    (define raw (read-rktd-hash who config-path))
+    (define repo (or repo-arg
+                     (config-required-string who raw repo-key)))
+    (define tag (or tag-arg
+                    (config-required-string who raw tag-key)))
+    (define asset-name (or asset-arg
+                           (config-required-string who raw asset-key)))
+    (define token-file-value (or token-file-arg
+                                 (config-optional-string who raw token-key "secret/ghtoken.rktd")))
     (define token-file (resolve-config-path config-path token-file-value))
     (define replace? (if (eq? (cfg-replace-release-asset c) 'unset)
-                         (config-optional-boolean raw 'replace-release-asset #f)
+                         (config-optional-boolean who raw 'replace-release-asset #f)
                          (cfg-replace-release-asset c)))
     (hash 'repo repo
           'tag tag
@@ -2042,8 +2056,34 @@ body: {(safe-response-body body)}")]
           'token-file token-file
           'replace? replace?
           'config-path config-path)
-  ) ; end begin source-release-config
-) ; end define source-release-config
+  ) ; end begin release-upload-config
+) ; end define release-upload-config
+
+(define (source-release-config c)
+  (release-upload-config c
+                         'source-release-config
+                         (cfg-source-release-config c)
+                         (cfg-source-release-repo c)
+                         (cfg-source-release-tag c)
+                         (cfg-source-release-asset c)
+                         (cfg-source-release-token-file c)
+                         'source-release-repo
+                         'source-release-tag
+                         'source-release-asset
+                         'source-release-token-file))
+
+(define (apt-release-config c)
+  (release-upload-config c
+                         'apt-release-config
+                         (cfg-apt-release-config c)
+                         (cfg-apt-release-repo c)
+                         (cfg-apt-release-tag c)
+                         (cfg-apt-release-asset c)
+                         (cfg-apt-release-token-file c)
+                         'apt-release-repo
+                         'apt-release-tag
+                         'apt-release-asset
+                         'apt-release-token-file))
 
 (define (validate-source-release-artifact! c asset-name)
   (begin
@@ -2057,9 +2097,26 @@ body: {(safe-response-body body)}")]
   ) ; end begin validate-source-release-artifact!
 ) ; end define validate-source-release-artifact!
 
+(define (validate-apt-release-artifact! c asset-name)
+  (begin
+    (define asset-path (build-path (cfg-artifact-dir c) asset-name))
+    (assert-nonempty-file 'validate-apt-release-artifact! asset-path)
+    (unless (regexp-match? #rx"[.]deb$" asset-name)
+      (raise-user-error 'validate-apt-release-artifact!
+                        f"apt release asset must end with .deb: {asset-name}")
+    ) ; end unless deb asset name
+    (unless (equal? (file-name-from-path asset-path) (string->path asset-name))
+      (raise-user-error 'validate-apt-release-artifact!
+                        f"apt release asset path basename does not match config asset name: {(clean-path-string asset-path)}")
+    ) ; end unless asset basename
+    (validate-deb! c asset-path)
+    asset-path
+  ) ; end begin validate-apt-release-artifact!
+) ; end define validate-apt-release-artifact!
+
 (define (verify-uploaded-asset! owner repo token asset-id expected-sha)
   (begin
-    (define tmp (make-temporary-file "package-racket-release-asset~a.tgz"))
+    (define tmp (make-temporary-file "package-racket-release-asset~a"))
     (github-download-asset! 'verify-uploaded-asset! owner repo asset-id token tmp)
     (define actual-sha (sha256-file tmp))
     (delete-file tmp)
@@ -2092,7 +2149,8 @@ body: {(safe-response-body body)}")]
   ) ; end begin verify-uploaded-asset-digest!
 ) ; end define verify-uploaded-asset-digest!
 
-(define (upload-source-release-real! owner repo-name tag asset-name asset-path local-sha token-file replace?)
+(define (upload-github-release-asset-real! who owner repo-name tag asset-name asset-path local-sha
+                                           token-file replace? content-type)
   (begin
     (define token (read-github-token token-file))
     (define release (github-release-by-tag! owner repo-name tag token))
@@ -2112,19 +2170,32 @@ body: {(safe-response-body body)}")]
          (println/flush f"Deleting existing release asset before upload: {asset-name}")
          (github-delete-asset! owner repo-name existing-id token)]
         [else
-         (raise-user-error 'upload-source-release!
+         (raise-user-error who
                            f"release asset already exists and differs; set replace-release-asset to #t: {asset-name}")]
       ) ; end cond existing asset
     ) ; end when existing asset
     (unless existing-current?
-      (println/flush f"Uploading source release asset: {asset-name}")
-      (let ([uploaded (github-upload-asset! upload-url asset-name asset-path token)])
+      (println/flush f"Uploading GitHub release asset: {asset-name}")
+      (let ([uploaded (github-upload-asset! upload-url asset-name asset-path token
+                                            #:content-type content-type)])
         (verify-uploaded-asset-digest! owner repo-name token uploaded local-sha)
-        (println/flush f"Uploaded and verified source release asset: {asset-name}")
+        (println/flush f"Uploaded and verified GitHub release asset: {asset-name}")
       ) ; end let uploaded asset
     ) ; end unless existing current
-  ) ; end begin upload-source-release-real!
-) ; end define upload-source-release-real!
+  ) ; end begin upload-github-release-asset-real!
+) ; end define upload-github-release-asset-real!
+
+(define (upload-source-release-real! owner repo-name tag asset-name asset-path local-sha token-file replace?)
+  (upload-github-release-asset-real! 'upload-source-release!
+                                     owner
+                                     repo-name
+                                     tag
+                                     asset-name
+                                     asset-path
+                                     local-sha
+                                     token-file
+                                     replace?
+                                     "application/gzip"))
 
 (define (upload-source-release! c)
   (begin
@@ -2156,6 +2227,46 @@ body: {(safe-response-body body)}")]
         ) ; end lambda source release upload
   ) ; end list source release finalizer
 ) ; end define build-source-release!
+
+(define (upload-apt-release! c)
+  (begin
+    (define config (apt-release-config c))
+    (define repo (hash-ref config 'repo))
+    (define tag (hash-ref config 'tag))
+    (define asset-name (hash-ref config 'asset-name))
+    (define token-file (hash-ref config 'token-file))
+    (define replace? (hash-ref config 'replace?))
+    (define asset-path (validate-apt-release-artifact! c asset-name))
+    (define local-sha (sha256-file asset-path))
+    (define-values (owner repo-name)
+      (split-github-repo 'upload-apt-release! repo)
+    ) ; end define-values owner/repo
+    (println/flush f"APT release repo: {repo}")
+    (println/flush f"APT release tag: {tag}")
+    (println/flush f"APT release asset: {asset-name}")
+    (println/flush f"APT release sha256: {local-sha}")
+    (if (cfg-dry-run? c)
+        (println/flush f"Would upload apt release asset from {(clean-path-string asset-path)}")
+        (upload-github-release-asset-real! 'upload-apt-release!
+                                           owner
+                                           repo-name
+                                           tag
+                                           asset-name
+                                           asset-path
+                                           local-sha
+                                           token-file
+                                           replace?
+                                           "application/vnd.debian.binary-package")
+    ) ; end if dry-run
+  ) ; end begin upload-apt-release!
+) ; end define upload-apt-release!
+
+(define (build-apt-release! c)
+  (list (lambda ()
+          (upload-apt-release! c)
+        ) ; end lambda apt release upload
+  ) ; end list apt release finalizer
+) ; end define build-apt-release!
 
 (define (brew-ci-work-root c)
   (build-path (cfg-work-dir c) "brew-ci"))
@@ -2721,6 +2832,11 @@ jobs:
   (define source-release-tag-arg #f)
   (define source-release-asset-arg #f)
   (define source-release-token-file-arg #f)
+  (define apt-release-config-arg #f)
+  (define apt-release-repo-arg #f)
+  (define apt-release-tag-arg #f)
+  (define apt-release-asset-arg #f)
+  (define apt-release-token-file-arg #f)
   (define replace-release-asset-arg 'unset)
   (define ruby-bin-arg "ruby")
   (define brew-package-args '())
@@ -2806,14 +2922,24 @@ jobs:
                           (set! source-release-asset-arg name)]
    [("--github-token-file") path "Override token file read as one Racket string datum"
                            (set! source-release-token-file-arg path)]
-   [("--replace-release-asset") "Delete an existing differing source release asset before uploading"
+   [("--apt-release-config") path "Config for uploading the apt .deb release asset (default: ./apt-release-config.rktd)"
+                            (set! apt-release-config-arg path)]
+   [("--apt-github-repo") repo "Override apt release GitHub repo, OWNER/REPO"
+                         (set! apt-release-repo-arg repo)]
+   [("--apt-github-release-tag") tag "Override apt release tag"
+                                 (set! apt-release-tag-arg tag)]
+   [("--apt-github-asset-name") name "Override apt release asset name"
+                               (set! apt-release-asset-arg name)]
+   [("--apt-github-token-file") path "Override apt token file read as one Racket string datum"
+                              (set! apt-release-token-file-arg path)]
+   [("--replace-release-asset") "Delete an existing differing GitHub release asset before uploading"
                               (set! replace-release-asset-arg #t)]
-   [("--no-replace-release-asset") "Refuse to replace an existing differing source release asset"
+   [("--no-replace-release-asset") "Refuse to replace an existing differing GitHub release asset"
                                  (set! replace-release-asset-arg #f)]
    [("--ruby-bin") path "Ruby executable for YAML validation (default: ruby)"
                   (set! ruby-bin-arg path)]
    #:multi
-   [("--target") target "Packaging target: brew, brew-ci, source-release, apt, rpm, or all. May be repeated."
+   [("--target") target "Packaging target: brew, brew-ci, source-release, apt, apt-release, rpm, or all. May be repeated."
                 (set! target-args (append target-args (list target)))]
    [("--brew-package") name "Extra package to include in the Homebrew source archive"
                      (set! brew-package-args (append brew-package-args (list name)))]
@@ -2853,6 +2979,8 @@ jobs:
   (define brew-ci-config (complete-path* (or brew-ci-config-arg (build-path script-dir "brew-ci-config.rktd"))))
   (define source-release-config
     (complete-path* (or source-release-config-arg (build-path script-dir "source-release-config.rktd"))))
+  (define apt-release-config
+    (complete-path* (or apt-release-config-arg (build-path script-dir "apt-release-config.rktd"))))
   (assert-prefix prefix-arg)
   (when (needs-racket-root? targets)
     (assert-racket-root racket-root)
@@ -2901,6 +3029,11 @@ jobs:
        source-release-tag-arg
        source-release-asset-arg
        source-release-token-file-arg
+       apt-release-config
+       apt-release-repo-arg
+       apt-release-tag-arg
+       apt-release-asset-arg
+       apt-release-token-file-arg
        replace-release-asset-arg
        ruby-bin-arg
        brew-package-args
@@ -2933,6 +3066,9 @@ jobs:
   (when (member "source-release" (cfg-targets c) string=?)
     (println/flush f"Source release config: {(clean-path-string (cfg-source-release-config c))}")
   ) ; end when source release target
+  (when (member "apt-release" (cfg-targets c) string=?)
+    (println/flush f"APT release config: {(clean-path-string (cfg-apt-release-config c))}")
+  ) ; end when apt release target
 ) ; end define print-config
 
 (define (main)
@@ -2949,6 +3085,7 @@ jobs:
          ["brew-ci" (build-brew-ci! c)]
          ["source-release" (build-source-release! c)]
          ["apt" (build-apt! c) '()]
+         ["apt-release" (build-apt-release! c)]
          ["rpm" (build-rpm! c) '()]
          [_ (error 'main f"unreachable target: {target}")]
        ) ; end match target
