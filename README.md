@@ -101,6 +101,19 @@ tools/git-hooks/commit-msg .commit
 racket tools/check-commit-message.rkt --message-file .commit
 ```
 
+## Tests
+
+Run the packaging regression tests from the repository root:
+
+```sh
+raco test tests/package-racket-test.rkt
+```
+
+These tests execute the real `package-racket.rkt` CLI in temporary directories.
+They cover dry-run isolation between targets, release-upload validation without
+reading local tokens, and combined producer/release targets such as
+`apt + apt-release` and `brew + source-release`.
+
 ## Requirements
 
 - Racket with the `tstring` reader available.

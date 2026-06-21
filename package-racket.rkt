@@ -75,6 +75,9 @@
    make-args)
   #:transparent)
 
+(module+ test
+  (require rackunit))
+
 (define (println/flush msg)
   (displayln msg)
   (flush-output))
@@ -323,6 +326,9 @@
 (define (needs-bottle-root-url? targets)
   (or (member "brew" targets string=?)
       (member "brew-ci" targets string=?)))
+
+(define (target-selected? c target)
+  (and (member target (cfg-targets c) string=?) #t))
 
 (define (prefix-relative-elements prefix)
   (define trimmed (regexp-replace #rx"^/+" prefix ""))
@@ -695,6 +701,12 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
 (define (brew-generated-formula c)
   (build-path (brew-work-root c) "Formula" (file-name-from-path (cfg-formula c))))
 
+(define (brew-source-stage-root c)
+  (build-path (cfg-stage-dir c) "brew-source"))
+
+(define (brew-source-dist-root c)
+  (build-path (brew-source-stage-root c) f"racket-{(cfg-version c)}"))
+
 (define (brew-source-tgz-name c)
   f"racket-minimal-{(cfg-version c)}-src.tgz")
 
@@ -1040,8 +1052,8 @@ information.
 
 (define (stage-brew-source! c packages)
   (begin
-    (define stage-root (build-path (cfg-stage-dir c) "brew-source"))
-    (define dist-root (build-path stage-root f"racket-{(cfg-version c)}"))
+    (define stage-root (brew-source-stage-root c))
+    (define dist-root (brew-source-dist-root c))
     (reset-managed-dir! 'stage-brew-source! stage-root)
     (make-directory* dist-root)
     (write-brew-source-readme! (build-path dist-root "README") (cfg-version c))
@@ -1547,6 +1559,25 @@ end
   ) ; end begin validate-brew-artifact!
 ) ; end define validate-brew-artifact!
 
+(define (print-brew-dry-run-plan! c packages)
+  (begin
+    (println/flush f"Would stage brew source root: {(clean-path-string (brew-source-stage-root c))}")
+    (println/flush f"Would stage brew source directory: {(clean-path-string (brew-source-dist-root c))}")
+    (println/flush f"Would create brew source tgz: {(clean-path-string (brew-output-tgz c))}")
+    (println/flush f"Would set Formula source URL: {(formula-source-url c)}")
+    (println/flush f"Would set Formula bottle root URL: {(cfg-bottle-root-url c)}")
+    (println/flush f"Would use Formula build mode: {(cfg-formula-build-mode c)}")
+    (println/flush f"Would include brew package count: {(number->string (length packages))}")
+    (if (cfg-update-formula? c)
+        (begin
+          (println/flush f"Would generate brew formula: {(clean-path-string (brew-generated-formula c))}")
+          (println/flush f"Would update brew formula: {(clean-path-string (cfg-formula c))}")
+        ) ; end begin update formula plan
+        (println/flush "Would skip brew formula update")
+    ) ; end if formula update plan
+  ) ; end begin print-brew-dry-run-plan!
+) ; end define print-brew-dry-run-plan!
+
 (define (prepare-generated-formula! c)
   (begin
     (assert-homebrew-tap! c)
@@ -1612,6 +1643,10 @@ end
     (define generated-formula #f)
     (define packages (brew-source-packages c))
     (println/flush f"Brew source packages: {(string-join packages " ")}")
+    (when (cfg-dry-run? c)
+      (assert-homebrew-tap! c)
+      (print-brew-dry-run-plan! c packages)
+    ) ; end when dry-run brew plan
     (unless (cfg-dry-run? c)
       (assert-homebrew-tap! c)
       (make-directory* (cfg-artifact-dir c))
@@ -2114,6 +2149,13 @@ body: {(safe-response-body body)}")]
   ) ; end begin validate-apt-release-artifact!
 ) ; end define validate-apt-release-artifact!
 
+(define (assert-release-asset-matches-producer! who producer-name expected-name asset-name)
+  (unless (string=? asset-name expected-name)
+    (raise-user-error who
+                      f"{asset-name} does not match {producer-name} output {expected-name}; refusing to upload a stale or unrelated release asset")
+  ) ; end unless asset matches producer
+) ; end define assert-release-asset-matches-producer!
+
 (define (verify-uploaded-asset! owner repo token asset-id expected-sha)
   (begin
     (define tmp (make-temporary-file "package-racket-release-asset~a"))
@@ -2205,8 +2247,21 @@ body: {(safe-response-body body)}")]
     (define asset-name (hash-ref config 'asset-name))
     (define token-file (hash-ref config 'token-file))
     (define replace? (hash-ref config 'replace?))
-    (define asset-path (validate-source-release-artifact! c asset-name))
-    (define local-sha (sha256-file asset-path))
+    (define produced-by-brew? (target-selected? c "brew"))
+    (when produced-by-brew?
+      (assert-release-asset-matches-producer! 'upload-source-release!
+                                              "brew"
+                                              (brew-source-tgz-name c)
+                                              asset-name)
+    ) ; end when produced by brew
+    (define asset-path (build-path (cfg-artifact-dir c) asset-name))
+    (define dry-run-planned? (and (cfg-dry-run? c) produced-by-brew?))
+    (unless dry-run-planned?
+      (validate-source-release-artifact! c asset-name)
+    ) ; end unless dry-run planned source release artifact
+    (define local-sha (if dry-run-planned?
+                          "<dry-run: artifact not built>"
+                          (sha256-file asset-path)))
     (define-values (owner repo-name)
       (split-github-repo 'upload-source-release! repo)
     ) ; end define-values owner/repo
@@ -2215,7 +2270,10 @@ body: {(safe-response-body body)}")]
     (println/flush f"Source release asset: {asset-name}")
     (println/flush f"Source release sha256: {local-sha}")
     (if (cfg-dry-run? c)
-        (println/flush f"Would upload source release asset from {(clean-path-string asset-path)}")
+        (println/flush
+         (if dry-run-planned?
+             f"Would upload source release asset from planned brew output {(clean-path-string asset-path)}"
+             f"Would upload source release asset from {(clean-path-string asset-path)}"))
         (upload-source-release-real! owner repo-name tag asset-name asset-path local-sha token-file replace?)
     ) ; end if dry-run
   ) ; end begin upload-source-release!
@@ -2236,8 +2294,21 @@ body: {(safe-response-body body)}")]
     (define asset-name (hash-ref config 'asset-name))
     (define token-file (hash-ref config 'token-file))
     (define replace? (hash-ref config 'replace?))
-    (define asset-path (validate-apt-release-artifact! c asset-name))
-    (define local-sha (sha256-file asset-path))
+    (define produced-by-apt? (target-selected? c "apt"))
+    (when produced-by-apt?
+      (assert-release-asset-matches-producer! 'upload-apt-release!
+                                              "apt"
+                                              (apt-deb-name c)
+                                              asset-name)
+    ) ; end when produced by apt
+    (define asset-path (build-path (cfg-artifact-dir c) asset-name))
+    (define dry-run-planned? (and (cfg-dry-run? c) produced-by-apt?))
+    (unless dry-run-planned?
+      (validate-apt-release-artifact! c asset-name)
+    ) ; end unless dry-run planned apt release artifact
+    (define local-sha (if dry-run-planned?
+                          "<dry-run: artifact not built>"
+                          (sha256-file asset-path)))
     (define-values (owner repo-name)
       (split-github-repo 'upload-apt-release! repo)
     ) ; end define-values owner/repo
@@ -2246,7 +2317,10 @@ body: {(safe-response-body body)}")]
     (println/flush f"APT release asset: {asset-name}")
     (println/flush f"APT release sha256: {local-sha}")
     (if (cfg-dry-run? c)
-        (println/flush f"Would upload apt release asset from {(clean-path-string asset-path)}")
+        (println/flush
+         (if dry-run-planned?
+             f"Would upload apt release asset from planned apt output {(clean-path-string asset-path)}"
+             f"Would upload apt release asset from {(clean-path-string asset-path)}"))
         (upload-github-release-asset-real! 'upload-apt-release!
                                            owner
                                            repo-name
@@ -2422,7 +2496,12 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: {artifact-prefix}_{matrix-os}
-          path: '*.bottle.*'
+          path: |
+            *.bottle.json
+            *.bottle*.tar.gz
+            **/*.bottle.json
+            **/*.bottle*.tar.gz
+          if-no-files-found: error
 "
   ) ; end begin tests-workflow-content
 ) ; end define tests-workflow-content
@@ -2683,7 +2762,9 @@ jobs:
                                  f"--root-url={(cfg-bottle-root-url c)}"
                                  "test_formula: true"
                                  "if: matrix.test_formula"
-                                 "actions/upload-artifact@v6"))])
+                                 "actions/upload-artifact@v6"
+                                 "*.bottle*.tar.gz"
+                                 "if-no-files-found: error"))])
       (unless (string-contains? content needle)
         (raise-user-error 'validate-tests-workflow! f"tests workflow missing: {needle}")
       ) ; end unless tests workflow needle
@@ -2724,6 +2805,46 @@ jobs:
 (define (tap-workflow-paths c)
   (values (workflow-path (tap-workflows-dir c) "tests.yml")
           (workflow-path (tap-workflows-dir c) "publish.yml")))
+
+(define (runner->dry-run-text runner)
+  (begin
+    (define os (runner-ref runner 'os #f))
+    (define container (runner-ref runner 'container #f))
+    (if container
+        f"{os} in {container}"
+        os)
+  ) ; end begin runner->dry-run-text
+) ; end define runner->dry-run-text
+
+(define (print-runner-dry-run-plan! label runners)
+  (begin
+    (println/flush f"Would configure {label} runner count: {(number->string (length runners))}")
+    (for ([runner (in-list runners)])
+      (println/flush f"  - {(runner->dry-run-text runner)}")
+    ) ; end for runner
+  ) ; end begin print-runner-dry-run-plan!
+) ; end define print-runner-dry-run-plan!
+
+(define (print-brew-ci-dry-run-plan! c config)
+  (begin
+    (define bottle-runners (config-ref* config 'bottle-runners '()))
+    (define syntax-runners (config-ref* config 'syntax-runners '()))
+    (define-values (generated-tests generated-publish)
+      (generated-workflow-paths c)
+    ) ; end define-values generated workflow paths
+    (define-values (tap-tests tap-publish)
+      (tap-workflow-paths c)
+    ) ; end define-values tap workflow paths
+    (println/flush f"Would read brew CI config: {(clean-path-string (cfg-brew-ci-config c))}")
+    (println/flush f"Would generate brew CI workflow: {(clean-path-string generated-tests)}")
+    (println/flush f"Would generate brew CI workflow: {(clean-path-string generated-publish)}")
+    (println/flush f"Would install brew CI workflow: {(clean-path-string tap-tests)}")
+    (println/flush f"Would install brew CI workflow: {(clean-path-string tap-publish)}")
+    (println/flush f"Would validate brew CI workflow YAML with: {(cfg-ruby-bin c)}")
+    (print-runner-dry-run-plan! "bottle" bottle-runners)
+    (print-runner-dry-run-plan! "syntax" syntax-runners)
+  ) ; end begin print-brew-ci-dry-run-plan!
+) ; end define print-brew-ci-dry-run-plan!
 
 (define (prepare-brew-ci-workflows! c config)
   (begin
@@ -2773,11 +2894,11 @@ jobs:
     (define config (read-brew-ci-config c))
     (validate-brew-ci-config! config)
     (if (cfg-dry-run? c)
-        (let-values ([(tap-tests tap-publish) (tap-workflow-paths c)])
-          (println/flush f"Would install brew CI workflow: {(clean-path-string tap-tests)}")
-          (println/flush f"Would install brew CI workflow: {(clean-path-string tap-publish)}")
+        (begin
+          (assert-homebrew-tap! c)
+          (print-brew-ci-dry-run-plan! c config)
           '()
-        ) ; end let-values dry-run tap workflow paths
+        ) ; end begin dry-run brew-ci plan
         (let-values ([(tests-path publish-path) (prepare-brew-ci-workflows! c config)])
           (list (lambda ()
                   (install-brew-ci-workflows! c config tests-path publish-path)
