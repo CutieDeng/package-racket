@@ -6,4 +6,4 @@ artifacts/
 *.tar.gz
 *.swp
 .DS_Store
-secret
+secret/

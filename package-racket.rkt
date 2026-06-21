@@ -1,6 +1,9 @@
 #lang reader tstring/lang/reader racket/base
 
 (require file/tar
+         json
+         net/http-client
+         net/uri-codec
          racket/cmdline
          racket/file
          racket/list
@@ -55,6 +58,12 @@
    formula
    update-formula?
    brew-ci-config
+   source-release-config
+   source-release-repo
+   source-release-tag
+   source-release-asset
+   source-release-token-file
+   replace-release-asset
    ruby-bin
    brew-packages
    make-args)
@@ -275,14 +284,14 @@
       ) ; end for*/list pieces
     ) ; end define pieces
     (when (null? pieces)
-      (raise-user-error 'main "missing --target; use brew, brew-ci, apt, rpm, or all")
+      (raise-user-error 'main "missing --target; use brew, brew-ci, source-release, apt, rpm, or all")
     ) ; end when missing target
     (define expanded
       (append-map
        (lambda (target)
          (match target
            ["all" '("brew" "apt" "rpm")]
-           [(or "brew" "apt" "rpm" "brew-ci") (list target)]
+           [(or "brew" "apt" "rpm" "brew-ci" "source-release") (list target)]
            [_ (raise-user-error 'main f"unknown --target: {target}")]
          ) ; end match target
        ) ; end lambda target
@@ -290,9 +299,13 @@
       ) ; end append-map
     ) ; end define expanded
     (filter (lambda (target) (member target expanded string=?))
-            '("brew-ci" "brew" "apt" "rpm"))
+            '("brew-ci" "source-release" "brew" "apt" "rpm"))
   ) ; end begin normalize-targets
 ) ; end define normalize-targets
+
+(define (needs-racket-root? targets)
+  (not (and (= (length targets) 1)
+            (member "source-release" targets string=?))))
 
 (define (needs-homebrew-tap? targets)
   (or (member "brew" targets string=?)
@@ -1347,6 +1360,455 @@ information.
   ) ; end begin build-brew!
 ) ; end define build-brew!
 
+(define github-api-host "api.github.com")
+(define github-api-version "2022-11-28")
+
+(define (read-single-rktd who path)
+  (begin
+    (assert-nonempty-file who path)
+    (call-with-input-file path
+      (lambda (in)
+        (define datum (read in))
+        (define next (read in))
+        (unless (eof-object? next)
+          (raise-user-error who f"file must contain exactly one Racket datum: {(clean-path-string path)}")
+        ) ; end unless exactly one datum
+        datum
+      ) ; end lambda in
+    ) ; end call-with-input-file
+  ) ; end begin read-single-rktd
+) ; end define read-single-rktd
+
+(define (read-rktd-hash who path)
+  (begin
+    (define datum (read-single-rktd who path))
+    (unless (hash? datum)
+      (raise-user-error who f"config must be a hash: {(clean-path-string path)}")
+    ) ; end unless hash config
+    datum
+  ) ; end begin read-rktd-hash
+) ; end define read-rktd-hash
+
+(define (resolve-config-path config-path value)
+  (complete-path* (if (absolute-path? (string->path value))
+                      value
+                      (build-path (or (path-only config-path) (current-directory)) value))))
+
+(define (config-required-string who config key)
+  (begin
+    (define value (hash-ref config key #f))
+    (unless (and (string? value) (not (string=? value "")))
+      (raise-user-error who f"missing non-empty string config key: {key}")
+    ) ; end unless required string
+    value
+  ) ; end begin config-required-string
+) ; end define config-required-string
+
+(define (config-optional-string config key default)
+  (begin
+    (define value (hash-ref config key default))
+    (unless (and (string? value) (not (string=? value "")))
+      (raise-user-error 'source-release-config f"config key must be a non-empty string: {key}")
+    ) ; end unless optional string
+    value
+  ) ; end begin config-optional-string
+) ; end define config-optional-string
+
+(define (config-optional-boolean config key default)
+  (begin
+    (define value (hash-ref config key default))
+    (unless (boolean? value)
+      (raise-user-error 'source-release-config f"config key must be boolean: {key}")
+    ) ; end unless boolean
+    value
+  ) ; end begin config-optional-boolean
+) ; end define config-optional-boolean
+
+(define (split-github-repo who repo)
+  (match (string-split repo "/")
+    [(list owner name)
+     (when (or (string=? owner "") (string=? name ""))
+       (raise-user-error who f"GitHub repo must be OWNER/REPO: {repo}")
+     ) ; end when empty owner/name
+     (values owner name)]
+    [_ (raise-user-error who f"GitHub repo must be OWNER/REPO: {repo}")]
+  ) ; end match repo pieces
+) ; end define split-github-repo
+
+(define (safe-secret-preview value)
+  (begin
+    (define text
+      (with-output-to-string
+        (lambda ()
+          (write value)
+        ) ; end lambda write value
+      ) ; end with-output-to-string
+    ) ; end define text
+    (define len (string-length text))
+    (if (<= len 8)
+        f"stringified length {len}, preview \"{text}\""
+        f"stringified length {len}, preview hidden")
+  ) ; end begin safe-secret-preview
+) ; end define safe-secret-preview
+
+(define (assert-secret-file-mode! path)
+  (begin
+    (define bits (file-or-directory-permissions path 'bits))
+    (when (not (zero? (bitwise-and bits #o077)))
+      (raise-user-error 'read-github-token
+                        f"token file must not be group/world readable or writable; run chmod 600 {(shell-quote (clean-path-string path))}")
+    ) ; end when unsafe secret file permissions
+  ) ; end begin assert-secret-file-mode!
+) ; end define assert-secret-file-mode!
+
+(define (read-github-token token-file)
+  (begin
+    (assert-nonempty-file 'read-github-token token-file)
+    (assert-secret-file-mode! token-file)
+    (define datum
+      (with-handlers ([exn:fail?
+                       (lambda (exn)
+                         (raise-user-error 'read-github-token
+                                           f"could not read token file as one Racket datum: {(clean-path-string token-file)}")
+                       )])
+        (read-single-rktd 'read-github-token token-file)))
+    (unless (string? datum)
+      (raise-user-error 'read-github-token
+                        f"token file must contain a string datum, got non-string value ({(safe-secret-preview datum)}): {(clean-path-string token-file)}")
+    ) ; end unless token string
+    (define token (string-trim datum))
+    (when (string=? token "")
+      (raise-user-error 'read-github-token f"token file string is empty: {(clean-path-string token-file)}")
+    ) ; end when empty token
+    token
+  ) ; end begin read-github-token
+) ; end define read-github-token
+
+(define (github-request-path parts #:query [query ""])
+  (begin
+    (define path f"/{(string-join (map uri-encode parts) "/")}")
+    (if (string=? query "")
+        path
+        f"{path}?{query}")
+  ) ; end begin github-request-path
+) ; end define github-request-path
+
+(define (https-url->host/path who url)
+  (match (regexp-match #px"^https://([^/]+)(/.*)?$" url)
+    [(list _ host path)
+     (values host (if path path "/"))]
+    [_ (raise-user-error who f"expected https URL from GitHub API: {url}")]
+  ) ; end match url
+) ; end define https-url->host/path
+
+(define (http-status-code status)
+  (begin
+    (define pieces (string-split (bytes->string/utf-8 status)))
+    (cond
+      [(>= (length pieces) 2)
+       (or (string->number (second pieces))
+           (raise-user-error 'http-status-code f"could not parse HTTP status: {(bytes->string/utf-8 status)}"))]
+      [else
+       (raise-user-error 'http-status-code f"could not parse HTTP status: {(bytes->string/utf-8 status)}")]
+    ) ; end cond status pieces
+  ) ; end begin http-status-code
+) ; end define http-status-code
+
+(define (safe-response-body body)
+  (define trimmed (string-trim body))
+  (if (> (string-length trimmed) 1000)
+      f"{(substring trimmed 0 1000)}..."
+      trimmed))
+
+(define (github-header-value headers name)
+  (for/or ([header (in-list headers)])
+    (define text (bytes->string/utf-8 header))
+    (match (regexp-match #px"^([^:]+):[ \t]*(.*)$" text)
+      [(list _ key value)
+       (and (string-ci=? key name) value)]
+      [_ #f]
+    ) ; end match header
+  ) ; end for/or header value
+) ; end define github-header-value
+
+(define (github-headers token accept)
+  (list "User-Agent: package-racket"
+        f"Accept: {accept}"
+        f"Authorization: Bearer {token}"
+        f"X-GitHub-Api-Version: {github-api-version}"))
+
+(define (http-send/port! who method host path headers data)
+  (begin
+    (with-handlers ([exn:fail?
+                     (lambda (exn)
+                       (raise-user-error who f"HTTP request failed: {method} https://{host}{path}")
+                     )])
+      (if data
+          (http-sendrecv host path
+                         #:ssl? #t
+                         #:method method
+                         #:headers headers
+                         #:data data)
+          (http-sendrecv host path
+                         #:ssl? #t
+                         #:method method
+                         #:headers headers)))
+  ) ; end begin http-send/port!
+) ; end define http-send/port!
+
+(define (github-json-request! who method host path token
+                              #:data [data #f]
+                              #:content-type [content-type #f]
+                              #:ok [ok-statuses '(200)])
+  (begin
+    (define headers
+      (append (github-headers token "application/vnd.github+json")
+              (if content-type (list f"Content-Type: {content-type}") '())
+              (if data (list f"Content-Length: {(bytes-length data)}") '())))
+    (define-values (status header-lines body-port)
+      (http-send/port! who method host path headers data)
+    ) ; end define-values response
+    (define code (http-status-code status))
+    (define body (port->string body-port))
+    (close-input-port body-port)
+    (unless (member code ok-statuses =)
+      (raise-user-error who
+                        f"GitHub API request failed: {method} https://{host}{path}
+status: {(bytes->string/utf-8 status)}
+body: {(safe-response-body body)}")
+    ) ; end unless ok status
+    (if (string=? (string-trim body) "")
+        #f
+        (string->jsexpr body))
+  ) ; end begin github-json-request!
+) ; end define github-json-request!
+
+(define (github-download-asset! who owner repo asset-id token dest)
+  (begin
+    (define api-path
+      (github-request-path (list "repos" owner repo "releases" "assets" (number->string asset-id))))
+    (let loop ([host github-api-host]
+               [path api-path]
+               [headers (github-headers token "application/octet-stream")]
+               [redirects 0])
+      (when (> redirects 5)
+        (raise-user-error who "too many redirects while downloading GitHub release asset")
+      ) ; end when too many redirects
+      (define-values (status header-lines body-port)
+        (http-send/port! who "GET" host path headers #f)
+      ) ; end define-values download response
+      (define code (http-status-code status))
+      (cond
+        [(= code 200)
+         (make-directory* (or (path-only dest) (current-directory)))
+         (call-with-output-file dest
+           #:exists 'truncate/replace
+           (lambda (out)
+             (copy-port body-port out)
+           ) ; end lambda copy download
+         ) ; end call-with-output-file dest
+         (close-input-port body-port)]
+        [(member code '(301 302 303 307 308) =)
+         (define location (github-header-value header-lines "Location"))
+         (close-input-port body-port)
+         (unless location
+           (raise-user-error who f"GitHub redirect missing Location header: {code}")
+         ) ; end unless location
+         (define-values (next-host next-path)
+           (https-url->host/path who location)
+         ) ; end define-values next url
+         (loop next-host next-path (list "User-Agent: package-racket") (add1 redirects))]
+        [else
+         (define body (port->string body-port))
+         (close-input-port body-port)
+         (raise-user-error who
+                           f"GitHub asset download failed: {code}
+body: {(safe-response-body body)}")]
+      ) ; end cond download response
+    ) ; end let loop
+  ) ; end begin github-download-asset!
+) ; end define github-download-asset!
+
+(define (github-release-by-tag! owner repo tag token)
+  (github-json-request!
+   'github-release-by-tag!
+   "GET"
+   github-api-host
+   (github-request-path (list "repos" owner repo "releases" "tags" tag))
+   token))
+
+(define (github-release-assets! owner repo release-id token)
+  (github-json-request!
+   'github-release-assets!
+   "GET"
+   github-api-host
+   (github-request-path (list "repos" owner repo "releases" (number->string release-id) "assets")
+                        #:query "per_page=100")
+   token))
+
+(define (github-upload-asset! upload-url asset-name asset-path token)
+  (begin
+    (define clean-upload-url (regexp-replace #rx"\\{.*\\}$" upload-url ""))
+    (define-values (host path)
+      (https-url->host/path 'github-upload-asset! f"{clean-upload-url}?name={(uri-encode asset-name)}")
+    ) ; end define-values upload endpoint
+    (define data (file->bytes asset-path))
+    (github-json-request!
+     'github-upload-asset!
+     "POST"
+     host
+     path
+     token
+     #:data data
+     #:content-type "application/gzip"
+     #:ok '(201))
+  ) ; end begin github-upload-asset!
+) ; end define github-upload-asset!
+
+(define (github-delete-asset! owner repo asset-id token)
+  (github-json-request!
+   'github-delete-asset!
+   "DELETE"
+   github-api-host
+   (github-request-path (list "repos" owner repo "releases" "assets" (number->string asset-id)))
+   token
+   #:ok '(204)))
+
+(define (release-asset-by-name assets asset-name)
+  (begin
+    (define matches
+      (filter (lambda (asset)
+                (string=? (hash-ref asset 'name "") asset-name))
+              assets))
+    (when (> (length matches) 1)
+      (raise-user-error 'release-asset-by-name
+                        f"release has multiple assets named {asset-name}; refusing to continue")
+    ) ; end when duplicate assets
+    (and (pair? matches) (car matches))
+  ) ; end begin release-asset-by-name
+) ; end define release-asset-by-name
+
+(define (source-release-config c)
+  (begin
+    (define config-path (cfg-source-release-config c))
+    (define raw (read-rktd-hash 'source-release-config config-path))
+    (define repo (or (cfg-source-release-repo c)
+                     (config-required-string 'source-release-config raw 'source-release-repo)))
+    (define tag (or (cfg-source-release-tag c)
+                    (config-required-string 'source-release-config raw 'source-release-tag)))
+    (define asset-name (or (cfg-source-release-asset c)
+                           (config-required-string 'source-release-config raw 'source-release-asset)))
+    (define token-file-value (or (cfg-source-release-token-file c)
+                                 (config-optional-string raw 'source-release-token-file "secret/ghtoken.rktd")))
+    (define token-file (resolve-config-path config-path token-file-value))
+    (define replace? (if (eq? (cfg-replace-release-asset c) 'unset)
+                         (config-optional-boolean raw 'replace-release-asset #f)
+                         (cfg-replace-release-asset c)))
+    (hash 'repo repo
+          'tag tag
+          'asset-name asset-name
+          'token-file token-file
+          'replace? replace?
+          'config-path config-path)
+  ) ; end begin source-release-config
+) ; end define source-release-config
+
+(define (validate-source-release-artifact! c asset-name)
+  (begin
+    (define asset-path (build-path (cfg-artifact-dir c) asset-name))
+    (assert-nonempty-file 'validate-source-release-artifact! asset-path)
+    (unless (equal? (file-name-from-path asset-path) (string->path asset-name))
+      (raise-user-error 'validate-source-release-artifact!
+                        f"source release asset path basename does not match config asset name: {(clean-path-string asset-path)}")
+    ) ; end unless asset basename
+    asset-path
+  ) ; end begin validate-source-release-artifact!
+) ; end define validate-source-release-artifact!
+
+(define (verify-uploaded-asset! owner repo token asset-id expected-sha)
+  (begin
+    (define tmp (make-temporary-file "package-racket-release-asset~a.tgz"))
+    (github-download-asset! 'verify-uploaded-asset! owner repo asset-id token tmp)
+    (define actual-sha (sha256-file tmp))
+    (delete-file tmp)
+    (unless (string=? actual-sha expected-sha)
+      (raise-user-error 'verify-uploaded-asset!
+                        f"uploaded asset sha256 {actual-sha} does not match local sha256 {expected-sha}")
+    ) ; end unless uploaded sha matches
+  ) ; end begin verify-uploaded-asset!
+) ; end define verify-uploaded-asset!
+
+(define (release-asset-current? existing local-sha)
+  (and existing
+       (string=? (hash-ref existing 'digest "")
+                 f"sha256:{local-sha}")))
+
+(define (upload-source-release-real! owner repo-name tag asset-name asset-path local-sha token-file replace?)
+  (begin
+    (define token (read-github-token token-file))
+    (define release (github-release-by-tag! owner repo-name tag token))
+    (define release-id (hash-ref release 'id))
+    (define upload-url (hash-ref release 'upload_url))
+    (define assets (github-release-assets! owner repo-name release-id token))
+    (define existing (release-asset-by-name assets asset-name))
+    (define existing-current? (release-asset-current? existing local-sha))
+    (when existing
+      (define existing-id (hash-ref existing 'id))
+      (define existing-digest (hash-ref existing 'digest #f))
+      (cond
+        [(and (string? existing-digest)
+              (string=? existing-digest f"sha256:{local-sha}"))
+         (println/flush f"Release asset already matches local sha256: {asset-name}")]
+        [replace?
+         (println/flush f"Deleting existing release asset before upload: {asset-name}")
+         (github-delete-asset! owner repo-name existing-id token)]
+        [else
+         (raise-user-error 'upload-source-release!
+                           f"release asset already exists and differs; set replace-release-asset to #t: {asset-name}")]
+      ) ; end cond existing asset
+    ) ; end when existing asset
+    (unless existing-current?
+      (println/flush f"Uploading source release asset: {asset-name}")
+      (let* ([uploaded (github-upload-asset! upload-url asset-name asset-path token)]
+             [uploaded-id (hash-ref uploaded 'id)])
+        (verify-uploaded-asset! owner repo-name token uploaded-id local-sha)
+        (println/flush f"Uploaded and verified source release asset: {asset-name}")
+      ) ; end let* uploaded asset
+    ) ; end unless existing current
+  ) ; end begin upload-source-release-real!
+) ; end define upload-source-release-real!
+
+(define (upload-source-release! c)
+  (begin
+    (define config (source-release-config c))
+    (define repo (hash-ref config 'repo))
+    (define tag (hash-ref config 'tag))
+    (define asset-name (hash-ref config 'asset-name))
+    (define token-file (hash-ref config 'token-file))
+    (define replace? (hash-ref config 'replace?))
+    (define asset-path (validate-source-release-artifact! c asset-name))
+    (define local-sha (sha256-file asset-path))
+    (define-values (owner repo-name)
+      (split-github-repo 'upload-source-release! repo)
+    ) ; end define-values owner/repo
+    (println/flush f"Source release repo: {repo}")
+    (println/flush f"Source release tag: {tag}")
+    (println/flush f"Source release asset: {asset-name}")
+    (println/flush f"Source release sha256: {local-sha}")
+    (if (cfg-dry-run? c)
+        (println/flush f"Would upload source release asset from {(clean-path-string asset-path)}")
+        (upload-source-release-real! owner repo-name tag asset-name asset-path local-sha token-file replace?)
+    ) ; end if dry-run
+  ) ; end begin upload-source-release!
+) ; end define upload-source-release!
+
+(define (build-source-release! c)
+  (list (lambda ()
+          (upload-source-release! c)
+        ) ; end lambda source release upload
+  ) ; end list source release finalizer
+) ; end define build-source-release!
+
 (define (brew-ci-work-root c)
   (build-path (cfg-work-dir c) "brew-ci"))
 
@@ -1798,6 +2260,12 @@ jobs:
   (define formula-arg #f)
   (define update-formula? #t)
   (define brew-ci-config-arg #f)
+  (define source-release-config-arg #f)
+  (define source-release-repo-arg #f)
+  (define source-release-tag-arg #f)
+  (define source-release-asset-arg #f)
+  (define source-release-token-file-arg #f)
+  (define replace-release-asset-arg 'unset)
   (define ruby-bin-arg "ruby")
   (define brew-package-args '())
   (define make-args '())
@@ -1870,10 +2338,24 @@ jobs:
                           (set! update-formula? #f)]
    [("--brew-ci-config") path "Package-racket source config for generated tap workflows (default: ./brew-ci-config.rktd)"
                        (set! brew-ci-config-arg path)]
+   [("--source-release-config") path "Config for uploading the source release asset (default: ./source-release-config.rktd)"
+                              (set! source-release-config-arg path)]
+   [("--github-repo") repo "Override source release GitHub repo, OWNER/REPO"
+                    (set! source-release-repo-arg repo)]
+   [("--github-release-tag") tag "Override source release tag"
+                            (set! source-release-tag-arg tag)]
+   [("--github-asset-name") name "Override source release asset name"
+                          (set! source-release-asset-arg name)]
+   [("--github-token-file") path "Override token file read as one Racket string datum"
+                           (set! source-release-token-file-arg path)]
+   [("--replace-release-asset") "Delete an existing differing source release asset before uploading"
+                              (set! replace-release-asset-arg #t)]
+   [("--no-replace-release-asset") "Refuse to replace an existing differing source release asset"
+                                 (set! replace-release-asset-arg #f)]
    [("--ruby-bin") path "Ruby executable for YAML validation (default: ruby)"
                   (set! ruby-bin-arg path)]
    #:multi
-   [("--target") target "Packaging target: brew, brew-ci, apt, rpm, or all. May be repeated."
+   [("--target") target "Packaging target: brew, brew-ci, source-release, apt, rpm, or all. May be repeated."
                 (set! target-args (append target-args (list target)))]
    [("--brew-package") name "Extra package to include in the Homebrew source archive"
                      (set! brew-package-args (append brew-package-args (list name)))]
@@ -1910,12 +2392,20 @@ jobs:
     ) ; end cond formula path
   ) ; end define formula
   (define brew-ci-config (complete-path* (or brew-ci-config-arg (build-path script-dir "brew-ci-config.rktd"))))
+  (define source-release-config
+    (complete-path* (or source-release-config-arg (build-path script-dir "source-release-config.rktd"))))
   (assert-prefix prefix-arg)
-  (assert-racket-root racket-root)
+  (when (needs-racket-root? targets)
+    (assert-racket-root racket-root)
+  ) ; end when needs racket root
   (cfg targets
        racket-root
        make-dir
-       (or version-arg (read-racket-version racket-root))
+       (cond
+         [version-arg version-arg]
+         [(needs-racket-root? targets) (read-racket-version racket-root)]
+         [else "unknown"]
+       ) ; end cond version
        package-name-arg
        release-arg
        prefix-arg
@@ -1946,6 +2436,12 @@ jobs:
        formula
        update-formula?
        brew-ci-config
+       source-release-config
+       source-release-repo-arg
+       source-release-tag-arg
+       source-release-asset-arg
+       source-release-token-file-arg
+       replace-release-asset-arg
        ruby-bin-arg
        brew-package-args
        make-args
@@ -1958,15 +2454,22 @@ jobs:
 
 (define (print-config c)
   (println/flush f"Targets: {(string-join (cfg-targets c) ", ")}")
-  (println/flush f"Racket root: {(clean-path-string (cfg-racket-root c))}")
-  (println/flush f"Version: {(cfg-version c)}")
+  (when (needs-racket-root? (cfg-targets c))
+    (println/flush f"Racket root: {(clean-path-string (cfg-racket-root c))}")
+    (println/flush f"Version: {(cfg-version c)}")
+  ) ; end when needs racket root
   (println/flush f"Artifact dir: {(clean-path-string (cfg-artifact-dir c))}")
   (println/flush f"Work dir: {(clean-path-string (cfg-work-dir c))}")
   (println/flush f"Install root: {(clean-path-string (cfg-install-root c))}")
-  (println/flush f"Prefix: {(cfg-prefix c)}")
+  (when (needs-install-root? (cfg-targets c))
+    (println/flush f"Prefix: {(cfg-prefix c)}")
+  ) ; end when install-root target
   (when (cfg-bottle-root-url c)
     (println/flush f"Bottle root URL: {(cfg-bottle-root-url c)}")
   ) ; end when bottle root url
+  (when (member "source-release" (cfg-targets c) string=?)
+    (println/flush f"Source release config: {(clean-path-string (cfg-source-release-config c))}")
+  ) ; end when source release target
 ) ; end define print-config
 
 (define (main)
@@ -1981,6 +2484,7 @@ jobs:
        (match target
          ["brew" (build-brew! c)]
          ["brew-ci" (build-brew-ci! c)]
+         ["source-release" (build-source-release! c)]
          ["apt" (build-apt! c) '()]
          ["rpm" (build-rpm! c) '()]
          [_ (error 'main f"unreachable target: {target}")]

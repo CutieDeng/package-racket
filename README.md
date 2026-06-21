@@ -6,6 +6,9 @@ packaging flows:
 - `brew`: creates the Homebrew source `.tgz`, generates a staged
   `brew/Formula/racket@9.rb`, validates it, then replaces the formula in the
   Homebrew tap at the end of a successful script run unless disabled.
+- `source-release`: uploads the Homebrew source `.tgz` to the configured
+  GitHub release with the GitHub REST API. This is a local tool action, not a
+  CI workflow.
 - `brew-ci`: generates Homebrew tap GitHub Actions workflows from
   `brew-ci-config.rktd`, validates them, then replaces the workflow files in
   the Homebrew tap. The generated release workflow builds and publishes bottles
@@ -102,6 +105,10 @@ racket tools/check-commit-message.rkt --message-file .commit
 - For `brew-ci`: Ruby for YAML validation, plus an explicit
   `--bottle-root-url` for `brew test-bot`, release uploads, and
   `brew bottle --merge`.
+- For `source-release`: a fine-grained GitHub personal access token for
+  `CutieDeng/racket` with `Contents: Read and write`, stored locally as one
+  Racket string datum in `secret/ghtoken.rktd`. The file is ignored by Git and
+  should be mode `600`.
 - For `apt`: `dpkg-deb`, or `ar` + `tar` + `xz` through the automatic fallback.
 - For `rpm`: `rpmbuild`.
 
@@ -115,6 +122,43 @@ racket package-racket.rkt \
   --racket-root /Users/cutiedeng/Y2026/M04/D03/racket.git \
   --homebrew-tap /opt/homebrew/Library/Taps/cutiedeng/homebrew-racket \
   --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1
+```
+
+Create the Homebrew source archive, upload it to the `CutieDeng/racket`
+`v9.2.1` release, then update the formula only if the upload succeeds:
+
+```sh
+racket package-racket.rkt \
+  --target brew \
+  --target source-release \
+  --racket-root /Users/cutiedeng/Y2026/M04/D03/racket.git \
+  --homebrew-tap /opt/homebrew/Library/Taps/cutiedeng/homebrew-racket \
+  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1
+```
+
+The stable GitHub release settings live in `source-release-config.rktd`. The
+default token file is `secret/ghtoken.rktd`, and it must contain exactly one
+Racket string datum:
+
+```racket
+"github_pat_..."
+```
+
+Create the local token file without committing it:
+
+```sh
+mkdir -p secret
+chmod 700 secret
+$EDITOR secret/ghtoken.rktd
+chmod 600 secret/ghtoken.rktd
+```
+
+Upload an already generated source `.tgz` without rebuilding it:
+
+```sh
+racket package-racket.rkt \
+  --target source-release \
+  --artifact-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/artifacts
 ```
 
 For `brew`, `--formula` means the final tap formula path. When omitted, it is
