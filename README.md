@@ -472,17 +472,19 @@ racket package-racket.rkt \
 ```
 
 `--rpm-system` must be explicit. Supported values are `el9`, `fc40`,
-`openeuler`, and `openeuler2403`. `--rpm-release` is the release base before the
-system suffix, so `--rpm-release 1 --rpm-system fc40` becomes RPM
-`Release: 1.fc40`. `--rpm-arch arm64` is normalized to RPM's `aarch64` target.
-The accepted RPM architecture spellings are `x86_64`, `amd64`, `x64`,
-`aarch64`, and `arm64`.
+`openeuler2203`, and `openeuler2403`. The generic `openeuler` value is rejected
+because production RPM artifacts must name the concrete target system.
+`--rpm-release` is the release base before the system suffix, so
+`--rpm-release 1 --rpm-system fc40` becomes RPM `Release: 1.fc40`.
+`--rpm-arch arm64` is normalized to RPM's `aarch64` target. The accepted RPM
+architecture spellings are `x86_64`, `amd64`, `x64`, `aarch64`, and `arm64`.
 
 Common RPM target examples:
 
 ```sh
 --rpm-system el9 --rpm-release 1 --rpm-arch x86_64
 --rpm-system fc40 --rpm-release 1 --rpm-arch x86_64
+--rpm-system openeuler2203 --rpm-release 1 --rpm-arch arm64
 --rpm-system openeuler2403 --rpm-release 1 --rpm-arch arm64
 ```
 

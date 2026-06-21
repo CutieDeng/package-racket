@@ -322,6 +322,27 @@ actual output:
     ) ; end with-temp-dir
   ) ; end test-case rpm missing system
 
+  (test-case "rpm dry-run rejects generic openeuler system"
+    (with-temp-dir
+     (lambda (tmp)
+       (define-values (exit-code out err)
+         (run-package
+          (list "--target" "rpm"
+                "--artifact-dir" (path-arg (build-path tmp "artifacts"))
+                "--work-dir" (path-arg (build-path tmp "work"))
+                "--rpm-system" "openeuler"
+                "--rpm-release" "1"
+                "--rpm-arch" "arm64"
+                "--dry-run")))
+       (check-not-equal? exit-code 0)
+       (check-contains (combined-output out err)
+                       "--rpm-system must be one of el9, fc40, openeuler2203, openeuler2403")
+       (check-false (directory-exists? (build-path tmp "artifacts")))
+       (check-false (directory-exists? (build-path tmp "work")))
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case rpm generic openeuler
+
   (test-case "rpm-spec dry-run generates no files and does not require racket root"
     (with-temp-dir
      (lambda (tmp)

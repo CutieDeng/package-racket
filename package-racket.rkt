@@ -595,7 +595,7 @@
 ) ; end define normalize-rpm-arch
 
 (define rpm-supported-systems
-  '("el9" "fc40" "openeuler" "openeuler2403"))
+  '("el9" "fc40" "openeuler2203" "openeuler2403"))
 
 (define (assert-rpm-system system)
   (begin
@@ -1327,6 +1327,17 @@ scripts/build-rpm.sh \\
   --prefix /usr
 ```
 
+Supported RPM systems are `el9`, `fc40`, `openeuler2203`, and
+`openeuler2403`. The generic `openeuler` value is intentionally rejected for
+production artifacts. Common explicit target examples:
+
+```sh
+--rpm-system el9 --rpm-release 1 --rpm-arch x86_64
+--rpm-system fc40 --rpm-release 1 --rpm-arch x86_64
+--rpm-system openeuler2203 --rpm-release 1 --rpm-arch arm64
+--rpm-system openeuler2403 --rpm-release 1 --rpm-arch arm64
+```
+
 Build the matching SRPM from the generated GitHub Release source URL:
 
 ```sh
@@ -1480,8 +1491,8 @@ normalize_arch() {{
 
 validate_rpm_system() {{
   case \"$1\" in
-    el9|fc40|openeuler|openeuler2403) ;;
-    *) die \"rpm system must be el9, fc40, openeuler, or openeuler2403: $1\" ;;
+    el9|fc40|openeuler2203|openeuler2403) ;;
+    *) die \"rpm system must be el9, fc40, openeuler2203, or openeuler2403: $1\" ;;
   esac
 }}
 
@@ -1618,7 +1629,7 @@ Options:
   --source-url URL       Source archive URL. Defaults to the generated release URL.
   --artifact-dir PATH    Directory that receives the final .rpm.
   --work-dir PATH        Build work directory for rpmbuild.
-  --rpm-system SYSTEM    el9, fc40, openeuler, or openeuler2403.
+  --rpm-system SYSTEM    el9, fc40, openeuler2203, or openeuler2403.
   --rpm-release RELEASE  Package release base, for example 1. The system suffix is appended separately.
   --prefix PATH          Install prefix inside the package. Defaults to generated /usr.
   --rpm-arch ARCH        x86_64, amd64, x64, aarch64, or arm64.
@@ -1743,7 +1754,7 @@ Options:
   --source-url URL       Source archive URL. Defaults to the generated release URL.
   --artifact-dir PATH    Directory that receives the final .src.rpm.
   --work-dir PATH        Build work directory for rpmbuild.
-  --rpm-system SYSTEM    el9, fc40, openeuler, or openeuler2403.
+  --rpm-system SYSTEM    el9, fc40, openeuler2203, or openeuler2403.
   --rpm-release RELEASE  Package release base, for example 1. The system suffix is appended separately.
   --prefix PATH          Install prefix inside the package. Defaults to generated /usr.
   --rpm-arch ARCH        x86_64, amd64, x64, aarch64, or arm64.
@@ -4909,7 +4920,7 @@ jobs:
                          (set! createrepo-bin-arg path)]
    [("--deb-arch") arch "Debian architecture (default: amd64)"
                   (set! deb-arch-arg arch)]
-   [("--rpm-system") system "RPM target system: el9, fc40, openeuler, or openeuler2403. Required for RPM targets"
+   [("--rpm-system") system "RPM target system: el9, fc40, openeuler2203, or openeuler2403. Required for RPM targets"
                      (set! rpm-system-arg system)]
    [("--rpm-release") release "RPM release base before .rpm-system, for example 1. Required for RPM targets"
                      (set! rpm-release-arg release)]
@@ -5370,15 +5381,25 @@ jobs:
     (define fc40 (test-cfg #:rpm-system "fc40"
                            #:rpm-release "2"
                            #:rpm-arch "x86_64"))
-    (define openeuler (test-cfg #:rpm-system "openeuler2403"
-                                #:rpm-release "1"
-                                #:rpm-arch "aarch64"))
+    (define openeuler2203 (test-cfg #:rpm-system "openeuler2203"
+                                    #:rpm-release "1"
+                                    #:rpm-arch "aarch64"))
+    (define openeuler2403 (test-cfg #:rpm-system "openeuler2403"
+                                    #:rpm-release "1"
+                                    #:rpm-arch "aarch64"))
     (check-equal? (rpm-release el9) "1.el9")
     (check-equal? (rpm-package-name el9) "racket9-9.2.1-1.el9.x86_64.rpm")
     (check-equal? (rpm-release fc40) "2.fc40")
     (check-equal? (rpm-package-name fc40) "racket9-9.2.1-2.fc40.x86_64.rpm")
-    (check-equal? (rpm-release openeuler) "1.openeuler2403")
-    (check-equal? (rpm-package-name openeuler) "racket9-9.2.1-1.openeuler2403.aarch64.rpm")
+    (check-equal? (rpm-release openeuler2203) "1.openeuler2203")
+    (check-equal? (rpm-package-name openeuler2203) "racket9-9.2.1-1.openeuler2203.aarch64.rpm")
+    (check-equal? (rpm-release openeuler2403) "1.openeuler2403")
+    (check-equal? (rpm-package-name openeuler2403) "racket9-9.2.1-1.openeuler2403.aarch64.rpm")
+    (check-exn exn:fail?
+               (lambda ()
+                 (assert-rpm-system "openeuler")
+               ) ; end lambda generic openeuler
+    ) ; end check-exn generic openeuler
   ) ; end test-case rpm explicit system release arch
 
   (test-case "deb md5sums track payload files only"
