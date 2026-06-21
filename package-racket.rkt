@@ -635,8 +635,11 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
 (define (brew-generated-formula c)
   (build-path (brew-work-root c) "Formula" (file-name-from-path (cfg-formula c))))
 
+(define (brew-source-tgz-name c)
+  f"racket-minimal-{(cfg-version c)}-src.tgz")
+
 (define (brew-output-tgz c)
-  (build-path (cfg-artifact-dir c) f"racket-minimal-{(cfg-version c)}-src.tgz"))
+  (build-path (cfg-artifact-dir c) (brew-source-tgz-name c)))
 
 (define (assert-homebrew-tap! c)
   (begin
@@ -659,7 +662,7 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
 ) ; end define assert-homebrew-tap!
 
 (define (formula-source-url c)
-  f"https://github.com/CutieDeng/racket/releases/download/v{(cfg-version c)}/racket-minimal-{(cfg-version c)}-src.tgz")
+  f"https://github.com/CutieDeng/racket/releases/download/v{(cfg-version c)}/{(brew-source-tgz-name c)}")
 
 (define (formula-root-url c)
   f"root_url \"https://github.com/CutieDeng/racket/releases/download/v{(cfg-version c)}\"")
@@ -730,9 +733,16 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
 ) ; end define validate-formula-template!
 
 (define (validate-brew-tgz! c)
-  (define tgz-path (brew-output-tgz c))
-  (assert-nonempty-file 'validate-brew-tgz! tgz-path)
-  (println/flush f"Validated brew source tgz: {(clean-path-string tgz-path)}"))
+  (begin
+    (define tgz-path (brew-output-tgz c))
+    (assert-nonempty-file 'validate-brew-tgz! tgz-path)
+    (unless (equal? (file-name-from-path tgz-path) (string->path (brew-source-tgz-name c)))
+      (raise-user-error 'validate-brew-tgz!
+                        f"brew source tgz name must be {(brew-source-tgz-name c)}: {(clean-path-string tgz-path)}")
+    ) ; end unless brew tgz basename matches formula
+    (println/flush f"Validated brew source tgz: {(clean-path-string tgz-path)}")
+  ) ; end begin validate-brew-tgz!
+) ; end define validate-brew-tgz!
 
 (define (validate-brew-artifact! c formula-path)
   (begin

@@ -58,7 +58,9 @@ For `brew`, `--formula` means the final tap formula path. When omitted, it is
 derived from the explicit `--homebrew-tap` as `Formula/racket@9.rb`. The script
 copies that file into `.build/brew/Formula/`, lets the brew helper update the
 staged copy, then replaces the tap formula only after all selected targets
-succeed.
+succeed. The generated Homebrew source archive is
+`racket-minimal-<version>-src.tgz`, matching the basename used by the Formula
+source URL.
 
 Generate the Homebrew tap CI workflows from `brew-ci-config.rktd` and overwrite
 the tap workflow files after validation:
