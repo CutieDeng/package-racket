@@ -60,6 +60,38 @@
   ) ; end begin make-fake-racket-root!
 ) ; end define make-fake-racket-root!
 
+(define (make-fake-homebrew-tap! base)
+  (begin
+    (define tap (build-path base "homebrew-racket"))
+    (make-directory* (build-path tap ".git"))
+    (make-directory* (build-path tap ".github" "workflows"))
+    (write-text!
+     (build-path tap "Formula" "racket@9.rb")
+     "class RacketAT9 < Formula
+  url \"https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz\"
+  sha256 \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"
+  test do
+    assert_match \"9.2.1\", shell_output(\"racket -v\")
+  end
+end
+")
+    tap
+  ) ; end begin make-fake-homebrew-tap!
+) ; end define make-fake-homebrew-tap!
+
+(define (write-brew-ci-config! path)
+  (write-text!
+   path
+   "#hash((formula . \"racket@9\")
+      (artifact-prefix . \"bottles\")
+      (bottle-runners . (#hash((os . \"macos-26\"))
+                         #hash((os . \"ubuntu-latest\")
+                               (container . \"ghcr.io/homebrew/brew:main\"))
+                         #hash((os . \"ubuntu-24.04-arm\")
+                               (container . \"ghcr.io/homebrew/brew:main\"))))
+      (syntax-runners . (#hash((os . \"macos-15-intel\")))))
+"))
+
 (define (write-source-release-config! path asset-name)
   (write-text!
    path
@@ -288,7 +320,7 @@ actual output:
        (define racket-root (make-fake-racket-root! tmp))
        (define artifact-dir (build-path tmp "artifacts"))
        (define work-dir (build-path tmp "work"))
-       (define tap-dir (build-path tmp "tap"))
+       (define tap-dir (make-fake-homebrew-tap! tmp))
        (define asset-name "racket-minimal-9.2.1-src.tgz")
        (define config-path (build-path tmp "source-release-config.rktd"))
        (write-source-release-config! config-path asset-name)
@@ -305,12 +337,76 @@ actual output:
                 "--dry-run")))
        (define text (combined-output out err))
        (check-contains text "Targets: brew, source-release")
+       (check-contains text "Would stage brew source directory:")
+       (check-contains text "Would create brew source tgz:")
+       (check-contains text "Would set Formula source URL:")
+       (check-contains text "Would update brew formula:")
        (check-contains text "Source release sha256: <dry-run: artifact not built>")
        (check-contains text "Would upload source release asset from planned brew output")
        (check-false (directory-exists? artifact-dir))
       ) ; end lambda temp dir
     ) ; end with-temp-dir
   ) ; end test-case brew plus source-release dry-run
+
+  (test-case "brew-ci dry-run validates tap config and writes no workflows"
+    (with-temp-dir
+     (lambda (tmp)
+       (define racket-root (make-fake-racket-root! tmp))
+       (define tap-dir (make-fake-homebrew-tap! tmp))
+       (define config-path (build-path tmp "brew-ci-config.rktd"))
+       (define work-dir (build-path tmp "work"))
+       (write-brew-ci-config! config-path)
+       (define-values (out err)
+         (run-package/success
+          (list "--target" "brew-ci"
+                "--racket-root" (path-arg racket-root)
+                "--homebrew-tap" (path-arg tap-dir)
+                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1"
+                "--work-dir" (path-arg work-dir)
+                "--brew-ci-config" (path-arg config-path)
+                "--dry-run")))
+       (define text (combined-output out err))
+       (check-contains text "Targets: brew-ci")
+       (check-contains text "Would read brew CI config:")
+       (check-contains text "Would configure bottle runner count: 3")
+       (check-contains text "ubuntu-24.04-arm in ghcr.io/homebrew/brew:main")
+       (check-contains text "Would validate brew CI workflow YAML with:")
+       (check-false (file-exists? (build-path tap-dir ".github" "workflows" "tests.yml")))
+       (check-false (file-exists? (build-path tap-dir ".github" "workflows" "publish.yml")))
+       (check-false (directory-exists? work-dir))
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case brew-ci dry-run
+
+  (test-case "brew-ci installs generated workflows into a temporary tap"
+    (with-temp-dir
+     (lambda (tmp)
+       (define racket-root (make-fake-racket-root! tmp))
+       (define tap-dir (make-fake-homebrew-tap! tmp))
+       (define config-path (build-path tmp "brew-ci-config.rktd"))
+       (define work-dir (build-path tmp "work"))
+       (write-brew-ci-config! config-path)
+       (define-values (out err)
+         (run-package/success
+          (list "--target" "brew-ci"
+                "--racket-root" (path-arg racket-root)
+                "--homebrew-tap" (path-arg tap-dir)
+                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1"
+                "--work-dir" (path-arg work-dir)
+                "--brew-ci-config" (path-arg config-path))))
+       (define text (combined-output out err))
+       (define tests-yml (build-path tap-dir ".github" "workflows" "tests.yml"))
+       (define publish-yml (build-path tap-dir ".github" "workflows" "publish.yml"))
+       (check-contains text "Installed brew CI workflow:")
+       (check-true (file-exists? tests-yml))
+       (check-true (file-exists? publish-yml))
+       (check-contains (file->string tests-yml) "ubuntu-24.04-arm")
+       (check-contains (file->string tests-yml) "if-no-files-found: error")
+       (check-contains (file->string publish-yml) "URI.decode_www_form_component")
+       (check-contains (file->string publish-yml) "\"[skip ci]\"")
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case brew-ci workflow install
 
   (test-case "combined apt release rejects mismatched asset names"
     (with-temp-dir

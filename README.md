@@ -106,13 +106,18 @@ racket tools/check-commit-message.rkt --message-file .commit
 Run the packaging regression tests from the repository root:
 
 ```sh
-raco test tests/package-racket-test.rkt
+raco test package-racket.rkt tests/package-racket-test.rkt
 ```
 
-These tests execute the real `package-racket.rkt` CLI in temporary directories.
-They cover dry-run isolation between targets, release-upload validation without
-reading local tokens, and combined producer/release targets such as
-`apt + apt-release` and `brew + source-release`.
+These tests combine brew unit checks with real `package-racket.rkt` CLI runs in
+temporary directories. They cover Homebrew Formula and workflow semantics,
+dry-run isolation between targets, release-upload validation without reading
+local tokens, and combined producer/release targets such as `apt + apt-release`
+and `brew + source-release`.
+
+`--dry-run` still performs safety checks for configured paths, but it does not
+write package artifacts, generated Homebrew workflow files, or tap Formula
+updates.
 
 ## Requirements
 

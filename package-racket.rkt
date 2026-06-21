@@ -3228,4 +3228,149 @@ jobs:
   (println/flush "Done.")
 ) ; end define main
 
-(main)
+(module+ test
+  (define test-root (find-system-path 'temp-dir))
+  (define test-bottle-root-url "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1")
+  (define test-sha256 (make-string 64 #\a))
+
+  (define (test-cfg #:targets [targets '("brew")]
+                    #:dry-run? [dry-run? #t]
+                    #:update-formula? [update-formula? #t]
+                    #:formula-build-mode [formula-build-mode "full"]
+                    #:brew-packages [brew-packages '()])
+    (cfg targets
+         (build-path test-root "racket-root")
+         (build-path test-root "racket-root")
+         "9.2.1"
+         "racket9"
+         "1"
+         "/opt/racket9"
+         (build-path test-root "artifacts")
+         (build-path test-root "work")
+         (build-path test-root "stage")
+         (build-path test-root "install-root")
+         "1"
+         #f
+         #f
+         dry-run?
+         "make"
+         "tar"
+         "dpkg-deb"
+         "ar"
+         "xz"
+         "auto"
+         "rpmbuild"
+         "rpm"
+         "amd64"
+         "x86_64"
+         "Cutie Deng <cutiedeng@users.noreply.github.com>"
+         "Racket programming language"
+         "MIT OR Apache-2.0"
+         "https://racket-lang.org/"
+         test-bottle-root-url
+         (build-path test-root "homebrew-racket")
+         (build-path test-root "homebrew-racket" "Formula" "racket@9.rb")
+         update-formula?
+         formula-build-mode
+         (build-path test-root "brew-ci-config.rktd")
+         (build-path test-root "source-release-config.rktd")
+         #f
+         #f
+         #f
+         #f
+         (build-path test-root "apt-release-config.rktd")
+         #f
+         #f
+         #f
+         #f
+         'unset
+         "ruby"
+         brew-packages
+         '())
+  ) ; end define test-cfg
+
+  (define test-brew-ci-config
+    #hash((formula . "racket@9")
+          (artifact-prefix . "bottles")
+          (bottle-runners . (#hash((os . "macos-26"))
+                             #hash((os . "ubuntu-latest")
+                                   (container . "ghcr.io/homebrew/brew:main"))
+                             #hash((os . "ubuntu-24.04-arm")
+                                   (container . "ghcr.io/homebrew/brew:main"))))
+          (syntax-runners . (#hash((os . "macos-15-intel"))))))
+
+  (test-case "brew target names and package closure stay stable"
+    (define c (test-cfg #:brew-packages '("sandbox-lib" "custom-extra")))
+    (define packages (brew-source-packages c))
+    (check-equal? (normalize-targets '("all" "brew-ci" "source-release" "apt-release"))
+                  '("brew-ci" "brew" "source-release" "apt" "apt-release" "rpm"))
+    (check-equal? (brew-source-tgz-name c) "racket-minimal-9.2.1-src.tgz")
+    (check-true (and (member "sandbox-lib" packages string=?) #t))
+    (check-true (and (member "errortrace-lib" packages string=?) #t))
+    (check-true (and (member "source-syntax" packages string=?) #t))
+    (check-true (and (member "custom-extra" packages string=?) #t))
+    (check-equal? (count (lambda (name) (string=? name "sandbox-lib")) packages) 1)
+    (check-false (member "racket-aarch64-macosx-4" packages string=?))
+  ) ; end test-case brew package closure
+
+  (test-case "full brew Formula template keeps runtime checks and dependencies"
+    (define content (formula-content/full (test-cfg) test-sha256))
+    (for ([needle (in-list (list "class RacketAT9 < Formula"
+                                 "url \"https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz\""
+                                 f"sha256 \"{test-sha256}\""
+                                 "depends_on \"openssl@3\""
+                                 "depends_on \"ncurses\""
+                                 "depends_on \"zlib-ng-compat\""
+                                 "require \"pty\""
+                                 "require racket/pvector"
+                                 "interactive-packages-ok"
+                                 "printf 'f\\\"hi\\\""
+                                 "refute_match(/no readline support/"
+                                 "LD_DEBUG=libs"
+                                 "DYLD_PRINT_LIBRARIES=1"))])
+      (check-true (string-contains? content needle) needle)
+    ) ; end for formula needle
+    (check-false (string-contains? content "assert_match(/\\e\\["))
+  ) ; end test-case full Formula template
+
+  (test-case "brew CI config and workflows keep bottle publication contract"
+    (validate-brew-ci-config! test-brew-ci-config)
+    (define c (test-cfg #:targets '("brew-ci")))
+    (define tests-content (tests-workflow-content c test-brew-ci-config))
+    (define publish-content (publish-workflow-content c test-brew-ci-config))
+    (for ([needle (in-list (list "macos-26"
+                                 "ubuntu-latest"
+                                 "ubuntu-24.04-arm"
+                                 "ghcr.io/homebrew/brew:main"
+                                 "*.bottle*.tar.gz"
+                                 "if-no-files-found: error"))])
+      (check-true (string-contains? tests-content needle) needle)
+    ) ; end for tests workflow needle
+    (for ([needle (in-list (list "shell: bash"
+                                 "set -euo pipefail"
+                                 "URI.decode_www_form_component"
+                                 "Digest::SHA256.file"
+                                 "brew bottle --merge --write --no-commit"
+                                 "gh release upload"
+                                 "((CI \"brew publish bottles\" update-bottle-metadata)"
+                                 "\"[skip bottles]\""
+                                 "\"[skip ci]\""
+                                 "ubuntu-24.04-arm"))])
+      (check-true (string-contains? publish-content needle) needle)
+    ) ; end for publish workflow needle
+  ) ; end test-case brew CI publication contract
+
+  (test-case "brew CI config rejects missing bottle runners"
+    (check-exn exn:fail:user?
+               (lambda ()
+                 (validate-brew-ci-config!
+                  #hash((formula . "racket@9")
+                        (artifact-prefix . "bottles")
+                        (bottle-runners . ())
+                        (syntax-runners . ()))))
+    ) ; end check-exn missing bottle runners
+  ) ; end test-case brew CI config validation
+) ; end module+ test
+
+(module+ main
+  (main))
