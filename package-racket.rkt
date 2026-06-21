@@ -1481,11 +1481,7 @@ information.
     end
     assert_match \"Welcome to Racket v{version} [cs].\", pty_output
     assert_match \"\\n#t\", pty_output
-    if OS.mac?
-      assert_match(/\\e\\[/, pty_output)
-    else
-      refute_match(/no readline support/, pty_output)
-    end
+    refute_match(/no readline support/, pty_output)
     assert !pty_output.match?(/> \\r?\\n\\(/), \"empty input fell back to the plain REPL reader\"
 
     assert_match '(default-scope . \"installation\")', racket_config.read
@@ -2373,11 +2369,21 @@ jobs:
 
       - run: brew test-bot --only-formulae --testing-formulae={formula} --skip-dependents --root-url={root-url}
 
+      - name: List bottle files
+        run: |
+          set -euo pipefail
+          find \"$GITHUB_WORKSPACE\" -maxdepth 3 \\( -name '*.bottle.json' -o -name '*.bottle*.tar.gz' \\) -type f -print | sort
+
       - name: Upload bottles as artifact
         uses: actions/upload-artifact@v6
         with:
           name: {artifact-prefix}_{matrix-os}
-          path: '*.bottle.*'
+          path: |
+            *.bottle.json
+            *.bottle*.tar.gz
+            **/*.bottle.json
+            **/*.bottle*.tar.gz
+          if-no-files-found: error
 
   publish-bottles:
     needs: build-bottles
@@ -2412,7 +2418,7 @@ jobs:
           set -euo pipefail
 
           mapfile -t bottle_jsons < <(find \"$GITHUB_WORKSPACE/bottles\" -name '*.bottle.json' -type f | sort)
-          mapfile -t bottle_tarballs < <(find \"$GITHUB_WORKSPACE/bottles\" -name '*.bottle.tar.gz' -type f | sort)
+          mapfile -t bottle_tarballs < <(find \"$GITHUB_WORKSPACE/bottles\" -name '*.bottle*.tar.gz' -type f | sort)
 
           if [ \"{bottle-json-count}\" -eq 0 ]; then
             echo \"No bottle JSON files were produced.\"
@@ -2421,6 +2427,15 @@ jobs:
 
           if [ \"{bottle-tarball-count}\" -eq 0 ]; then
             echo \"No bottle tarballs were produced.\"
+            exit 1
+          fi
+
+          if [ \"{bottle-json-count}\" -ne \"{bottle-tarball-count}\" ]; then
+            echo \"Bottle JSON count does not match bottle tarball count.\"
+            printf 'Bottle JSON files:\\n'
+            printf '  %s\\n' {bottle-json-array}
+            printf 'Bottle tarballs:\\n'
+            printf '  %s\\n' {bottle-tarball-array}
             exit 1
           fi
 
