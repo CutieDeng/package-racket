@@ -1,0 +1,7 @@
+#hash((formula . "racket@9")
+      (artifact-prefix . "bottles")
+      (publish-label . "pr-pull")
+      (bottle-runners . (#hash((os . "macos-26"))
+                         #hash((os . "ubuntu-latest")
+                               (container . "ghcr.io/homebrew/brew:main"))))
+      (syntax-runners . (#hash((os . "macos-15-intel")))))

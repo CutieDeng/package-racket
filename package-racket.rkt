@@ -7,6 +7,7 @@
          racket/path
          racket/place
          racket/port
+         racket/runtime-path
          racket/string
          racket/system)
 
@@ -16,6 +17,7 @@
 ;; C-style block-scanning workflow.
 
 (define managed-marker-suffix ".package-racket-managed")
+(define-runtime-path script-dir ".")
 
 (struct cfg
   (targets
@@ -52,6 +54,8 @@
    formula
    update-formula?
    racket-bin
+   brew-ci-config
+   ruby-bin
    brew-packages
    make-args)
   #:transparent)
@@ -271,14 +275,14 @@
       ) ; end for*/list pieces
     ) ; end define pieces
     (when (null? pieces)
-      (raise-user-error 'main "missing --target; use brew, apt, rpm, or all")
+      (raise-user-error 'main "missing --target; use brew, brew-ci, apt, rpm, or all")
     ) ; end when missing target
     (define expanded
       (append-map
        (lambda (target)
          (match target
            ["all" '("brew" "apt" "rpm")]
-           [(or "brew" "apt" "rpm") (list target)]
+           [(or "brew" "apt" "rpm" "brew-ci") (list target)]
            [_ (raise-user-error 'main f"unknown --target: {target}")]
          ) ; end match target
        ) ; end lambda target
@@ -286,9 +290,13 @@
       ) ; end append-map
     ) ; end define expanded
     (filter (lambda (target) (member target expanded string=?))
-            '("brew" "apt" "rpm"))
+            '("brew-ci" "brew" "apt" "rpm"))
   ) ; end begin normalize-targets
 ) ; end define normalize-targets
+
+(define (needs-homebrew-tap? targets)
+  (or (member "brew" targets string=?)
+      (member "brew-ci" targets string=?)))
 
 (define (prefix-relative-elements prefix)
   (define trimmed (regexp-replace #rx"^/+" prefix ""))
@@ -830,6 +838,332 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
   ) ; end begin build-brew!
 ) ; end define build-brew!
 
+(define (brew-ci-work-root c)
+  (build-path (cfg-work-dir c) "brew-ci"))
+
+(define (brew-ci-workflows-dir c)
+  (build-path (brew-ci-work-root c) ".github" "workflows"))
+
+(define (tap-workflows-dir c)
+  (build-path (cfg-homebrew-tap c) ".github" "workflows"))
+
+(define (workflow-path dir name)
+  (build-path dir name))
+
+(define (read-brew-ci-config c)
+  (begin
+    (define path (cfg-brew-ci-config c))
+    (assert-nonempty-file 'read-brew-ci-config path)
+    (define value
+      (call-with-input-file path read)
+    ) ; end define value
+    (unless (hash? value)
+      (raise-user-error 'read-brew-ci-config f"config must be a hash: {(clean-path-string path)}")
+    ) ; end unless hash config
+    value
+  ) ; end begin read-brew-ci-config
+) ; end define read-brew-ci-config
+
+(define (config-ref* config key default)
+  (hash-ref config key (lambda () default)))
+
+(define (required-config-string config key)
+  (begin
+    (define value (hash-ref config key #f))
+    (unless (and (string? value) (not (string=? value "")))
+      (raise-user-error 'required-config-string f"missing string config key: {key}")
+    ) ; end unless valid string
+    value
+  ) ; end begin required-config-string
+) ; end define required-config-string
+
+(define (runner-ref runner key default)
+  (hash-ref runner key (lambda () default)))
+
+(define (assert-runner-list who value)
+  (unless (and (list? value) (andmap hash? value))
+    (raise-user-error who "runner list must be a list of hash values")
+  ) ; end unless runner list
+) ; end define assert-runner-list
+
+(define (validate-brew-ci-config! config)
+  (begin
+    (required-config-string config 'formula)
+    (required-config-string config 'artifact-prefix)
+    (required-config-string config 'publish-label)
+    (define bottle-runners (config-ref* config 'bottle-runners '()))
+    (define syntax-runners (config-ref* config 'syntax-runners '()))
+    (assert-runner-list 'validate-brew-ci-config! bottle-runners)
+    (assert-runner-list 'validate-brew-ci-config! syntax-runners)
+    (when (null? bottle-runners)
+      (raise-user-error 'validate-brew-ci-config! "at least one bottle runner is required")
+    ) ; end when no bottle runners
+    (for ([runner (in-list (append bottle-runners syntax-runners))])
+      (define os (runner-ref runner 'os #f))
+      (unless (and (string? os) (not (string=? os "")))
+        (raise-user-error 'validate-brew-ci-config! "each runner requires a non-empty os string")
+      ) ; end unless runner os
+    ) ; end for runner
+  ) ; end begin validate-brew-ci-config!
+) ; end define validate-brew-ci-config!
+
+(define (workflow-runner-lines runner test-formula?)
+  (begin
+    (define os (runner-ref runner 'os #f))
+    (define container (runner-ref runner 'container #f))
+    (string-append
+     f"          - os: {os}
+            test_formula: {(if test-formula? "true" "false")}
+"
+     (if container
+         f"            container: {container}
+"
+         "")
+    ) ; end string-append runner lines
+  ) ; end begin workflow-runner-lines
+) ; end define workflow-runner-lines
+
+(define (tests-workflow-content c config)
+  (begin
+    (define formula (required-config-string config 'formula))
+    (define artifact-prefix (required-config-string config 'artifact-prefix))
+    (define bottle-runners (config-ref* config 'bottle-runners '()))
+    (define syntax-runners (config-ref* config 'syntax-runners '()))
+    (define root-url (formula-source-root-url c))
+    (define matrix-os "${{ matrix.os }}")
+    (define container-expr "${{ matrix.container }}")
+    (define token-expr "${{ secrets.GITHUB_TOKEN }}")
+    (define test-formula-if "matrix.test_formula")
+    (define event-name-if "github.event_name")
+    (define runner-lines
+      (string-append
+       (apply string-append (map (lambda (runner) (workflow-runner-lines runner #t)) bottle-runners))
+       (apply string-append (map (lambda (runner) (workflow-runner-lines runner #f)) syntax-runners))
+      ) ; end string-append runner lines
+    ) ; end define runner-lines
+    f"name: brew test-bot
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test-bot:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+{runner-lines}    runs-on: {matrix-os}
+    container: {container-expr}
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@main
+        with:
+          token: {token-expr}
+
+      - run: brew test-bot --only-cleanup-before
+
+      - run: brew test-bot --only-setup
+
+      - run: brew test-bot --only-tap-syntax
+
+      - run: brew test-bot --only-formulae --testing-formulae={formula} --skip-dependents --root-url={root-url}
+        if: {test-formula-if}
+
+      - name: Upload bottles as artifact
+        if: always() && {event-name-if} == 'pull_request'
+        uses: actions/upload-artifact@v6
+        with:
+          name: {artifact-prefix}_{matrix-os}
+          path: '*.bottle.*'
+"
+  ) ; end begin tests-workflow-content
+) ; end define tests-workflow-content
+
+(define (publish-workflow-content c config)
+  (begin
+    (define publish-label (required-config-string config 'publish-label))
+    (define root-url (formula-source-root-url c))
+    (define label-if "github.event.pull_request.labels.*.name")
+    (define token-expr "${{ secrets.GITHUB_TOKEN }}")
+    (define repo-expr "$GITHUB_REPOSITORY")
+    (define pr-expr "${{ github.event.pull_request.number }}")
+    (define fork-if "github.event.pull_request.head.repo.fork == false")
+    (define branch-expr "${{ github.event.pull_request.head.ref }}")
+    f"name: brew pr-pull
+
+on:
+  pull_request_target:
+    types:
+      - labeled
+
+jobs:
+  pr-pull:
+    if: contains({label-if}, '{publish-label}')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      checks: read
+      contents: write
+      issues: read
+      pull-requests: write
+    steps:
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@main
+        with:
+          token: {token-expr}
+
+      - name: Set up git
+        uses: Homebrew/actions/git-user-config@main
+
+      - name: Pull bottles
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: {token-expr}
+          PULL_REQUEST: {pr-expr}
+        run: brew pr-pull --debug --tap=\"{repo-expr}\" --root-url=\"{root-url}\" \"$PULL_REQUEST\"
+
+      - name: Push commits
+        uses: Homebrew/actions/git-try-push@main
+        with:
+          branch: main
+
+      - name: Delete branch
+        if: {fork-if}
+        env:
+          BRANCH: {branch-expr}
+        run: git push --delete origin \"$BRANCH\"
+"
+  ) ; end begin publish-workflow-content
+) ; end define publish-workflow-content
+
+(define (formula-source-root-url c)
+  f"https://github.com/CutieDeng/racket/releases/download/v{(cfg-version c)}")
+
+(define (validate-yaml! c path)
+  (begin
+    (assert-nonempty-file 'validate-yaml! path)
+    (capture! 'validate-yaml!
+              (cfg-ruby-bin c)
+              (list "-e" "require 'yaml'; ARGV.each { |path| YAML.load_file(path) }" (clean-path-string path)))
+    (void)
+  ) ; end begin validate-yaml!
+) ; end define validate-yaml!
+
+(define (validate-tests-workflow! c config path)
+  (begin
+    (validate-yaml! c path)
+    (define content (file->string path))
+    (define formula (required-config-string config 'formula))
+    (for ([needle (in-list (list "name: brew test-bot"
+                                 f"--testing-formulae={formula}"
+                                 f"--root-url={(formula-source-root-url c)}"
+                                 "test_formula: true"
+                                 "if: matrix.test_formula"
+                                 "if: always() && github.event_name == 'pull_request'"
+                                 "actions/upload-artifact@v6"))])
+      (unless (string-contains? content needle)
+        (raise-user-error 'validate-tests-workflow! f"tests workflow missing: {needle}")
+      ) ; end unless tests workflow needle
+    ) ; end for needle
+  ) ; end begin validate-tests-workflow!
+) ; end define validate-tests-workflow!
+
+(define (validate-publish-workflow! c config path)
+  (begin
+    (validate-yaml! c path)
+    (define content (file->string path))
+    (define publish-label (required-config-string config 'publish-label))
+    (for ([needle (in-list (list "name: brew pr-pull"
+                                 f"contains(github.event.pull_request.labels.*.name, '{publish-label}')"
+                                 "brew pr-pull --debug"
+                                 f"--root-url=\"{(formula-source-root-url c)}\""
+                                 "if: github.event.pull_request.head.repo.fork == false"
+                                 "contents: write"))])
+      (unless (string-contains? content needle)
+        (raise-user-error 'validate-publish-workflow! f"publish workflow missing: {needle}")
+      ) ; end unless publish workflow needle
+    ) ; end for needle
+  ) ; end begin validate-publish-workflow!
+) ; end define validate-publish-workflow!
+
+(define (generated-workflow-paths c)
+  (values (workflow-path (brew-ci-workflows-dir c) "tests.yml")
+          (workflow-path (brew-ci-workflows-dir c) "publish.yml")))
+
+(define (tap-workflow-paths c)
+  (values (workflow-path (tap-workflows-dir c) "tests.yml")
+          (workflow-path (tap-workflows-dir c) "publish.yml")))
+
+(define (prepare-brew-ci-workflows! c config)
+  (begin
+    (assert-homebrew-tap! c)
+    (assert-executable 'prepare-brew-ci-workflows! (cfg-ruby-bin c))
+    (reset-managed-dir! 'prepare-brew-ci-workflows! (brew-ci-work-root c))
+    (make-directory* (brew-ci-workflows-dir c))
+    (define-values (tests-path publish-path)
+      (generated-workflow-paths c)
+    ) ; end define-values generated workflow paths
+    (write-text-file! tests-path (tests-workflow-content c config))
+    (write-text-file! publish-path (publish-workflow-content c config))
+    (validate-tests-workflow! c config tests-path)
+    (validate-publish-workflow! c config publish-path)
+    (values tests-path publish-path)
+  ) ; end begin prepare-brew-ci-workflows!
+) ; end define prepare-brew-ci-workflows!
+
+(define (replace-file-atomically! who src dest)
+  (begin
+    (assert-nonempty-file who src)
+    (make-directory* (path-only dest))
+    (assert-writable-directory who (path-only dest))
+    (define temp (make-temporary-file f".{(path-basename dest)}.tmp~a" #f (path-only dest)))
+    (copy-file src temp #t)
+    (rename-file-or-directory temp dest #t)
+  ) ; end begin replace-file-atomically!
+) ; end define replace-file-atomically!
+
+(define (install-brew-ci-workflows! c config tests-path publish-path)
+  (begin
+    (assert-homebrew-tap! c)
+    (define-values (tap-tests tap-publish)
+      (tap-workflow-paths c)
+    ) ; end define-values tap workflow paths
+    (replace-file-atomically! 'install-brew-ci-workflows! tests-path tap-tests)
+    (replace-file-atomically! 'install-brew-ci-workflows! publish-path tap-publish)
+    (validate-tests-workflow! c config tap-tests)
+    (validate-publish-workflow! c config tap-publish)
+    (println/flush f"Installed brew CI workflow: {(clean-path-string tap-tests)}")
+    (println/flush f"Installed brew CI workflow: {(clean-path-string tap-publish)}")
+  ) ; end begin install-brew-ci-workflows!
+) ; end define install-brew-ci-workflows!
+
+(define (build-brew-ci! c)
+  (begin
+    (define config (read-brew-ci-config c))
+    (validate-brew-ci-config! config)
+    (if (cfg-dry-run? c)
+        (let-values ([(tap-tests tap-publish) (tap-workflow-paths c)])
+          (println/flush f"Would install brew CI workflow: {(clean-path-string tap-tests)}")
+          (println/flush f"Would install brew CI workflow: {(clean-path-string tap-publish)}")
+          '()
+        ) ; end let-values dry-run tap workflow paths
+        (let-values ([(tests-path publish-path) (prepare-brew-ci-workflows! c config)])
+          (list (lambda ()
+                  (install-brew-ci-workflows! c config tests-path publish-path)
+                ) ; end lambda install brew-ci workflows
+          ) ; end list brew-ci finalizer
+        ) ; end let-values generated workflow paths
+    ) ; end if dry-run
+  ) ; end begin build-brew-ci!
+) ; end define build-brew-ci!
+
 (define (default-jobs)
   (number->string (max 1 (processor-count))))
 
@@ -863,11 +1197,13 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
   (define summary-arg "Racket programming language")
   (define license-arg "MIT OR Apache-2.0")
   (define url-arg "https://racket-lang.org/")
-  (define homebrew-tap-arg "/opt/homebrew/Library/Taps/cutiedeng/homebrew-racket")
+  (define homebrew-tap-arg #f)
   (define brew-helper-arg #f)
   (define formula-arg #f)
   (define update-formula? #t)
   (define racket-bin-arg #f)
+  (define brew-ci-config-arg #f)
+  (define ruby-bin-arg "ruby")
   (define brew-package-args '())
   (define make-args '())
   (command-line
@@ -929,18 +1265,22 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
                 (set! license-arg value)]
    [("--url") value "Package URL/Homepage"
             (set! url-arg value)]
-   [("--homebrew-tap") path "Homebrew tap root (default: /opt/homebrew/Library/Taps/cutiedeng/homebrew-racket)"
+   [("--homebrew-tap") path "Required for brew and brew-ci; Homebrew tap root"
                       (set! homebrew-tap-arg path)]
-   [("--brew-helper") path "Homebrew source helper (default: --homebrew-tap/racket-to-brew-tgz.rkt)"
+   [("--brew-helper") path "Homebrew source helper (derived from --homebrew-tap when omitted)"
                     (set! brew-helper-arg path)]
-   [("--formula") path "Homebrew formula to update (default: --homebrew-tap/Formula/racket@9.rb)"
+   [("--formula") path "Homebrew formula to update (derived from --homebrew-tap when omitted)"
                 (set! formula-arg path)]
    [("--no-update-formula") "Do not update the Homebrew formula"
                           (set! update-formula? #f)]
    [("--racket-bin") path "Racket executable for running the brew helper (default: --racket-root/racket/bin/racket)"
                   (set! racket-bin-arg path)]
+   [("--brew-ci-config") path "Package-racket source config for generated tap workflows (default: ./brew-ci-config.rktd)"
+                       (set! brew-ci-config-arg path)]
+   [("--ruby-bin") path "Ruby executable for YAML validation (default: ruby)"
+                  (set! ruby-bin-arg path)]
    #:multi
-   [("--target") target "Packaging target: brew, apt, rpm, or all. May be repeated."
+   [("--target") target "Packaging target: brew, brew-ci, apt, rpm, or all. May be repeated."
                 (set! target-args (append target-args (list target)))]
    [("--brew-package") name "Extra package to pass to the brew source helper"
                      (set! brew-package-args (append brew-package-args (list name)))]
@@ -956,10 +1296,32 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
   (define work-dir (complete-path* work-dir-arg))
   (define stage-dir (complete-path* (or stage-dir-arg (build-path work-dir "stage"))))
   (define install-root (complete-path* (or install-root-arg (build-path work-dir "install-root"))))
-  (define homebrew-tap (complete-path* homebrew-tap-arg))
-  (define brew-helper (complete-path* (or brew-helper-arg (build-path homebrew-tap "racket-to-brew-tgz.rkt"))))
-  (define formula (complete-path* (or formula-arg (build-path homebrew-tap "Formula" "racket@9.rb"))))
+  (when (and (needs-homebrew-tap? targets) (not homebrew-tap-arg))
+    (raise-user-error 'main "--homebrew-tap is required when --target includes brew or brew-ci")
+  ) ; end when missing homebrew tap
+  (define homebrew-tap (and homebrew-tap-arg (complete-path* homebrew-tap-arg)))
+  (define brew-helper
+    (cond
+      [brew-helper-arg
+       (complete-path* brew-helper-arg)]
+      [homebrew-tap
+       (complete-path* (build-path homebrew-tap "racket-to-brew-tgz.rkt"))]
+      [else
+       #f]
+    ) ; end cond brew helper path
+  ) ; end define brew-helper
+  (define formula
+    (cond
+      [formula-arg
+       (complete-path* formula-arg)]
+      [homebrew-tap
+       (complete-path* (build-path homebrew-tap "Formula" "racket@9.rb"))]
+      [else
+       #f]
+    ) ; end cond formula path
+  ) ; end define formula
   (define racket-bin (complete-path* (or racket-bin-arg (build-path racket-root "racket" "bin" "racket"))))
+  (define brew-ci-config (complete-path* (or brew-ci-config-arg (build-path script-dir "brew-ci-config.rktd"))))
   (assert-prefix prefix-arg)
   (assert-racket-root racket-root)
   (cfg targets
@@ -996,6 +1358,8 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
        formula
        update-formula?
        racket-bin
+       brew-ci-config
+       ruby-bin-arg
        brew-package-args
        make-args
   ) ; end cfg
@@ -1026,9 +1390,10 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
      (lambda (target)
        (match target
          ["brew" (build-brew! c)]
+         ["brew-ci" (build-brew-ci! c)]
          ["apt" (build-apt! c) '()]
          ["rpm" (build-rpm! c) '()]
-         [_ (error 'main "unreachable target: ~a" target)]
+         [_ (error 'main f"unreachable target: {target}")]
        ) ; end match target
      ) ; end lambda target
      (cfg-targets c)
@@ -1041,6 +1406,7 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
     (delete-managed-dir-if-present! (build-path (cfg-work-dir c) "apt-root"))
     (delete-managed-dir-if-present! (build-path (cfg-work-dir c) "deb-parts"))
     (delete-managed-dir-if-present! (build-path (cfg-work-dir c) "brew"))
+    (delete-managed-dir-if-present! (build-path (cfg-work-dir c) "brew-ci"))
     (delete-managed-dir-if-present! (build-path (cfg-work-dir c) "rpm"))
   ) ; end unless cleanup work dirs
   (println/flush "Done.")

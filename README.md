@@ -1,18 +1,22 @@
 # package-racket
 
-Packaging helper for a local Racket checkout. The command supports three named
+Packaging helper for a local Racket checkout. The command supports named
 packaging flows:
 
 - `brew`: creates the Homebrew source `.tgz`, generates a staged
   `brew/Formula/racket@9.rb`, validates it, then replaces the formula in the
   Homebrew tap at the end of a successful script run unless disabled.
+- `brew-ci`: generates Homebrew tap GitHub Actions workflows from
+  `brew-ci-config.rktd`, validates them, then replaces the workflow files in
+  the Homebrew tap. This target is intentionally not part of `all`.
 - `apt`: installs into a staged root with `make unix-style` and builds a `.deb`.
 - `rpm`: installs into a staged root with `make unix-style` and builds a `.rpm`.
 
 All inputs are passed by named options. There are no positional arguments.
 Generated metadata text in the Racket script is assembled with `f"..."` strings,
 so package fields stay close to the self-hosted tstring syntax used by the
-Racket checkout.
+Racket checkout. Any flow that can write a Homebrew tap requires
+`--homebrew-tap`; the script intentionally has no implicit tap path.
 
 For maintainability, complex Racket blocks in `package-racket.rkt` use an
 explicit block-ending style: close important `define`, `begin`, `cond`, `when`,
@@ -23,12 +27,19 @@ The script stops on safety-check failures instead of continuing. It checks
 required directories and tools, validates non-empty staged install roots,
 checks package metadata files, verifies `.deb` archive members, verifies RPM
 metadata with `rpm -qip`, and compares the generated Homebrew formula sha256
-against the generated source `.tgz`.
+against the generated source `.tgz`. The `brew-ci` flow also validates generated
+workflow YAML and required workflow content before replacing files in the tap.
+
+`package-racket` is the source of truth for generated packaging metadata. The
+Homebrew tap receives overwritten generated outputs such as `Formula/racket@9.rb`
+and `.github/workflows/*.yml`; keep their maintainable configuration here.
 
 ## Requirements
 
 - Racket with the `tstring` reader available.
-- For `brew`: `/opt/homebrew/Library/Taps/cutiedeng/homebrew-racket/racket-to-brew-tgz.rkt`.
+- For `brew`: an explicit `--homebrew-tap` whose root contains
+  `racket-to-brew-tgz.rkt` and `Formula/racket@9.rb`.
+- For `brew-ci`: Ruby for YAML validation.
 - For `apt`: `dpkg-deb`, or `ar` + `tar` + `xz` through the automatic fallback.
 - For `rpm`: `rpmbuild`.
 
@@ -39,13 +50,29 @@ Create the Homebrew source archive and update the formula:
 ```sh
 racket package-racket.rkt \
   --target brew \
-  --racket-root /Users/cutiedeng/Y2026/M04/D03/racket.git
+  --racket-root /Users/cutiedeng/Y2026/M04/D03/racket.git \
+  --homebrew-tap /opt/homebrew/Library/Taps/cutiedeng/homebrew-racket
 ```
 
-For `brew`, `--formula` means the final tap formula path. The script copies that
-file into `.build/brew/Formula/`, lets the brew helper update the staged copy,
-then replaces `/opt/homebrew/Library/Taps/cutiedeng/homebrew-racket/Formula/racket@9.rb`
-only after all selected targets succeed.
+For `brew`, `--formula` means the final tap formula path. When omitted, it is
+derived from the explicit `--homebrew-tap` as `Formula/racket@9.rb`. The script
+copies that file into `.build/brew/Formula/`, lets the brew helper update the
+staged copy, then replaces the tap formula only after all selected targets
+succeed.
+
+Generate the Homebrew tap CI workflows from `brew-ci-config.rktd` and overwrite
+the tap workflow files after validation:
+
+```sh
+racket package-racket.rkt \
+  --target brew-ci \
+  --racket-root /Users/cutiedeng/Y2026/M04/D03/racket.git \
+  --homebrew-tap /opt/homebrew/Library/Taps/cutiedeng/homebrew-racket
+```
+
+Use `--brew-ci-config` to point at another workflow config file, and
+`--homebrew-tap` to explicitly select the tap that receives the generated
+workflows.
 
 Create a Debian package from a Linux x64 build:
 
