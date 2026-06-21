@@ -270,13 +270,11 @@ actual output:
   (test-case "rpm arm64 dry-run normalizes to aarch64 and writes no artifacts"
     (with-temp-dir
      (lambda (tmp)
-       (define racket-root (make-fake-racket-root! tmp))
        (define artifact-dir (build-path tmp "artifacts"))
        (define work-dir (build-path tmp "work"))
        (define-values (out err)
          (run-package/success
           (list "--target" "rpm"
-                "--racket-root" (path-arg racket-root)
                 "--artifact-dir" (path-arg artifact-dir)
                 "--work-dir" (path-arg work-dir)
                 "--rpm-arch" "arm64"
@@ -284,11 +282,15 @@ actual output:
        (define text (combined-output out err))
        (check-contains text "Targets: rpm")
        (check-contains text "Formula/package version: 9.2.1.1")
-       (check-contains text "Racket source version: 9.2.1")
-       (check-contains text "Prefix: /usr")
        (check-contains text "RPM target arch: aarch64")
-       (check-contains text "racket9-9.2.1.1-payload.tar.gz")
+       (check-contains text "RPM package version: 9.2.1")
+       (check-contains text "RPM package release: 1")
+       (check-contains text "RPM package prefix: /usr")
+       (check-contains text "RPM source archive: https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz")
+       (check-contains text "racket9-9.2.1-1.aarch64.rpm")
        (check-contains text "--target aarch64")
+       (check-not-contains text "make -C")
+       (check-not-contains text "payload.tar.gz")
        (check-false (directory-exists? artifact-dir))
        (check-false (directory-exists? work-dir))
       ) ; end lambda temp dir
@@ -430,7 +432,9 @@ actual output:
        (check-contains text "RPM target arch: aarch64")
        (check-contains text "RPM repo config:")
        (check-contains text "RPM repo root:")
-       (check-contains text "RPM repo package: racket9-9.2.1.1-1.aarch64.rpm")
+       (check-contains text "RPM package version: 9.2.1")
+       (check-contains text "RPM package release: 1")
+       (check-contains text "RPM repo package: racket9-9.2.1-1.aarch64.rpm")
        (check-contains text "RPM repo sha256: <dry-run: artifact not built>")
        (check-contains text "Would update RPM repo from planned rpm output")
        (check-contains text "Would copy RPM into repo:")

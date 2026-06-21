@@ -56,8 +56,8 @@ replacing files in the tap. The publish workflow updates release assets and the
 Formula only after every bottle runner succeeds.
 The `rpm-spec` flow checks that the target root is a writable Git repository,
 generates only the SPEC/SOURCES/scripts scaffold, validates the generated spec
-and script contents, pins the source archive URL/sha256 when available, and
-marks generated shell entrypoints executable. The
+and script contents, resolves the source archive sha256 before writing `.spec`,
+and marks generated shell entrypoints executable. The
 `rpm-repo` flow checks the target repository root, checks RPM metadata before
 copying it, runs `createrepo_c --update`, and requires `repodata/repomd.xml` to
 exist before reporting success.
@@ -81,17 +81,22 @@ is a SPEC/build-script repository, not an RPM artifact repository.
       (formula-version . "9.2.1.1"))
 ```
 
-`formula-version` is the version visible to package managers. It drives the
-explicit Homebrew Formula `version`, the Homebrew bottle version, the Debian
-`.deb` version and filename, and the RPM `Version:` field. Bump it to a
-four-level value such as `9.2.1.1` when you need users to see an update even
-though the Racket runtime still reports `9.2.1`.
+`formula-version` drives the Homebrew Formula `version`, the Homebrew bottle
+version, and the Debian `.deb` version and filename. Bump it to a four-level
+value such as `9.2.1.1` when those package managers need users to see an update
+even though the Racket runtime still reports `9.2.1`.
+
+RPM intentionally uses a different model. The RPM `Version:` field stays equal
+to `source-version`, while the RPM `Release:` field is the package-maintainer
+revision from `--release`. For example, source version `9.2.1` with release `1`
+produces `racket9-9.2.1-1.<arch>.rpm`, not `racket9-9.2.1.1-1.<arch>.rpm`.
 
 The Racket source/runtime version is read from
 `racket/src/version/racket_version.h` in `--racket-root`, and must match
-`source-version` in `package-config.rktd`. Upload-only targets without
-`--racket-root` use the configured `source-version` to derive stable source
-asset names. Formula runtime tests continue to check that source version. Use
+`source-version` in `package-config.rktd`. Targets that do not read
+`--racket-root`, including `rpm`, use the configured `source-version` to derive
+stable source asset names. Formula runtime tests continue to check that source
+version. Use
 `--formula-version` only as a temporary command-line override; keeping the
 stable value in `package-config.rktd` is the normal workflow. The old
 `--version` flag is a compatibility alias for `--formula-version`.
@@ -407,11 +412,19 @@ racket package-racket.rkt \
 `scripts/` in the configured `rpm-racket` root. It must not create `repo/` or
 `racket9.repo`.
 
+When writing `SPECS/racket9.spec`, `package-racket` resolves the `Source0`
+sha256 in this order:
+
+- use the local `artifacts/racket-minimal-9.2.1-src.tgz` when it was just built;
+- otherwise read the GitHub Release asset digest for the generated `Source0`;
+- otherwise download `Source0` into `.build/rpm-source/` and calculate sha256.
+
+That sha is written into the generated `.spec` as `%global source_sha256`.
+
 Build an RPM from the generated `rpm-racket` repository:
 
 ```sh
 /Users/cutiedeng/Y2026/M06/D22/rpm-racket/scripts/build-rpm.sh \
-  --racket-root /path/to/clean-racket.git \
   --artifact-dir /path/to/package-racket/artifacts \
   --work-dir /path/to/package-racket/.build/rpm-racket \
   --prefix /usr \
@@ -422,7 +435,6 @@ Build the matching SRPM:
 
 ```sh
 /Users/cutiedeng/Y2026/M06/D22/rpm-racket/scripts/build-srpm.sh \
-  --racket-root /path/to/clean-racket.git \
   --artifact-dir /path/to/package-racket/artifacts \
   --work-dir /path/to/package-racket/.build/rpm-racket-srpm \
   --prefix /usr \
@@ -434,7 +446,6 @@ Create an RPM package directly from `package-racket` on a Linux x64 build:
 ```sh
 racket package-racket.rkt \
   --target rpm \
-  --racket-root /path/to/racket.git \
   --prefix /usr \
   --rpm-arch x86_64
 ```
@@ -444,7 +455,6 @@ Create an RPM package directly from `package-racket` on a Linux arm64 build:
 ```sh
 racket package-racket.rkt \
   --target rpm \
-  --racket-root /path/to/racket.git \
   --prefix /usr \
   --rpm-arch arm64
 ```
@@ -459,7 +469,6 @@ RPM repository:
 racket package-racket.rkt \
   --target rpm \
   --target rpm-repo \
-  --racket-root /path/to/clean-racket.git \
   --prefix /usr \
   --rpm-arch arm64 \
   --artifact-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/artifacts \
@@ -483,37 +492,13 @@ id, display name, baseurl, and gpgcheck/enabled flags. Use command-line
 overrides such as `--rpm-repo-root`, `--rpm-repo-baseurl`, and
 `--createrepo-bin` when testing another repository root or host.
 
-The RPM flow runs Racket's `make unix-style`, so `--racket-root` must point to a
-clean source checkout that has not already been built in `in-place` mode. If a
-host needs an already-built Racket just to run `package-racket.rkt`, keep that
-bootstrap build in a separate checkout and pass the clean checkout as
-`--racket-root`.
+The direct RPM flow does not run Racket's `make unix-style` and does not use an
+installed staging root. It writes the same source-archive `.spec` model used by
+the generated `rpm-racket` scripts, uses
+`artifacts/racket-minimal-<source-version>-src.tgz` when that file already
+exists, and otherwise downloads the configured GitHub Release `Source0`.
 
-For a faster RPM smoke build, pass an explicit package set through
-`--make-arg`. This is useful for validating RPM metadata, architecture, payload
-layout, and runtime startup without building the full distribution package set:
-
-```sh
-racket package-racket.rkt \
-  --target rpm \
-  --racket-root /path/to/clean-racket.git \
-  --prefix /usr \
-  --rpm-arch arm64 \
-  --make-arg "PKGS=racket-lib sandbox-lib errortrace-lib source-syntax tstring racket-tstring"
-```
-
-Reuse an already installed staging root instead of running `make unix-style`:
-
-```sh
-racket package-racket.rkt \
-  --target apt \
-  --target rpm \
-  --racket-root /path/to/racket.git \
-  --skip-build \
-  --install-root /tmp/racket-package-root \
-  --prefix /usr
-```
-
-The `--install-root` directory must contain the package filesystem root.
+Use `rpm-racket/scripts/build-rpm.sh --source-archive ...` when a build host
+must use an explicit local source archive instead of downloading `Source0`.
 
 Use `--dry-run` to print the commands without writing package artifacts.

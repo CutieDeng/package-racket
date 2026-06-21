@@ -373,14 +373,15 @@
   ) ; end begin normalize-targets
 ) ; end define normalize-targets
 
-(define (upload-only-target? target)
+(define (racket-root-free-target? target)
   (or (string=? target "source-release")
       (string=? target "apt-release")
+      (string=? target "rpm")
       (string=? target "rpm-spec")
       (string=? target "rpm-repo")))
 
 (define (needs-racket-root? targets)
-  (not (andmap upload-only-target? targets)))
+  (not (andmap racket-root-free-target? targets)))
 
 (define (needs-homebrew-tap? targets)
   (or (member "brew" targets string=?)
@@ -863,8 +864,18 @@ Description: {(cfg-summary c)}
 (define (rpm-source-archive-name c)
   (brew-source-tgz-name c))
 
-(define (rpm-payload-source-name c)
-  f"{(cfg-package-name c)}-{(cfg-formula-version c)}-payload.tar.gz")
+(define (rpm-source-cache-path c source-url)
+  (let-values ([(owner repo tag asset-name)
+                (github-release-download-url-values 'rpm-source-cache-path source-url)])
+    (build-path (cfg-work-dir c) "rpm-source" asset-name)
+  ) ; end let-values rpm source cache path
+)
+
+(define (rpm-version c)
+  (cfg-source-version c))
+
+(define (rpm-release c)
+  (cfg-release c))
 
 (define (rpm-source-sha256/local c)
   (let ([source-path (brew-output-tgz c)])
@@ -874,14 +885,11 @@ Description: {(cfg-summary c)}
   ) ; end let source path
 ) ; end define rpm-source-sha256/local
 
-(define (rpm-file-list-source-name c)
-  f"{(cfg-package-name c)}.files")
-
 (define (rpm-spec-content c [source-url (formula-source-url c)]
                           [source-sha256 (rpm-source-sha256/local c)])
   f"Name: {(cfg-package-name c)}
-Version: {(cfg-formula-version c)}
-Release: {(cfg-release c)}
+Version: {(rpm-version c)}
+Release: {(rpm-release c)}
 Summary: {(cfg-summary c)}
 License: {(cfg-license c)}
 URL: {(cfg-url c)}
@@ -969,8 +977,8 @@ grep -Eq '^(%dir )?/usr/(bin|lib|lib64|share)$' \"$manifest\" && exit 1
     (assert-nonempty-file 'validate-rpm-spec! spec-path)
     (define content (file->string spec-path))
     (for ([needle (in-list (list f"Name: {(cfg-package-name c)}"
-                                 f"Version: {(cfg-formula-version c)}"
-                                 f"Release: {(cfg-release c)}"
+                                 f"Version: {(rpm-version c)}"
+                                 f"Release: {(rpm-release c)}"
                                  f"Source0: {source-url}"
                                  "%global __brp_compress %{nil}"
                                  "%global package_prefix"
@@ -999,8 +1007,8 @@ grep -Eq '^(%dir )?/usr/(bin|lib|lib64|share)$' \"$manifest\" && exit 1
       (capture! 'validate-rpm! (cfg-rpm-bin c) (list "-qip" (clean-path-string rpm-path)))
     ) ; end define metadata
     (for ([needle (in-list (list f"Name        : {(cfg-package-name c)}"
-                                 f"Version     : {(cfg-formula-version c)}"
-                                 f"Release     : {(cfg-release c)}"
+                                 f"Version     : {(rpm-version c)}"
+                                 f"Release     : {(rpm-release c)}"
                                  f"Architecture: {(cfg-rpm-arch c)}"))])
       (unless (string-contains? metadata needle)
         (raise-user-error 'validate-rpm!
@@ -1012,10 +1020,79 @@ grep -Eq '^(%dir )?/usr/(bin|lib|lib64|share)$' \"$manifest\" && exit 1
 ) ; end define validate-rpm!
 
 (define (rpm-package-name c)
-  f"{(cfg-package-name c)}-{(cfg-formula-version c)}-{(cfg-release c)}.{(cfg-rpm-arch c)}.rpm")
+  f"{(cfg-package-name c)}-{(rpm-version c)}-{(rpm-release c)}.{(cfg-rpm-arch c)}.rpm")
 
 (define (rpm-package-path c)
   (build-path (cfg-artifact-dir c) (rpm-package-name c)))
+
+(define (rpm-build-root c)
+  (build-path (cfg-work-dir c) "rpm"))
+
+(define (rpm-build-source-path c rpm-root)
+  (build-path rpm-root "SOURCES" (rpm-source-archive-name c)))
+
+(define (prepare-rpm-build-root! c rpm-root)
+  (begin
+    (reset-managed-dir! 'build-rpm! rpm-root)
+    (for ([dir (in-list '("BUILD" "BUILDROOT" "RPMS" "SOURCES" "SPECS" "SRPMS"))])
+      (make-directory* (build-path rpm-root dir))
+    ) ; end for rpmbuild dir
+  ) ; end begin prepare rpm build root
+)
+
+(define (rpm-existing-source-archive c source-url)
+  (let ([local-source (brew-output-tgz c)])
+    (cond
+      [(file-exists? local-source) local-source]
+      [else
+       (let ([cached-source (rpm-source-cache-path c source-url)])
+         (and (file-exists? cached-source) cached-source)
+       ) ; end let cached source
+      ]
+    ) ; end cond existing source archive
+  ) ; end let local source archive
+)
+
+(define (validate-rpm-source-archive! c archive)
+  (begin
+    (assert-nonempty-file 'validate-rpm-source-archive! archive)
+    (run! 'validate-rpm-source-archive!
+          (cfg-tar-bin c)
+          (list "-tzf"
+                (clean-path-string archive)
+                f"racket-{(rpm-version c)}/src/configure")
+          #:dry-run? #f)
+    (run! 'validate-rpm-source-archive!
+          (cfg-tar-bin c)
+          (list "-tzf"
+                (clean-path-string archive)
+                f"racket-{(rpm-version c)}/collects/racket/main.rkt")
+          #:dry-run? #f)
+  ) ; end begin validate rpm source archive
+)
+
+(define (prepare-rpm-source-archive! c dest source-url expected-sha256)
+  (begin
+    (define existing-source (rpm-existing-source-archive c source-url))
+    (make-directory* (path-only dest))
+    (cond
+      [existing-source
+       (copy-file existing-source dest #t)
+       (println/flush f"RPM Source0 from local file: {(clean-path-string existing-source)}")]
+      [else
+       (println/flush f"Downloading RPM Source0: {source-url}")
+       (download-https-url! 'build-rpm! source-url dest)]
+    ) ; end cond local or downloaded source
+    (assert-nonempty-file 'build-rpm! dest)
+    (define actual-sha256 (sha256-file dest))
+    (unless (string=? actual-sha256 expected-sha256)
+      (raise-user-error 'build-rpm!
+                        f"RPM Source0 sha256 mismatch: expected {expected-sha256} but got {actual-sha256}")
+    ) ; end unless source sha256 matches
+    (validate-rpm-source-archive! c dest)
+    (println/flush f"Prepared RPM Source0: {(clean-path-string dest)}")
+  ) ; end begin prepare rpm source archive
+)
 
 (define (rpm-path-list-summary paths)
   (if (null? paths)
@@ -1051,48 +1128,51 @@ grep -Eq '^(%dir )?/usr/(bin|lib|lib64|share)$' \"$manifest\" && exit 1
 
 (define (build-rpm! c)
   (begin
-    (define install-root (cfg-install-root c))
-    (define rpm-root (build-path (cfg-work-dir c) "rpm"))
+    (define rpm-root (rpm-build-root c))
     (define sources-dir (build-path rpm-root "SOURCES"))
     (define specs-dir (build-path rpm-root "SPECS"))
-    (define source-name (rpm-payload-source-name c))
-    (define file-list-name (rpm-file-list-source-name c))
-    (define payload-tar (build-path sources-dir source-name))
     (define spec-path (build-path specs-dir f"{(cfg-package-name c)}.spec"))
-    (define manifest-path (build-path sources-dir file-list-name))
+    (define source-url (formula-source-url c))
+    (define source-path (rpm-build-source-path c rpm-root))
+    (define rpm-path (rpm-package-path c))
     (println/flush f"RPM spec: {(clean-path-string spec-path)}")
-    (println/flush f"RPM file manifest: {(clean-path-string manifest-path)}")
+    (println/flush f"RPM source archive: {source-url}")
+    (println/flush f"RPM package: {(clean-path-string rpm-path)}")
     (unless (cfg-dry-run? c)
       (make-directory* (cfg-artifact-dir c))
       (assert-executable 'build-rpm! (cfg-rpmbuild-bin c))
       (assert-executable 'build-rpm! (cfg-rpm-bin c))
       (assert-executable 'build-rpm! (cfg-tar-bin c))
-      (assert-nonempty-directory 'build-rpm! (prefix-install-path install-root (cfg-prefix c)))
-      (reset-managed-dir! 'build-rpm! rpm-root)
-      (for ([dir (in-list '("BUILD" "BUILDROOT" "RPMS" "SOURCES" "SPECS" "SRPMS"))])
-        (make-directory* (build-path rpm-root dir))
-      ) ; end for rpmbuild dir
+      (prepare-rpm-build-root! c rpm-root)
     ) ; end unless dry-run prepare rpm
-    (run! 'build-rpm!
-          (cfg-tar-bin c)
-          (list "-C" (clean-path-string install-root) "-czf" (clean-path-string payload-tar) ".")
-          #:dry-run? (cfg-dry-run? c))
-    (unless (cfg-dry-run? c)
-      (define file-list (rpm-file-list c))
-      (write-rpm-file-list! c manifest-path file-list)
-      (write-rpm-spec! c spec-path source-name file-list-name)
-    ) ; end unless dry-run write spec
+    (define source-sha256
+      (if (cfg-dry-run? c)
+          "<dry-run: source sha256 not resolved>"
+          (resolve-rpm-source-sha256! c source-url)))
+    (if (cfg-dry-run? c)
+        (begin
+          (println/flush f"Would reset RPM build root: {(clean-path-string rpm-root)}")
+          (println/flush f"Would write RPM spec: {(clean-path-string spec-path)}")
+          (println/flush f"Would prepare RPM Source0: {(clean-path-string source-path)}")
+        ) ; end begin dry-run rpm source
+        (begin
+          (write-rpm-spec! c spec-path source-url source-sha256)
+          (prepare-rpm-source-archive! c source-path source-url source-sha256)
+        ) ; end begin materialize rpm source
+    ) ; end if dry-run write source
     (run! 'build-rpm!
           (cfg-rpmbuild-bin c)
           (list "-bb"
                 "--target" (cfg-rpm-arch c)
                 "--define" f"_topdir {(clean-path-string rpm-root)}"
                 "--define" "_build_id_links none"
+                "--define" f"package_prefix {(cfg-prefix c)}"
+                "--define" f"_smp_mflags -j{(cfg-jobs c)}"
                 (clean-path-string spec-path))
           #:dry-run? (cfg-dry-run? c))
-    (unless (cfg-dry-run? c)
-      (copy-built-rpm! c rpm-root)
-    ) ; end unless dry-run copy rpms
+    (if (cfg-dry-run? c)
+        (println/flush f"Would copy RPM artifact to: {(clean-path-string rpm-path)}")
+        (copy-built-rpm! c rpm-root))
   ) ; end begin build-rpm!
 ) ; end define build-rpm!
 
@@ -1222,7 +1302,7 @@ Validate an existing RPM:
 
 ```sh
 scripts/verify-rpm.sh \\
-  --rpm /path/to/artifacts/{(cfg-package-name c)}-{(cfg-formula-version c)}-{(cfg-release c)}.aarch64.rpm \\
+  --rpm /path/to/artifacts/{(cfg-package-name c)}-{(rpm-version c)}-{(rpm-release c)}.aarch64.rpm \\
   --rpm-arch arm64
 ```
 ")
@@ -1238,9 +1318,6 @@ artifacts/
 *.rpm
 ")
 
-(define (rpm-shared-directory-case-pattern)
-  (string-join rpm-shared-directories "|"))
-
 (define (rpm-script-header name)
   f"#!/usr/bin/env bash
 set -euo pipefail
@@ -1252,14 +1329,13 @@ set -euo pipefail
 
 (define (rpm-common-script-content c [source-sha256 (rpm-source-sha256/local c)])
   f"{(rpm-script-header "rpm-common.sh")}PACKAGE_NAME={(shell-single-quoted (cfg-package-name c))}
-PACKAGE_VERSION={(shell-single-quoted (cfg-formula-version c))}
+PACKAGE_VERSION={(shell-single-quoted (rpm-version c))}
 PACKAGE_SOURCE_VERSION={(shell-single-quoted (cfg-source-version c))}
-PACKAGE_RELEASE={(shell-single-quoted (cfg-release c))}
+PACKAGE_RELEASE={(shell-single-quoted (rpm-release c))}
 DEFAULT_PREFIX={(shell-single-quoted (cfg-prefix c))}
 SOURCE_ARCHIVE_NAME={(shell-single-quoted (rpm-source-archive-name c))}
 DEFAULT_SOURCE_URL={(shell-single-quoted (formula-source-url c))}
 SOURCE_SHA256={(shell-single-quoted source-sha256)}
-FILE_LIST_SOURCE_NAME={(shell-single-quoted (rpm-file-list-source-name c))}
 SPEC_NAME={(shell-single-quoted (string-append (cfg-package-name c) ".spec"))}
 
 die() {{
@@ -1352,58 +1428,6 @@ rpm_name_for_arch() {{
 
 srpm_name() {{
   printf '%s-%s-%s.src.rpm\\n' \"$PACKAGE_NAME\" \"$PACKAGE_VERSION\" \"$PACKAGE_RELEASE\"
-}}
-
-is_shared_dir() {{
-  case \"$1\" in
-    {(rpm-shared-directory-case-pattern)}) return 0 ;;
-    *) return 1 ;;
-  esac
-}}
-
-rpm_file_list_quote() {{
-  case \"$1\" in
-    *[!A-Za-z0-9_./:=+@%,-]*)
-      printf '\"%s\"' \"$(printf '%s' \"$1\" | sed 's/[\"\\\\]/\\\\&/g')\"
-      ;;
-    *)
-      printf '%s' \"$1\"
-      ;;
-  esac
-}}
-
-assert_manifest_safe() {{
-  local manifest=\"$1\"
-  require_nonempty_file \"$manifest\"
-  if grep -Eq '^(%dir )?/usr$' \"$manifest\"; then
-    die \"manifest must not claim shared /usr: $manifest\"
-  fi
-  if grep -Eq '^(%dir )?/usr/(bin|lib|lib64|share)$' \"$manifest\"; then
-    die \"manifest must not claim shared /usr parent directories: $manifest\"
-  fi
-}}
-
-generate_file_list() {{
-  local install_root=\"$1\"
-  local manifest=\"$2\"
-  require_nonempty_dir \"$install_root$PREFIX\"
-  : > \"$manifest\"
-  while IFS= read -r -d '' path; do
-    local rel
-    rel=${{path#\"$install_root\"}}
-    [ -n \"$rel\" ] || continue
-    if [ -d \"$path\" ] && [ ! -L \"$path\" ]; then
-      if is_shared_dir \"$rel\"; then
-        continue
-      fi
-      printf '%%dir %s\\n' \"$(rpm_file_list_quote \"$rel\")\" >> \"$manifest\"
-    elif [ -f \"$path\" ] || [ -L \"$path\" ]; then
-      printf '%s\\n' \"$(rpm_file_list_quote \"$rel\")\" >> \"$manifest\"
-    else
-      die \"unsupported staged file type: $path\"
-    fi
-  done < <(find \"$install_root\" -mindepth 1 -print0 | sort -z)
-  assert_manifest_safe \"$manifest\"
 }}
 
 reset_output_dir() {{
@@ -4722,7 +4746,7 @@ jobs:
                      (set! install-root-arg path)]
    [("--jobs") jobs "Parallel setup jobs passed as JOBS=... (default: processor count)"
               (set! jobs-arg jobs)]
-   [("--skip-build") "Package an existing --install-root instead of running make unix-style"
+   [("--skip-build") "For install-root targets, package an existing --install-root instead of running make unix-style"
                     (set! skip-build? #t)]
    [("--keep-work") "Keep generated working directories after success"
                   (set! keep-work? #t)]
@@ -4730,7 +4754,7 @@ jobs:
                 (set! dry-run? #t)]
    [("--make-bin") path "make executable (default: make)"
                  (set! make-bin-arg path)]
-   [("--tar-bin") path "tar executable for RPM payloads (default: tar)"
+   [("--tar-bin") path "tar executable for archive validation and assembly (default: tar)"
                 (set! tar-bin-arg path)]
    [("--dpkg-deb-bin") path "dpkg-deb executable (default: dpkg-deb)"
                      (set! dpkg-deb-bin-arg path)]
@@ -4959,8 +4983,7 @@ jobs:
 ) ; end define make-config
 
 (define (needs-install-root? targets)
-  (or (member "apt" targets string=?)
-      (member "rpm" targets string=?)))
+  (member "apt" targets string=?))
 
 (define (print-config c)
   (println/flush f"Targets: {(string-join (cfg-targets c) ", ")}")
@@ -4980,6 +5003,9 @@ jobs:
             (member "rpm" (cfg-targets c) string=?)
             (member "rpm-repo" (cfg-targets c) string=?))
     (println/flush f"RPM target arch: {(cfg-rpm-arch c)}")
+    (println/flush f"RPM package version: {(rpm-version c)}")
+    (println/flush f"RPM package release: {(rpm-release c)}")
+    (println/flush f"RPM package prefix: {(cfg-prefix c)}")
   ) ; end when rpm target or repo target
   (when (needs-rpm-repo-config? (cfg-targets c))
     (println/flush f"RPM repo config: {(clean-path-string (cfg-rpm-repo-config c))}")
@@ -5178,12 +5204,12 @@ jobs:
     ) ; end dynamic-wind deb md5sums
   ) ; end test-case deb md5sums
 
-  (test-case "formula-version drives package-manager outputs without changing runtime version"
+  (test-case "formula-version drives brew and apt while rpm keeps version plus release"
     (define c (test-cfg #:source-version "9.2.1"
                         #:formula-version "9.2.1.1"))
     (check-equal? (brew-source-tgz-name c) "racket-minimal-9.2.1-src.tgz")
     (check-equal? (apt-deb-name c) "racket9_9.2.1.1-1_amd64.deb")
-    (check-equal? (rpm-package-name c) "racket9-9.2.1.1-1.x86_64.rpm")
+    (check-equal? (rpm-package-name c) "racket9-9.2.1-1.x86_64.rpm")
     (check-equal? (brew-tgz-member-path c "src/README.txt")
                   "racket-9.2.1/src/README.txt")
     (define content (formula-content/full c test-sha256))
@@ -5213,7 +5239,9 @@ jobs:
                          test-sha256)
         (define file-list (rpm-file-list c))
         (define spec-content (file->string spec-path))
-        (check-true (string-contains? spec-content "Version: 9.2.1.1"))
+        (check-true (string-contains? spec-content "Version: 9.2.1"))
+        (check-false (string-contains? spec-content "Version: 9.2.1.1"))
+        (check-true (string-contains? spec-content "Release: 1"))
         (check-true (string-contains? spec-content "Source0: https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz"))
         (check-false (string-contains? spec-content "Source1:"))
         (check-true (string-contains? spec-content "%global __brp_compress %{nil}"))
