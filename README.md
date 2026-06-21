@@ -22,6 +22,10 @@ packaging flows:
   GitHub release with the GitHub REST API. This target can be combined with
   `apt` or used to upload an already generated `.deb`.
 - `rpm`: installs into a staged root with `make unix-style` and builds a `.rpm`.
+- `rpm-repo`: copies the configured `.rpm` into an explicit RPM repository
+  root, regenerates metadata with `createrepo_c`, and writes the generated
+  `.repo` and README files. This target can be combined with `rpm` or used to
+  publish an already generated `.rpm`.
 
 All inputs are passed by named options. There are no positional arguments.
 Generated metadata text in the Racket script is assembled with `f"..."` strings,
@@ -46,6 +50,9 @@ links needed for `racket/sandbox` and `syntax/source-syntax`. The `brew-ci`
 flow also validates generated workflow YAML and required workflow content before
 replacing files in the tap. The publish workflow updates release assets and the
 Formula only after every bottle runner succeeds.
+The `rpm-repo` flow checks that the target root is a writable Git repository,
+checks the RPM metadata before copying it, runs `createrepo_c --update`, and
+requires `repodata/repomd.xml` to exist before reporting success.
 
 `package-racket` is the source of truth for generated packaging metadata. The
 Homebrew tap receives overwritten generated outputs such as `Formula/racket@9.rb`
@@ -53,6 +60,8 @@ and `.github/workflows/*.yml`; keep their maintainable configuration here.
 Those generated tap files include a generated-code header. Humans and LLM
 agents must not make production changes directly in `homebrew-racket`; change
 `package-racket` and regenerate the tap outputs instead.
+The same rule applies to `rpm-racket`: generated `.repo`, README, package, and
+metadata outputs are produced from this repository.
 
 ## Version Model
 
@@ -140,7 +149,8 @@ These tests combine brew unit checks with real `package-racket.rkt` CLI runs in
 temporary directories. They cover Homebrew Formula and workflow semantics,
 dry-run isolation between targets, release-upload validation without reading
 local tokens, and combined producer/release targets such as `apt + apt-release`
-and `brew + source-release`.
+and `brew + source-release`. They also cover `rpm + rpm-repo` dry-run isolation
+so repository generation cannot silently write files during planning.
 
 `--dry-run` still performs safety checks for configured paths, but it does not
 write package artifacts, generated Homebrew workflow files, or tap Formula
@@ -162,6 +172,9 @@ updates.
   `secret/ghtoken.rktd`. The file is ignored by Git and should be mode `600`.
 - For `apt`: `dpkg-deb`, or `ar` + `tar` + `xz` through the automatic fallback.
 - For `rpm`: `rpmbuild`.
+- For `rpm-repo`: `rpm` for package metadata validation, `createrepo_c` for
+  repository metadata, an explicit `--rpm-repo-config`, and an explicit
+  repository root in that config or `--rpm-repo-root`.
 
 ## Examples
 
@@ -389,6 +402,36 @@ racket package-racket.rkt \
 
 `--rpm-arch arm64` is normalized to RPM's `aarch64` target. The accepted RPM
 architecture spellings are `x86_64`, `amd64`, `x64`, `aarch64`, and `arm64`.
+
+Create an RPM package and update the generated RPM repository:
+
+```sh
+racket package-racket.rkt \
+  --target rpm \
+  --target rpm-repo \
+  --racket-root /path/to/clean-racket.git \
+  --prefix /usr \
+  --rpm-arch arm64 \
+  --artifact-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/artifacts \
+  --work-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/.build \
+  --rpm-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-repo-config.rktd
+```
+
+Update the RPM repository from an already generated RPM:
+
+```sh
+racket package-racket.rkt \
+  --target rpm-repo \
+  --artifact-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/artifacts \
+  --rpm-arch arm64 \
+  --rpm-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-repo-config.rktd
+```
+
+The default RPM repository config is `rpm-repo-config.rktd`; it explicitly sets
+`rpm-repo-root` to `/Users/cutiedeng/Y2026/M06/D22/rpm-racket`, plus the repo
+id, display name, baseurl, and gpgcheck/enabled flags. Use command-line
+overrides such as `--rpm-repo-root`, `--rpm-repo-baseurl`, and
+`--createrepo-bin` when testing another repository root or host.
 
 The RPM flow runs Racket's `make unix-style`, so `--racket-root` must point to a
 clean source checkout that has not already been built in `in-place` mode. If a

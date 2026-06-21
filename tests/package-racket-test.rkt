@@ -79,6 +79,14 @@ end
   ) ; end begin make-fake-homebrew-tap!
 ) ; end define make-fake-homebrew-tap!
 
+(define (make-fake-rpm-repo! base)
+  (begin
+    (define repo (build-path base "rpm-racket"))
+    (make-directory* (build-path repo ".git"))
+    repo
+  ) ; end begin make-fake-rpm-repo!
+) ; end define make-fake-rpm-repo!
+
 (define (write-brew-ci-config! path)
   (write-text!
    path
@@ -119,6 +127,17 @@ end
      "#hash((apt-release-repo . \"CutieDeng/racket\")
       (apt-release-token-file . \"missing-token.rktd\")
       (replace-release-asset . #t))
+"))
+
+  (define (write-rpm-repo-config! path root)
+    (write-text!
+     path
+     f"#hash((rpm-repo-root . \"{(path-arg root)}\")
+      (rpm-repo-id . \"cutiedeng-racket\")
+      (rpm-repo-name . \"CutieDeng Racket RPM Repository\")
+      (rpm-repo-baseurl . \"https://raw.githubusercontent.com/CutieDeng/rpm-racket/main/repo/$basearch\")
+      (rpm-repo-enabled . #t)
+      (rpm-repo-gpgcheck . #f))
 "))
 
 (define (run-command! who program args #:cwd [cwd #f])
@@ -275,6 +294,40 @@ actual output:
       ) ; end lambda temp dir
     ) ; end with-temp-dir
   ) ; end test-case rpm arm64 dry-run
+
+  (test-case "rpm plus rpm-repo dry-run uses planned rpm output and writes no repo files"
+    (with-temp-dir
+     (lambda (tmp)
+       (define racket-root (make-fake-racket-root! tmp))
+       (define rpm-repo-root (make-fake-rpm-repo! tmp))
+       (define config-path (build-path tmp "rpm-repo-config.rktd"))
+       (define artifact-dir (build-path tmp "artifacts"))
+       (define work-dir (build-path tmp "work"))
+       (write-rpm-repo-config! config-path rpm-repo-root)
+       (define-values (out err)
+         (run-package/success
+          (list "--target" "rpm"
+                "--target" "rpm-repo"
+                "--racket-root" (path-arg racket-root)
+                "--artifact-dir" (path-arg artifact-dir)
+                "--work-dir" (path-arg work-dir)
+                "--rpm-arch" "arm64"
+                "--rpm-repo-config" (path-arg config-path)
+                "--dry-run")))
+       (define text (combined-output out err))
+       (check-contains text "Targets: rpm, rpm-repo")
+       (check-contains text "RPM target arch: aarch64")
+       (check-contains text "RPM repo config:")
+       (check-contains text "RPM repo root:")
+       (check-contains text "RPM repo package: racket9-9.2.1.1-1.aarch64.rpm")
+       (check-contains text "RPM repo sha256: <dry-run: artifact not built>")
+       (check-contains text "Would update RPM repo from planned rpm output")
+       (check-false (file-exists? (build-path rpm-repo-root "racket9.repo")))
+       (check-false (directory-exists? (build-path rpm-repo-root "repo")))
+       (check-false (directory-exists? artifact-dir))
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case rpm plus rpm-repo dry-run
 
   (test-case "formula-version override drives apt package version"
     (with-temp-dir

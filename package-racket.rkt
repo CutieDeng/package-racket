@@ -50,6 +50,7 @@
    deb-backend
    rpmbuild-bin
    rpm-bin
+   createrepo-bin
    deb-arch
    rpm-arch
    maintainer
@@ -72,6 +73,13 @@
    apt-release-tag
    apt-release-asset
    apt-release-token-file
+   rpm-repo-config
+   rpm-repo-root
+   rpm-repo-id
+   rpm-repo-name
+   rpm-repo-baseurl
+   rpm-repo-enabled?
+   rpm-repo-gpgcheck?
    replace-release-asset
    ruby-bin
    brew-packages
@@ -325,14 +333,14 @@
       ) ; end for*/list pieces
     ) ; end define pieces
     (when (null? pieces)
-      (raise-user-error 'main "missing --target; use brew, brew-ci, source-release, apt, apt-release, rpm, or all")
+      (raise-user-error 'main "missing --target; use brew, brew-ci, source-release, apt, apt-release, rpm, rpm-repo, or all")
     ) ; end when missing target
     (define expanded
       (append-map
        (lambda (target)
          (match target
            ["all" '("brew" "apt" "rpm")]
-           [(or "brew" "apt" "apt-release" "rpm" "brew-ci" "source-release") (list target)]
+           [(or "brew" "apt" "apt-release" "rpm" "rpm-repo" "brew-ci" "source-release") (list target)]
            [_ (raise-user-error 'main f"unknown --target: {target}")]
          ) ; end match target
        ) ; end lambda target
@@ -340,13 +348,14 @@
       ) ; end append-map
     ) ; end define expanded
     (filter (lambda (target) (member target expanded string=?))
-            '("brew-ci" "brew" "source-release" "apt" "apt-release" "rpm"))
+            '("brew-ci" "brew" "source-release" "apt" "apt-release" "rpm" "rpm-repo"))
   ) ; end begin normalize-targets
 ) ; end define normalize-targets
 
 (define (upload-only-target? target)
   (or (string=? target "source-release")
-      (string=? target "apt-release")))
+      (string=? target "apt-release")
+      (string=? target "rpm-repo")))
 
 (define (needs-racket-root? targets)
   (not (andmap upload-only-target? targets)))
@@ -558,6 +567,22 @@
 
 (define (regexp-match-count rx content)
   (length (regexp-match* rx content)))
+
+(define (regexp-first-start rx content)
+  (match (regexp-match-positions rx content)
+    [(list (cons start _)) start]
+    [_ #f]))
+
+(define (validate-formula-version-before-sha! who content formula-path)
+  (begin
+    (define version-start (regexp-first-start #px"(?m:^  version \"[^\"]+\")" content))
+    (define sha-start (regexp-first-start #px"(?m:^  sha256 \"[0-9a-f]{64}\")" content))
+    (when (and version-start sha-start (not (< version-start sha-start)))
+      (raise-user-error who
+                        f"formula version line must appear before source sha256 line: {(clean-path-string formula-path)}")
+    ) ; end when version appears after sha
+  ) ; end begin validate-formula-version-before-sha!
+) ; end define validate-formula-version-before-sha!
 
 (define (build-install-root! c)
   (begin
@@ -889,9 +914,21 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
   ) ; end begin validate-rpm!
 ) ; end define validate-rpm!
 
-(define (copy-built-rpms! c rpm-root)
+(define (rpm-package-name c)
+  f"{(cfg-package-name c)}-{(cfg-formula-version c)}-{(cfg-release c)}.{(cfg-rpm-arch c)}.rpm")
+
+(define (rpm-package-path c)
+  (build-path (cfg-artifact-dir c) (rpm-package-name c)))
+
+(define (rpm-path-list-summary paths)
+  (if (null? paths)
+      "<none>"
+      (string-join (map clean-path-string paths) ", ")))
+
+(define (copy-built-rpm! c rpm-root)
   (begin
     (define rpms-dir (build-path rpm-root "RPMS"))
+    (define expected-name (rpm-package-name c))
     (define rpms
       (sort (find-files (lambda (p)
                           (and (file-exists? p)
@@ -900,17 +937,20 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
                         rpms-dir)
             path<?)
     ) ; end define rpms
-    (when (null? rpms)
-      (raise-user-error 'build-rpm! f"rpmbuild produced no .rpm under {(clean-path-string rpms-dir)}")
-    ) ; end when no rpms
-    (for ([rpm (in-list rpms)])
-      (define dest (build-path (cfg-artifact-dir c) (file-name-from-path rpm)))
-      (copy-file rpm dest #t)
-      (validate-rpm! c dest)
-      (println/flush f"RPM package: {(clean-path-string dest)}")
-    ) ; end for rpm
-  ) ; end begin copy-built-rpms!
-) ; end define copy-built-rpms!
+    (define matches
+      (filter (lambda (rpm)
+                (equal? (file-name-from-path rpm) (string->path expected-name)))
+              rpms))
+    (unless (= (length matches) 1)
+      (raise-user-error 'build-rpm!
+                        f"expected exactly one rpmbuild output named {expected-name}; observed: {(rpm-path-list-summary rpms)}")
+    ) ; end unless exactly one expected rpm
+    (define dest (rpm-package-path c))
+    (copy-file (car matches) dest #t)
+    (validate-rpm! c dest)
+    (println/flush f"RPM package: {(clean-path-string dest)}")
+  ) ; end begin copy-built-rpm!
+) ; end define copy-built-rpm!
 
 (define (build-rpm! c)
   (begin
@@ -952,10 +992,201 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
                 (clean-path-string spec-path))
           #:dry-run? (cfg-dry-run? c))
     (unless (cfg-dry-run? c)
-      (copy-built-rpms! c rpm-root)
+      (copy-built-rpm! c rpm-root)
     ) ; end unless dry-run copy rpms
   ) ; end begin build-rpm!
 ) ; end define build-rpm!
+
+(define rpm-repo-supported-arches
+  '("x86_64" "aarch64"))
+
+(define generated-rpm-repo-notice-marker
+  "GENERATED RPM REPOSITORY METADATA - DO NOT EDIT IN rpm-racket.")
+
+(define (rpm-repo-arch-root c [arch (cfg-rpm-arch c)])
+  (build-path (cfg-rpm-repo-root c) "repo" arch))
+
+(define (rpm-repo-packages-dir c [arch (cfg-rpm-arch c)])
+  (build-path (rpm-repo-arch-root c arch) "Packages"))
+
+(define (rpm-repo-file-path c)
+  (build-path (cfg-rpm-repo-root c) f"{(cfg-package-name c)}.repo"))
+
+(define (rpm-repo-readme-path c)
+  (build-path (cfg-rpm-repo-root c) "README.md"))
+
+(define (rpm-repo-bool value)
+  (if value "1" "0"))
+
+(define (rpm-repo-file-content c)
+  f"# {generated-rpm-repo-notice-marker}
+# Generated by package-racket.rkt from {(clean-path-string (cfg-rpm-repo-config c))}.
+# Change package-racket configuration and regenerate instead of editing this file.
+
+[{(cfg-rpm-repo-id c)}]
+name={(cfg-rpm-repo-name c)}
+baseurl={(cfg-rpm-repo-baseurl c)}
+enabled={(rpm-repo-bool (cfg-rpm-repo-enabled? c))}
+gpgcheck={(rpm-repo-bool (cfg-rpm-repo-gpgcheck? c))}
+metadata_expire=300
+")
+
+(define (rpm-repo-readme-content c)
+  f"# rpm-racket
+
+{generated-rpm-repo-notice-marker}
+
+This repository is a generated RPM repository for `racket9`. Treat
+`README.md`, `{(cfg-package-name c)}.repo`, `repo/*/Packages`, and
+`repo/*/repodata` as outputs from `package-racket`; do not hand-edit them for
+production changes.
+
+## Layout
+
+- `{(cfg-package-name c)}.repo`: repository config for yum/dnf compatible hosts.
+- `repo/x86_64/Packages`: x86_64 RPM payloads.
+- `repo/aarch64/Packages`: aarch64 RPM payloads.
+- `repo/*/repodata`: metadata generated by `createrepo_c`.
+
+## Regenerate
+
+Run from `package-racket` with explicit paths:
+
+```sh
+racket package-racket.rkt \\
+  --target rpm \\
+  --target rpm-repo \\
+  --racket-root /path/to/clean-racket.git \\
+  --prefix /usr \\
+  --rpm-arch arm64 \\
+  --artifact-dir /path/to/package-racket/artifacts \\
+  --work-dir /path/to/package-racket/.build \\
+  --rpm-repo-config {(clean-path-string (cfg-rpm-repo-config c))}
+```
+
+For an already built RPM, run only `--target rpm-repo` with the same
+`--artifact-dir`, `--rpm-arch`, `--package-name`, `--formula-version`, and
+`--release` values that produced the RPM.
+
+## Consumer Setup
+
+Install the generated repository config on a compatible Linux host:
+
+```sh
+sudo curl -L -o /etc/yum.repos.d/{(cfg-package-name c)}.repo \\
+  https://raw.githubusercontent.com/CutieDeng/rpm-racket/main/{(cfg-package-name c)}.repo
+sudo dnf install {(cfg-package-name c)}
+```
+")
+
+(define (assert-rpm-repo-root! c)
+  (begin
+    (define root (cfg-rpm-repo-root c))
+    (assert-directory 'rpm-repo root)
+    (assert-directory 'rpm-repo (build-path root ".git"))
+    (assert-writable-directory 'rpm-repo root)
+  ) ; end begin assert-rpm-repo-root!
+) ; end define assert-rpm-repo-root!
+
+(define (write-rpm-repo-scaffold! c)
+  (begin
+    (assert-rpm-repo-root! c)
+    (for ([arch (in-list (remove-duplicates (cons (cfg-rpm-arch c)
+                                                  rpm-repo-supported-arches)
+                                            string=?))])
+      (define packages-dir (rpm-repo-packages-dir c arch))
+      (make-directory* packages-dir)
+      (write-text-file! (build-path packages-dir ".gitkeep") "")
+    ) ; end for rpm repo arch
+    (write-text-file! (rpm-repo-file-path c) (rpm-repo-file-content c))
+    (write-text-file! (rpm-repo-readme-path c) (rpm-repo-readme-content c))
+    (validate-rpm-repo-scaffold! c)
+  ) ; end begin write-rpm-repo-scaffold!
+) ; end define write-rpm-repo-scaffold!
+
+(define (validate-rpm-repo-scaffold! c)
+  (begin
+    (assert-nonempty-file 'validate-rpm-repo-scaffold! (rpm-repo-file-path c))
+    (assert-nonempty-file 'validate-rpm-repo-scaffold! (rpm-repo-readme-path c))
+    (define repo-content (file->string (rpm-repo-file-path c)))
+    (for ([needle (in-list (list generated-rpm-repo-notice-marker
+                                 f"[{(cfg-rpm-repo-id c)}]"
+                                 f"baseurl={(cfg-rpm-repo-baseurl c)}"))])
+      (unless (string-contains? repo-content needle)
+        (raise-user-error 'validate-rpm-repo-scaffold!
+                          f"generated repo file is missing: {needle}")
+      ) ; end unless repo content contains needle
+    ) ; end for repo file needle
+  ) ; end begin validate-rpm-repo-scaffold!
+) ; end define validate-rpm-repo-scaffold!
+
+(define (validate-rpm-repo-metadata! c)
+  (begin
+    (assert-nonempty-file 'validate-rpm-repo-metadata!
+                          (build-path (rpm-repo-arch-root c) "repodata" "repomd.xml"))
+    (println/flush f"Validated RPM repo metadata: {(clean-path-string (rpm-repo-arch-root c))}")
+  ) ; end begin validate-rpm-repo-metadata!
+) ; end define validate-rpm-repo-metadata!
+
+(define (copy-rpm-into-repo! c rpm-path)
+  (begin
+    (define packages-dir (rpm-repo-packages-dir c))
+    (define dest (build-path packages-dir (rpm-package-name c)))
+    (make-directory* packages-dir)
+    (copy-file rpm-path dest #t)
+    (assert-nonempty-file 'copy-rpm-into-repo! dest)
+    (unless (string=? (sha256-file rpm-path) (sha256-file dest))
+      (raise-user-error 'copy-rpm-into-repo!
+                        f"copied RPM sha256 mismatch: {(clean-path-string dest)}")
+    ) ; end unless copied rpm sha matches
+    (println/flush f"Installed RPM repo package: {(clean-path-string dest)}")
+  ) ; end begin copy-rpm-into-repo!
+) ; end define copy-rpm-into-repo!
+
+(define (update-rpm-repo! c)
+  (begin
+    (define produced-by-rpm? (target-selected? c "rpm"))
+    (define rpm-name (rpm-package-name c))
+    (define rpm-path (rpm-package-path c))
+    (define dry-run-planned? (and (cfg-dry-run? c) produced-by-rpm?))
+    (assert-rpm-repo-root! c)
+    (unless dry-run-planned?
+      (validate-rpm! c rpm-path)
+    ) ; end unless dry-run planned rpm artifact
+    (define local-sha (if dry-run-planned?
+                          "<dry-run: artifact not built>"
+                          (sha256-file rpm-path)))
+    (println/flush f"RPM repo config: {(clean-path-string (cfg-rpm-repo-config c))}")
+    (println/flush f"RPM repo root: {(clean-path-string (cfg-rpm-repo-root c))}")
+    (println/flush f"RPM repo id: {(cfg-rpm-repo-id c)}")
+    (println/flush f"RPM repo baseurl: {(cfg-rpm-repo-baseurl c)}")
+    (println/flush f"RPM repo package: {rpm-name}")
+    (println/flush f"RPM repo sha256: {local-sha}")
+    (if (cfg-dry-run? c)
+        (println/flush
+         (if dry-run-planned?
+             f"Would update RPM repo from planned rpm output {(clean-path-string rpm-path)}"
+             f"Would update RPM repo from {(clean-path-string rpm-path)}"))
+        (begin
+          (assert-executable 'update-rpm-repo! (cfg-createrepo-bin c))
+          (write-rpm-repo-scaffold! c)
+          (copy-rpm-into-repo! c rpm-path)
+          (run! 'update-rpm-repo!
+                (cfg-createrepo-bin c)
+                (list "--update" (clean-path-string (rpm-repo-arch-root c)))
+                #:dry-run? #f)
+          (validate-rpm-repo-metadata! c)
+        ) ; end begin update rpm repo
+    ) ; end if dry-run
+  ) ; end begin update-rpm-repo!
+) ; end define update-rpm-repo!
+
+(define (build-rpm-repo! c)
+  (list (lambda ()
+          (update-rpm-repo! c)
+        ) ; end lambda update rpm repo
+  ) ; end list rpm repo finalizer
+) ; end define build-rpm-repo!
 
 (define (brew-work-root c)
   (build-path (cfg-work-dir c) "brew"))
@@ -1622,6 +1853,7 @@ information.
       (raise-user-error 'validate-formula-file!
                         f"formula must contain exactly one version line: {(clean-path-string formula-path)}")
     ) ; end unless one formula version
+    (validate-formula-version-before-sha! 'validate-formula-file! content formula-path)
     (when (> (regexp-match-count #px"(?m:^    root_url \"[^\"]+\")" content) 1)
       (raise-user-error 'validate-formula-file!
                         f"formula must contain at most one bottle root_url line: {(clean-path-string formula-path)}")
@@ -1656,6 +1888,7 @@ information.
       (raise-user-error 'validate-formula-template!
                         f"formula template must contain at most one version line: {(clean-path-string formula-path)}")
     ) ; end when too many formula versions
+    (validate-formula-version-before-sha! 'validate-formula-template! content formula-path)
     (when (> (regexp-match-count #px"(?m:^    root_url \"[^\"]+\")" content) 1)
       (raise-user-error 'validate-formula-template!
                         f"formula template must contain at most one bottle root_url line: {(clean-path-string formula-path)}")
@@ -1689,6 +1922,7 @@ information.
     (define source-url-rx #px"(?m:^  url \"[^\"]+racket-minimal-[^\"]+-src[.]tgz\")")
     (define source-sha-rx #px"(?m:^  sha256 \"[0-9a-f]{64}\")")
     (define formula-version-rx #px"(?m:^  version \"[^\"]+\")")
+    (define formula-version-line-rx #px"(?m:^  version \"[^\"]+\"\n)")
     (unless (= 1 (regexp-match-count source-url-rx content))
       (raise-user-error 'set-formula-source!
                         f"formula must contain exactly one source url line: {(clean-path-string formula-path)}")
@@ -1704,16 +1938,16 @@ information.
     (define with-source-url
       (regexp-replace source-url-rx content (formula-source-url-line c))
     ) ; end define with-source-url
-    (define with-source-sha
-      (regexp-replace source-sha-rx with-source-url (formula-source-sha256-line digest))
-    ) ; end define with-source-sha
+    (define without-version
+      (if (regexp-match? formula-version-line-rx with-source-url)
+          (regexp-replace formula-version-line-rx with-source-url "")
+          with-source-url)
+    ) ; end define without-version
     (define with-version
-      (if (regexp-match? formula-version-rx with-source-sha)
-          (regexp-replace formula-version-rx with-source-sha (formula-version-line c))
-          (regexp-replace source-sha-rx
-                          with-source-sha
-                          f"{(formula-source-sha256-line digest)}
-{(formula-version-line c)}"))
+      (regexp-replace source-sha-rx
+                      without-version
+                      f"{(formula-version-line c)}
+{(formula-source-sha256-line digest)}")
     ) ; end define with-version
     (write-text-file!
      formula-path
@@ -1745,8 +1979,8 @@ information.
   desc \"Modern programming language in the Lisp/Scheme family\"
   homepage \"https://racket-lang.org/\"
   url \"{(formula-source-url c)}\"
-  sha256 \"{digest}\"
   version \"{(cfg-formula-version c)}\"
+  sha256 \"{digest}\"
   license any_of: [\"MIT\", \"Apache-2.0\"]
 
   livecheck do
@@ -2150,6 +2384,73 @@ end
     value
   ) ; end begin config-optional-boolean
 ) ; end define config-optional-boolean
+
+(define (assert-rpm-repo-id value)
+  (unless (and (string? value)
+               (regexp-match? #px"^[A-Za-z0-9_.:-]+$" value))
+    (raise-user-error 'rpm-repo-config
+                      f"rpm-repo-id must contain only letters, digits, _, ., :, or -: {value}")
+  ) ; end unless valid rpm repo id
+  value)
+
+(define (assert-rpm-repo-name value)
+  (when (or (string-contains? value "\n")
+            (string-contains? value "\r"))
+    (raise-user-error 'rpm-repo-config "rpm-repo-name must be a single line")
+  ) ; end when newline in rpm repo name
+  value)
+
+(define (assert-rpm-repo-baseurl value)
+  (begin
+    (unless (regexp-match? #px"^(https?|file)://" value)
+      (raise-user-error 'rpm-repo-config
+                        f"rpm-repo-baseurl must start with https://, http://, or file://: {value}")
+    ) ; end unless supported repo baseurl
+    (when (or (string-contains? value " ")
+              (string-contains? value "\"")
+              (string-contains? value "'")
+              (string-contains? value "\n")
+              (string-contains? value "\r"))
+      (raise-user-error 'rpm-repo-config
+                        f"rpm-repo-baseurl contains unsafe characters: {value}")
+    ) ; end when unsafe repo baseurl
+    value
+  ) ; end begin assert-rpm-repo-baseurl
+) ; end define assert-rpm-repo-baseurl
+
+(define (config-or-cli-boolean who config key cli-value default)
+  (if (eq? cli-value 'unset)
+      (config-optional-boolean who config key default)
+      cli-value))
+
+(define (read-rpm-repo-config-values config-path root-arg id-arg name-arg baseurl-arg
+                                     enabled-arg gpgcheck-arg)
+  (begin
+    (define raw (read-rktd-hash 'rpm-repo-config config-path))
+    (define root-value (or root-arg
+                           (config-required-string 'rpm-repo-config raw 'rpm-repo-root)))
+    (define root (if root-arg
+                     (complete-path* root-value)
+                     (resolve-config-path config-path root-value)))
+    (define id
+      (assert-rpm-repo-id
+       (or id-arg
+           (config-required-string 'rpm-repo-config raw 'rpm-repo-id))))
+    (define name
+      (assert-rpm-repo-name
+       (or name-arg
+           (config-required-string 'rpm-repo-config raw 'rpm-repo-name))))
+    (define baseurl
+      (assert-rpm-repo-baseurl
+       (or baseurl-arg
+           (config-required-string 'rpm-repo-config raw 'rpm-repo-baseurl))))
+    (define enabled?
+      (config-or-cli-boolean 'rpm-repo-config raw 'rpm-repo-enabled enabled-arg #t))
+    (define gpgcheck?
+      (config-or-cli-boolean 'rpm-repo-config raw 'rpm-repo-gpgcheck gpgcheck-arg #f))
+    (values root id name baseurl enabled? gpgcheck?)
+  ) ; end begin read-rpm-repo-config-values
+) ; end define read-rpm-repo-config-values
 
 (define (split-github-repo who repo)
   (match (string-split repo "/")
@@ -3400,6 +3701,7 @@ jobs:
   (define deb-backend-arg "auto")
   (define rpmbuild-bin-arg "rpmbuild")
   (define rpm-bin-arg "rpm")
+  (define createrepo-bin-arg "createrepo_c")
   (define deb-arch-arg "amd64")
   (define rpm-arch-arg "x86_64")
   (define maintainer-arg "Cutie Deng <cutiedeng@users.noreply.github.com>")
@@ -3422,6 +3724,13 @@ jobs:
   (define apt-release-tag-arg #f)
   (define apt-release-asset-arg #f)
   (define apt-release-token-file-arg #f)
+  (define rpm-repo-config-arg #f)
+  (define rpm-repo-root-arg #f)
+  (define rpm-repo-id-arg #f)
+  (define rpm-repo-name-arg #f)
+  (define rpm-repo-baseurl-arg #f)
+  (define rpm-repo-enabled-arg 'unset)
+  (define rpm-repo-gpgcheck-arg 'unset)
   (define replace-release-asset-arg 'unset)
   (define ruby-bin-arg "ruby")
   (define brew-package-args '())
@@ -3477,6 +3786,8 @@ jobs:
                     (set! rpmbuild-bin-arg path)]
    [("--rpm-bin") path "rpm executable for package validation (default: rpm)"
                 (set! rpm-bin-arg path)]
+   [("--createrepo-bin") path "createrepo_c executable for RPM repo metadata (default: createrepo_c)"
+                         (set! createrepo-bin-arg path)]
    [("--deb-arch") arch "Debian architecture (default: amd64)"
                   (set! deb-arch-arg arch)]
    [("--rpm-arch") arch "RPM target architecture: x86_64, amd64, x64, aarch64, or arm64 (default: x86_64)"
@@ -3521,6 +3832,22 @@ jobs:
                                (set! apt-release-asset-arg name)]
    [("--apt-github-token-file") path "Override apt token file read as one Racket string datum"
                               (set! apt-release-token-file-arg path)]
+   [("--rpm-repo-config") path "Config for generating/updating the RPM repository (default: ./rpm-repo-config.rktd)"
+                          (set! rpm-repo-config-arg path)]
+   [("--rpm-repo-root") path "Override RPM repository root from config"
+                       (set! rpm-repo-root-arg path)]
+   [("--rpm-repo-id") value "Override RPM repository id from config"
+                     (set! rpm-repo-id-arg value)]
+   [("--rpm-repo-name") value "Override RPM repository display name from config"
+                       (set! rpm-repo-name-arg value)]
+   [("--rpm-repo-baseurl") value "Override RPM repository baseurl from config"
+                          (set! rpm-repo-baseurl-arg value)]
+   [("--rpm-repo-disabled") "Write enabled=0 in the generated .repo file"
+                            (set! rpm-repo-enabled-arg #f)]
+   [("--rpm-repo-gpgcheck") "Write gpgcheck=1 in the generated .repo file"
+                            (set! rpm-repo-gpgcheck-arg #t)]
+   [("--no-rpm-repo-gpgcheck") "Write gpgcheck=0 in the generated .repo file"
+                               (set! rpm-repo-gpgcheck-arg #f)]
    [("--replace-release-asset") "Delete an existing differing GitHub release asset before uploading"
                               (set! replace-release-asset-arg #t)]
    [("--no-replace-release-asset") "Refuse to replace an existing differing GitHub release asset"
@@ -3528,7 +3855,7 @@ jobs:
    [("--ruby-bin") path "Ruby executable for YAML validation (default: ruby)"
                   (set! ruby-bin-arg path)]
    #:multi
-   [("--target") target "Packaging target: brew, brew-ci, source-release, apt, apt-release, rpm, or all. May be repeated."
+   [("--target") target "Packaging target: brew, brew-ci, source-release, apt, apt-release, rpm, rpm-repo, or all. May be repeated."
                 (set! target-args (append target-args (list target)))]
    [("--brew-package") name "Extra package to include in the Homebrew source archive"
                      (set! brew-package-args (append brew-package-args (list name)))]
@@ -3568,6 +3895,8 @@ jobs:
     (complete-path* (or source-release-config-arg (build-path script-dir "source-release-config.rktd"))))
   (define apt-release-config
     (complete-path* (or apt-release-config-arg (build-path script-dir "apt-release-config.rktd"))))
+  (define rpm-repo-config
+    (complete-path* (or rpm-repo-config-arg (build-path script-dir "rpm-repo-config.rktd"))))
   (assert-prefix prefix-arg)
   (when (needs-racket-root? targets)
     (assert-racket-root racket-root)
@@ -3597,6 +3926,18 @@ jobs:
   (when bottle-root-url-arg
     (assert-bottle-root-url bottle-root-url-arg)
   ) ; end when bottle root url provided
+  (define-values (rpm-repo-root rpm-repo-id rpm-repo-name rpm-repo-baseurl
+                                rpm-repo-enabled? rpm-repo-gpgcheck?)
+    (if (member "rpm-repo" targets string=?)
+        (read-rpm-repo-config-values rpm-repo-config
+                                     rpm-repo-root-arg
+                                     rpm-repo-id-arg
+                                     rpm-repo-name-arg
+                                     rpm-repo-baseurl-arg
+                                     rpm-repo-enabled-arg
+                                     rpm-repo-gpgcheck-arg)
+        (values #f #f #f #f #t #f))
+  ) ; end define-values rpm repo config
   (cfg targets
        racket-root
        make-dir
@@ -3622,6 +3963,7 @@ jobs:
        deb-backend-arg
        rpmbuild-bin-arg
        rpm-bin-arg
+       createrepo-bin-arg
        deb-arch-arg
        (normalize-rpm-arch rpm-arch-arg)
        maintainer-arg
@@ -3644,6 +3986,13 @@ jobs:
        apt-release-tag-arg
        apt-release-asset-arg
        apt-release-token-file-arg
+       rpm-repo-config
+       rpm-repo-root
+       rpm-repo-id
+       rpm-repo-name
+       rpm-repo-baseurl
+       rpm-repo-enabled?
+       rpm-repo-gpgcheck?
        replace-release-asset-arg
        ruby-bin-arg
        brew-package-args
@@ -3669,9 +4018,14 @@ jobs:
     (println/flush f"Install root: {(clean-path-string (cfg-install-root c))}")
     (println/flush f"Prefix: {(cfg-prefix c)}")
   ) ; end when install-root target
-  (when (member "rpm" (cfg-targets c) string=?)
+  (when (or (member "rpm" (cfg-targets c) string=?)
+            (member "rpm-repo" (cfg-targets c) string=?))
     (println/flush f"RPM target arch: {(cfg-rpm-arch c)}")
-  ) ; end when rpm target
+  ) ; end when rpm target or repo target
+  (when (member "rpm-repo" (cfg-targets c) string=?)
+    (println/flush f"RPM repo config: {(clean-path-string (cfg-rpm-repo-config c))}")
+    (println/flush f"RPM repo root: {(clean-path-string (cfg-rpm-repo-root c))}")
+  ) ; end when rpm repo target
   (when (cfg-bottle-root-url c)
     (println/flush f"Bottle root URL: {(cfg-bottle-root-url c)}")
   ) ; end when bottle root url
@@ -3702,6 +4056,7 @@ jobs:
          ["apt" (build-apt! c) '()]
          ["apt-release" (build-apt-release! c)]
          ["rpm" (build-rpm! c) '()]
+         ["rpm-repo" (build-rpm-repo! c)]
          [_ (error 'main f"unreachable target: {target}")]
        ) ; end match target
      ) ; end lambda target
@@ -3759,6 +4114,7 @@ jobs:
          "auto"
          "rpmbuild"
          "rpm"
+         "createrepo_c"
          "amd64"
          "x86_64"
          "Cutie Deng <cutiedeng@users.noreply.github.com>"
@@ -3781,6 +4137,13 @@ jobs:
          #f
          #f
          #f
+         (build-path test-root "rpm-repo-config.rktd")
+         (build-path test-root "rpm-racket")
+         "cutiedeng-racket"
+         "CutieDeng Racket RPM Repository"
+         "https://raw.githubusercontent.com/CutieDeng/rpm-racket/main/repo/$basearch"
+         #t
+         #f
          'unset
          "ruby"
          brew-packages
@@ -3798,14 +4161,25 @@ jobs:
                                    (container . "ghcr.io/homebrew/brew:main"))))
           (syntax-runners . (#hash((os . "macos-15-intel"))))))
 
+  (define (formula-version-before-sha? content)
+    (begin
+      (define version-start (regexp-first-start #px"(?m:^  version \"[^\"]+\")" content))
+      (define sha-start (regexp-first-start #px"(?m:^  sha256 \"[0-9a-f]{64}\")" content))
+      (and version-start sha-start (< version-start sha-start))
+    ) ; end begin formula-version-before-sha?
+  ) ; end define formula-version-before-sha?
+
   (test-case "brew target names and package closure stay stable"
     (define c (test-cfg #:brew-packages '("sandbox-lib" "custom-extra")))
     (define packages (brew-source-packages c))
     (check-equal? (normalize-targets '("all" "brew-ci" "source-release" "apt-release"))
                   '("brew-ci" "brew" "source-release" "apt" "apt-release" "rpm"))
+    (check-equal? (normalize-targets '("rpm-repo" "rpm"))
+                  '("rpm" "rpm-repo"))
     (check-equal? (normalize-rpm-arch "arm64") "aarch64")
     (check-equal? (normalize-rpm-arch "amd64") "x86_64")
     (check-equal? (brew-source-tgz-name c) "racket-minimal-9.2.1-src.tgz")
+    (check-equal? (rpm-package-name c) "racket9-9.2.1-1.x86_64.rpm")
     (check-true (and (member "sandbox-lib" packages string=?) #t))
     (check-true (and (member "errortrace-lib" packages string=?) #t))
     (check-true (and (member "source-syntax" packages string=?) #t))
@@ -3846,6 +4220,7 @@ jobs:
                         #:formula-version "9.2.1.1"))
     (check-equal? (brew-source-tgz-name c) "racket-minimal-9.2.1-src.tgz")
     (check-equal? (apt-deb-name c) "racket9_9.2.1.1-1_amd64.deb")
+    (check-equal? (rpm-package-name c) "racket9-9.2.1.1-1.x86_64.rpm")
     (check-equal? (brew-tgz-member-path c "src/README.txt")
                   "racket-9.2.1/src/README.txt")
     (define content (formula-content/full c test-sha256))
@@ -3853,6 +4228,7 @@ jobs:
      (string-contains? content
                        "url \"https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz\""))
     (check-true (string-contains? content "version \"9.2.1.1\""))
+    (check-true (formula-version-before-sha? content))
     (check-true (string-contains? content "assert_match \"9.2.1\""))
     (check-false (string-contains? content "Welcome to Racket v9.2.1.1 [cs]."))
     (define publish-content (publish-workflow-content c test-brew-ci-config))
@@ -3887,6 +4263,45 @@ jobs:
     ) ; end dynamic-wind rpm spec
   ) ; end test-case formula-version package-manager outputs
 
+  (test-case "incremental Formula source update normalizes Homebrew component order"
+    (define c (test-cfg #:formula-build-mode "incremental"))
+    (define formula-dir (make-temporary-file "package-racket-formula-order~a" 'directory))
+    (dynamic-wind
+      void
+      (lambda ()
+        (define formula-path (build-path formula-dir "racket@9.rb"))
+        (write-text-file!
+         formula-path
+         f"{(generated-code-notice "#")}class RacketAT9 < Formula
+  desc \"Modern programming language in the Lisp/Scheme family\"
+  homepage \"https://racket-lang.org/\"
+  url \"https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz\"
+  sha256 \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"
+  version \"9.2.1\"
+  license any_of: [\"MIT\", \"Apache-2.0\"]
+
+  depends_on \"openssl@3\"
+
+  on_linux do
+    depends_on \"ncurses\"
+  end
+
+  test do
+    assert_match \"9.2.1\", shell_output(\"racket -e '(displayln (version))'\")
+  end
+end
+")
+        (set-formula-source! c formula-path test-sha256)
+        (define content (file->string formula-path))
+        (check-true (formula-version-before-sha? content))
+        (check-true (string-contains? content f"sha256 \"{test-sha256}\""))
+      ) ; end lambda update formula
+      (lambda ()
+        (delete-directory/files formula-dir)
+      ) ; end lambda cleanup formula
+    ) ; end dynamic-wind formula order
+  ) ; end test-case incremental Formula order
+
   (test-case "full brew Formula template keeps runtime checks and dependencies"
     (define content (formula-content/full (test-cfg) test-sha256))
     (for ([needle (in-list (list "class RacketAT9 < Formula"
@@ -3906,6 +4321,7 @@ jobs:
                                  "DYLD_PRINT_LIBRARIES=1"))])
       (check-true (string-contains? content needle) needle)
     ) ; end for formula needle
+    (check-true (formula-version-before-sha? content))
     (check-false (string-contains? content "assert_match(/\\e\\["))
   ) ; end test-case full Formula template
 
