@@ -1250,7 +1250,7 @@ set -euo pipefail
 
 ")
 
-(define (rpm-common-script-content c)
+(define (rpm-common-script-content c [source-sha256 (rpm-source-sha256/local c)])
   f"{(rpm-script-header "rpm-common.sh")}PACKAGE_NAME={(shell-single-quoted (cfg-package-name c))}
 PACKAGE_VERSION={(shell-single-quoted (cfg-formula-version c))}
 PACKAGE_SOURCE_VERSION={(shell-single-quoted (cfg-source-version c))}
@@ -1258,7 +1258,7 @@ PACKAGE_RELEASE={(shell-single-quoted (cfg-release c))}
 DEFAULT_PREFIX={(shell-single-quoted (cfg-prefix c))}
 SOURCE_ARCHIVE_NAME={(shell-single-quoted (rpm-source-archive-name c))}
 DEFAULT_SOURCE_URL={(shell-single-quoted (formula-source-url c))}
-SOURCE_SHA256={(shell-single-quoted (rpm-source-sha256 c))}
+SOURCE_SHA256={(shell-single-quoted source-sha256)}
 FILE_LIST_SOURCE_NAME={(shell-single-quoted (rpm-file-list-source-name c))}
 SPEC_NAME={(shell-single-quoted (string-append (cfg-package-name c) ".spec"))}
 
@@ -1856,8 +1856,8 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
 
 (define (validate-rpm-spec-scaffold! c)
   (begin
-    (assert-nonempty-file 'validate-rpm-spec-scaffold! (rpm-repo-readme-path c))
-    (assert-nonempty-file 'validate-rpm-spec-scaffold! (rpm-repo-gitignore-path c))
+	    (assert-nonempty-file 'validate-rpm-spec-scaffold! (rpm-repo-readme-path c))
+	    (assert-nonempty-file 'validate-rpm-spec-scaffold! (rpm-repo-gitignore-path c))
 	    (assert-file 'validate-rpm-spec-scaffold! (rpm-definition-source-keep-path c))
 	    (validate-rpm-spec! c
 	                        (rpm-definition-spec-path c)
@@ -1900,16 +1900,19 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
   (begin
     (assert-rpm-repo-root! c #:write? #t)
     (remove-rpm-spec-stale-outputs! c)
-    (make-directory* (rpm-spec-dir c))
-    (make-directory* (rpm-sources-dir c))
-    (make-directory* (rpm-scripts-dir c))
-    (write-text-file! (rpm-repo-gitignore-path c) rpm-spec-gitignore-content)
+	    (make-directory* (rpm-spec-dir c))
+	    (make-directory* (rpm-sources-dir c))
+	    (make-directory* (rpm-scripts-dir c))
+	    (define source-url (formula-source-url c))
+	    (define source-sha256 (resolve-rpm-source-sha256! c source-url))
+	    (write-text-file! (rpm-repo-gitignore-path c) rpm-spec-gitignore-content)
 	    (write-rpm-spec! c
 	                     (rpm-definition-spec-path c)
-	                     (formula-source-url c))
-    (write-text-file! (rpm-definition-source-keep-path c) "")
-    (write-executable-text-file! (rpm-script-path c "rpm-common.sh")
-                                 (rpm-common-script-content c))
+	                     source-url
+	                     source-sha256)
+	    (write-text-file! (rpm-definition-source-keep-path c) "")
+	    (write-executable-text-file! (rpm-script-path c "rpm-common.sh")
+	                                 (rpm-common-script-content c source-sha256))
     (write-executable-text-file! (rpm-script-path c "build-rpm.sh")
                                  (rpm-build-script-content c))
     (write-executable-text-file! (rpm-script-path c "build-srpm.sh")
@@ -5204,7 +5207,10 @@ jobs:
         (write-text-file! (build-path (cfg-install-root c) "usr" "lib" "racket" "collects" "main.rkt")
                           "#lang racket/base\n")
         (define spec-path (build-path rpm-root "racket9.spec"))
-        (write-rpm-spec! c spec-path "https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz")
+        (write-rpm-spec! c
+                         spec-path
+                         "https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz"
+                         test-sha256)
         (define file-list (rpm-file-list c))
         (define spec-content (file->string spec-path))
         (check-true (string-contains? spec-content "Version: 9.2.1.1"))
