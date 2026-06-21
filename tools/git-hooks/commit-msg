@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -lt 1 ]; then
+  echo "usage: commit-msg <commit-message-file>" >&2
+  echo "example: tools/git-hooks/commit-msg .commit" >&2
+  exit 2
+fi
+
+message_file="$1"
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$repo_root" ]; then
+  exit 0
+fi
+
+enabled="$(git config --bool --get commit.datumMessage 2>/dev/null || true)"
+marker="$repo_root/.git-commit-message.rktd"
+
+if [ "$enabled" != "true" ] && [ ! -f "$marker" ]; then
+  exit 0
+fi
+
+validator="$(git config --get commit.datumValidator 2>/dev/null || true)"
+
+if [ -z "$validator" ]; then
+  hook_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+  candidate="$hook_dir/../check-commit-message.rkt"
+  if [ -f "$candidate" ]; then
+    validator="$candidate"
+  fi
+fi
+
+if [ -z "$validator" ] || [ ! -f "$validator" ]; then
+  echo "commit.datumMessage is enabled, but no commit datum validator was found." >&2
+  echo "Set commit.datumValidator to tools/check-commit-message.rkt or install the package-racket hook directory." >&2
+  exit 1
+fi
+
+exec racket "$validator" --message-file "$message_file"

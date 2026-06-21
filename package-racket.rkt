@@ -1,6 +1,7 @@
 #lang reader tstring/lang/reader racket/base
 
-(require racket/cmdline
+(require file/tar
+         racket/cmdline
          racket/file
          racket/list
          racket/match
@@ -51,10 +52,8 @@
    url
    bottle-root-url
    homebrew-tap
-   brew-helper
    formula
    update-formula?
-   racket-bin
    brew-ci-config
    ruby-bin
    brew-packages
@@ -665,12 +664,447 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
 (define (brew-output-tgz c)
   (build-path (cfg-artifact-dir c) (brew-source-tgz-name c)))
 
+(define brew-custom-core-packages
+  '("sandbox-lib"
+    "errortrace-lib"
+    "source-syntax"))
+
+(define brew-default-packages
+  '("base"
+    "racket-lib"
+    "racket-aarch64-macosx-4"
+    "racket-tstring"
+    "tstring"
+    "xrepl-lib"
+    "expeditor-lib"
+    "readline-lib"
+    "scribble-text-lib"
+    "syntax-color-lib"
+    "parser-tools-lib"
+    "option-contract-lib"
+    "scheme-lib"
+    "at-exp-lib"
+    "rackunit-lib"
+    "testing-util-lib"
+    "sandbox-lib"
+    "errortrace-lib"
+    "source-syntax"
+    "compiler-lib"
+    "zo-lib"))
+
+(define brew-package-links
+  '(("base" . root)
+    ("racket-lib" . root)
+    ("racket-aarch64-macosx-4" . root)
+    ("racket-tstring" . "racket-tstring")
+    ("tstring" . "tstring")
+    ("xrepl-lib" . root)
+    ("expeditor-lib" . "expeditor")
+    ("readline-lib" . root)
+    ("scribble-text-lib" . root)
+    ("syntax-color-lib" . root)
+    ("parser-tools-lib" . root)
+    ("option-contract-lib" . root)
+    ("scheme-lib" . root)
+    ("at-exp-lib" . root)
+    ("rackunit-lib" . root)
+    ("testing-util-lib" . root)
+    ("sandbox-lib" . root)
+    ("errortrace-lib" . root)
+    ("source-syntax" . "syntax")
+    ("compiler-lib" . root)
+    ("zo-lib" . root)))
+
+(define brew-required-package-files
+  '("share/pkgs/sandbox-lib/racket/sandbox.rkt"
+    "share/pkgs/sandbox-lib/scheme/sandbox.rkt"
+    "share/pkgs/errortrace-lib/errortrace/stacktrace.rkt"
+    "share/pkgs/source-syntax/source-syntax.rkt"))
+
+(define brew-required-link-needles
+  '("root (#\"pkgs\" #\"sandbox-lib\")"
+    "root (#\"pkgs\" #\"errortrace-lib\")"
+    "\"syntax\" (#\"pkgs\" #\"source-syntax\")"))
+
+(define brew-required-pkgs-db-needles
+  '("\"sandbox-lib\""
+    "\"errortrace-lib\""
+    "\"source-syntax\""))
+
+(define (brew-source-packages c)
+  (remove-duplicates
+   (append brew-default-packages brew-custom-core-packages (cfg-brew-packages c))
+   string=?))
+
+(define (release-catalog-url version)
+  (match (regexp-match #rx"^([0-9]+)[.]([0-9]+)" version)
+    [(list _ major minor)
+     f"https://download.racket-lang.org/releases/{major}.{minor}/catalog/"]
+    [_ (raise-user-error 'release-catalog-url
+                         f"cannot derive release catalog from version: {version}")]
+  ) ; end match version
+) ; end define release-catalog-url
+
+(define (write-brew-source-readme! dest version)
+  (write-text-file!
+   dest
+   f"The Racket Programming Language
+===============================
+
+This is the
+  Minimal Racket | All Platforms | Source
+distribution for version {version}.
+
+This distribution provides source for the Racket run-time system;
+for build and installation instructions, see \"src/README.txt\".
+(The distribution also includes the core Racket collections and any
+installed packages in source form.)
+
+The distribution has been configured so that when you install or
+update packages, the package catalogs at
+  {(release-catalog-url version)}
+  https://download.rhombus-lang.org/releases/current/catalog/
+are consulted first.
+
+Visit http://racket-lang.org/ for more Racket resources.
+
+
+License
+-------
+
+Racket is distributed under the MIT license and the Apache version 2.0
+license, at your option.
+
+The Racket runtime system includes components distributed under
+other licenses. See \"src/LICENSE.txt\" for more information.
+
+Racket packages that are included in the distribution have their own
+licenses. See the package files in \"pkgs\" within \"share\" for more
+information.
+")
+) ; end define write-brew-source-readme!
+
+(define (write-brew-config! dest version)
+  (begin
+    (define catalogs
+      (list (release-catalog-url version)
+            "https://download.rhombus-lang.org/releases/current/catalog/"
+            #f))
+    (call-with-output-file dest
+      #:exists 'truncate/replace
+      (lambda (out)
+        (write `#hash((catalogs . ,catalogs)
+                      (gui-interactive-file . racket/gui/interactive)
+                      (installation-name . ,version)
+                      (interactive-file . racket/interactive/tstring))
+               out)
+        (newline out)
+      ) ; end lambda out
+    ) ; end call-with-output-file
+  ) ; end begin write-brew-config!
+) ; end define write-brew-config!
+
+(define (skip-brew-source-path? rel)
+  (begin
+    (define elems (map path->string (explode-path rel)))
+    (define base (if (null? elems) "" (last elems)))
+    (or (for/or ([elem (in-list elems)])
+          (member elem '(".git" ".hg" ".svn" ".github" "compiled"))
+        ) ; end for/or ignored path element
+        (member base '(".gitattributes" ".gitignore"))
+        (string-prefix? base ".LOCK")
+        (member base '(".DS_Store" "_zuo.db" "_zuo_tc.db"))
+        (regexp-match? #rx"[.]zo$" base)
+        (regexp-match? #rx"[.]dep$" base)
+        (regexp-match? #rx"[.]bak$" base)
+        (regexp-match? #rx"[.]orig$" base)
+        (regexp-match? #rx"[.]rej$" base)
+        (regexp-match? #rx"~$" base))
+  ) ; end begin skip-brew-source-path?
+) ; end define skip-brew-source-path?
+
+(define (copy-brew-tree! src dest #:skip-first-components [skip-first-components '()])
+  (begin
+    (assert-directory 'copy-brew-tree! src)
+    (when (directory-exists? dest)
+      (delete-directory/files dest)
+    ) ; end when old dest exists
+    (make-directory* dest)
+    (define src/ (path->directory-path src))
+    (for ([path (in-list (sort (find-files (lambda (_) #t) src)
+                               path<?
+                               #:key (lambda (p) (find-relative-path src/ p))))])
+      (unless (equal? (simplify-path path) (simplify-path src))
+        (define rel (find-relative-path src/ path))
+        (define rel-elems (map path->string (explode-path rel)))
+        (unless (or (skip-brew-source-path? rel)
+                    (and (pair? rel-elems)
+                         (member (car rel-elems) skip-first-components)))
+          (define target (build-path dest rel))
+          (cond
+            [(directory-exists? path)
+             (make-directory* target)
+             (file-or-directory-permissions target (file-or-directory-permissions path 'bits))]
+            [(file-exists? path)
+             (make-directory* (path-only target))
+             (copy-file path target #t)
+             (file-or-directory-permissions target (file-or-directory-permissions path 'bits))]
+            [(link-exists? path)
+             (make-directory* (path-only target))
+             (copy-file path target #t)]
+          ) ; end cond source path kind
+        ) ; end unless skipped path
+      ) ; end unless root path
+    ) ; end for source path
+  ) ; end begin copy-brew-tree!
+) ; end define copy-brew-tree!
+
+(define (brew-package-source racket-root name)
+  (or (for/or ([candidate (in-list (list (build-path racket-root "pkgs" name)
+                                         (build-path racket-root "racket" "share" "pkgs" name)))])
+        (and (directory-exists? candidate) candidate)
+      ) ; end for/or candidates
+      (raise-user-error 'brew-package-source
+                        f"cannot find package {name} in {(clean-path-string racket-root)}/pkgs or {(clean-path-string racket-root)}/racket/share/pkgs")))
+
+(define (datum->source v)
+  (call-with-output-string (lambda (out) (write v out))))
+
+(define (brew-package-link-name name)
+  (begin
+    (define pair (assoc name brew-package-links))
+    (unless pair
+      (raise-user-error 'brew-package-link-name
+                        f"package has no explicit collection link mapping: {name}")
+    ) ; end unless known package link
+    (cdr pair)
+  ) ; end begin brew-package-link-name
+) ; end define brew-package-link-name
+
+(define (write-brew-links! dest packages)
+  (begin
+    (define entries
+      (for/list ([name (in-list packages)])
+        (define link-name (brew-package-link-name name))
+        (cond
+          [(eq? link-name 'root)
+           `(root (#"pkgs" ,(string->bytes/utf-8 name)))]
+          [else
+           `(,link-name (#"pkgs" ,(string->bytes/utf-8 name)))]
+        ) ; end cond link entry
+      ) ; end for/list entries
+    ) ; end define entries
+    (call-with-output-file dest
+      #:exists 'truncate/replace
+      (lambda (out)
+        (write entries out)
+        (newline out)
+      ) ; end lambda out
+    ) ; end call-with-output-file
+  ) ; end begin write-brew-links!
+) ; end define write-brew-links!
+
+(define (brew-sc-pkg? name)
+  (member name '("racket-tstring" "tstring")))
+
+(define (brew-auto-pkg? name)
+  (not (member name '("racket-lib" "tstring"))))
+
+(define (brew-pkg-info-value name)
+  (begin
+    (define auto? (brew-auto-pkg? name))
+    (cond
+      [(brew-sc-pkg? name)
+       f"#s((sc-pkg-info pkg-info 3) (catalog {(datum->source name)}) \"\" {(if auto? "#t" "#f")} {(datum->source name)})"]
+      [else
+       f"#s(pkg-info (catalog {(datum->source name)}) \"\" {(if auto? "#t" "#f")})"]
+    ) ; end cond pkg info kind
+  ) ; end begin brew-pkg-info-value
+) ; end define brew-pkg-info-value
+
+(define (write-brew-pkgs-db! dest packages)
+  (begin
+    (define entries
+      (for/hash ([name (in-list packages)])
+        (values name (brew-pkg-info-value name))
+      ) ; end for/hash entries
+    ) ; end define entries
+    (call-with-output-file dest
+      #:exists 'truncate/replace
+      (lambda (out)
+        (display "#hash(" out)
+        (for ([name (in-list (sort packages string<?))]
+              [idx (in-naturals)])
+          (unless (zero? idx)
+            (display " " out)
+          ) ; end unless first entry
+          (display "(" out)
+          (write name out)
+          (display " . " out)
+          (display (hash-ref entries name) out)
+          (display ")" out)
+        ) ; end for package entry
+        (display ")\n" out)
+      ) ; end lambda out
+    ) ; end call-with-output-file
+  ) ; end begin write-brew-pkgs-db!
+) ; end define write-brew-pkgs-db!
+
+(define (copy-brew-licenses! racket-root dest-share)
+  (begin
+    (for ([name (in-list '("LICENSE-APACHE.txt"
+                          "LICENSE-GPL.txt"
+                          "LICENSE-LGPL.txt"
+                          "LICENSE-MIT.txt"
+                          "LICENSE-libscheme.txt"
+                          "LICENSE.txt"))])
+      (define share-src (build-path racket-root "racket" "share" name))
+      (define src-src (build-path racket-root "racket" "src" name))
+      (define src
+        (cond
+          [(file-exists? share-src) share-src]
+          [(file-exists? src-src) src-src]
+          [else
+           (raise-user-error 'copy-brew-licenses! f"missing license file: {name}")]
+        ) ; end cond license source
+      ) ; end define src
+      (copy-file src (build-path dest-share name) #t)
+    ) ; end for license
+  ) ; end begin copy-brew-licenses!
+) ; end define copy-brew-licenses!
+
+(define (stage-brew-source! c packages)
+  (begin
+    (define stage-root (build-path (cfg-stage-dir c) "brew-source"))
+    (define dist-root (build-path stage-root f"racket-{(cfg-version c)}"))
+    (reset-managed-dir! 'stage-brew-source! stage-root)
+    (make-directory* dist-root)
+    (write-brew-source-readme! (build-path dist-root "README") (cfg-version c))
+    (make-directory* (build-path dist-root "etc"))
+    (write-brew-config! (build-path dist-root "etc" "config.rktd") (cfg-version c))
+    (copy-brew-tree! (build-path (cfg-racket-root c) "racket" "collects")
+                     (build-path dist-root "collects"))
+    (copy-brew-tree! (build-path (cfg-racket-root c) "racket" "src")
+                     (build-path dist-root "src")
+                     #:skip-first-components '("build"))
+    (define share-dir (build-path dist-root "share"))
+    (define pkgs-dir (build-path share-dir "pkgs"))
+    (make-directory* pkgs-dir)
+    (copy-brew-licenses! (cfg-racket-root c) share-dir)
+    (write-brew-links! (build-path share-dir "links.rktd") packages)
+    (write-brew-pkgs-db! (build-path pkgs-dir "pkgs.rktd") packages)
+    (for ([name (in-list packages)])
+      (copy-brew-tree! (brew-package-source (cfg-racket-root c) name)
+                       (build-path pkgs-dir name))
+    ) ; end for package copy
+    dist-root
+  ) ; end begin stage-brew-source!
+) ; end define stage-brew-source!
+
+(define (relative-files-from base root)
+  (begin
+    (define base/ (path->directory-path base))
+    (sort
+     (for/list ([p (in-list (find-files file-exists? root))])
+       (find-relative-path base/ p)
+     ) ; end for/list relative files
+     path<?)
+  ) ; end begin relative-files-from
+) ; end define relative-files-from
+
+(define (make-brew-tgz! c dist-root)
+  (begin
+    (define tgz-path (brew-output-tgz c))
+    (define parent (path-only dist-root))
+    (define tar-path (path-replace-extension tgz-path #".tar"))
+    (assert-executable 'make-brew-tgz! "gzip")
+    (make-directory* (cfg-artifact-dir c))
+    (when (file-exists? tar-path)
+      (delete-file tar-path)
+    ) ; end when old tar exists
+    (when (file-exists? tgz-path)
+      (delete-file tgz-path)
+    ) ; end when old tgz exists
+    (parameterize ([current-directory parent])
+      (call-with-output-file tar-path
+        #:exists 'truncate/replace
+        (lambda (out)
+          (tar->output (relative-files-from parent (file-name-from-path dist-root))
+                       out
+                       #:timestamp 0
+                       #:format 'pax)
+        ) ; end lambda tar out
+      ) ; end call-with-output-file tar
+    ) ; end parameterize parent dir
+    (define gzip (resolve-executable 'make-brew-tgz! "gzip"))
+    (define-values (proc out in err)
+      (subprocess #f #f #f gzip "-n" "-c" (clean-path-string tar-path))
+    ) ; end define-values gzip process
+    (close-output-port in)
+    (call-with-output-file tgz-path
+      #:exists 'truncate/replace
+      (lambda (tgz-out)
+        (copy-port out tgz-out)
+      ) ; end lambda tgz out
+    ) ; end call-with-output-file tgz
+    (define stderr (port->string err))
+    (subprocess-wait proc)
+    (define status (subprocess-status proc))
+    (close-input-port out)
+    (close-input-port err)
+    (delete-file tar-path)
+    (unless (zero? status)
+      (raise-user-error 'make-brew-tgz! f"gzip failed with exit {status}: {stderr}")
+    ) ; end unless gzip success
+    tgz-path
+  ) ; end begin make-brew-tgz!
+) ; end define make-brew-tgz!
+
+(define (brew-tgz-member-path c relative-path)
+  f"racket-{(cfg-version c)}/{relative-path}")
+
+(define (brew-tgz-file-content c relative-path)
+  (capture! 'validate-brew-tgz!
+            (cfg-tar-bin c)
+            (list "-xOf"
+                  (clean-path-string (brew-output-tgz c))
+                  (brew-tgz-member-path c relative-path))))
+
+(define (validate-brew-tgz-file! c relative-path)
+  (begin
+    (brew-tgz-file-content c relative-path)
+    (void)
+  ) ; end begin validate-brew-tgz-file!
+) ; end define validate-brew-tgz-file!
+
+(define (validate-brew-tgz-content! c)
+  (begin
+    (assert-executable 'validate-brew-tgz! (cfg-tar-bin c))
+    (for ([relative-path (in-list brew-required-package-files)])
+      (validate-brew-tgz-file! c relative-path)
+    ) ; end for required package files
+    (define links-content (brew-tgz-file-content c "share/links.rktd"))
+    (for ([needle (in-list brew-required-link-needles)])
+      (unless (string-contains? links-content needle)
+        (raise-user-error 'validate-brew-tgz!
+                          f"brew source tgz links.rktd is missing: {needle}")
+      ) ; end unless link needle
+    ) ; end for required links
+    (define pkgs-db-content (brew-tgz-file-content c "share/pkgs/pkgs.rktd"))
+    (for ([needle (in-list brew-required-pkgs-db-needles)])
+      (unless (string-contains? pkgs-db-content needle)
+        (raise-user-error 'validate-brew-tgz!
+                          f"brew source tgz pkgs.rktd is missing: {needle}")
+      ) ; end unless pkgs db needle
+    ) ; end for required pkgs db entries
+  ) ; end begin validate-brew-tgz-content!
+) ; end define validate-brew-tgz-content!
+
 (define (assert-homebrew-tap! c)
   (begin
     (assert-directory 'assert-homebrew-tap! (cfg-homebrew-tap c))
     (assert-directory 'assert-homebrew-tap! (build-path (cfg-homebrew-tap c) ".git"))
     (assert-directory 'assert-homebrew-tap! (build-path (cfg-homebrew-tap c) "Formula"))
-    (assert-file 'assert-homebrew-tap! (cfg-brew-helper c))
     (when (cfg-update-formula? c)
       (assert-file 'assert-homebrew-tap! (cfg-formula c))
       (unless (path-contained-in? (cfg-formula c) (build-path (cfg-homebrew-tap c) "Formula"))
@@ -693,6 +1127,12 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
 
 (define (formula-root-url-line c)
   f"    {(formula-root-url c)}")
+
+(define (formula-source-url-line c)
+  f"  url \"{(formula-source-url c)}\"")
+
+(define (formula-source-sha256-line digest)
+  f"  sha256 \"{digest}\"")
 
 (define (formula-sha256 formula-path)
   (begin
@@ -773,6 +1213,30 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
   ) ; end begin set-formula-bottle-root-url!
 ) ; end define set-formula-bottle-root-url!
 
+(define (set-formula-source! c formula-path digest)
+  (begin
+    (assert-nonempty-file 'set-formula-source! formula-path)
+    (define content (file->string formula-path))
+    (define source-url-rx #px"(?m:^  url \"[^\"]+racket-minimal-[^\"]+-src[.]tgz\")")
+    (define source-sha-rx #px"(?m:^  sha256 \"[0-9a-f]{64}\")")
+    (unless (= 1 (regexp-match-count source-url-rx content))
+      (raise-user-error 'set-formula-source!
+                        f"formula must contain exactly one source url line: {(clean-path-string formula-path)}")
+    ) ; end unless exactly one source url
+    (unless (= 1 (regexp-match-count source-sha-rx content))
+      (raise-user-error 'set-formula-source!
+                        f"formula must contain exactly one source sha256 line: {(clean-path-string formula-path)}")
+    ) ; end unless exactly one source sha
+    (define with-source-url
+      (regexp-replace source-url-rx content (formula-source-url-line c))
+    ) ; end define with-source-url
+    (write-text-file!
+     formula-path
+     (regexp-replace source-sha-rx with-source-url (formula-source-sha256-line digest)))
+    (validate-formula-file! c formula-path)
+  ) ; end begin set-formula-source!
+) ; end define set-formula-source!
+
 (define (validate-brew-tgz! c)
   (begin
     (define tgz-path (brew-output-tgz c))
@@ -781,6 +1245,7 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
       (raise-user-error 'validate-brew-tgz!
                         f"brew source tgz name must be {(brew-source-tgz-name c)}: {(clean-path-string tgz-path)}")
     ) ; end unless brew tgz basename matches formula
+    (validate-brew-tgz-content! c)
     (println/flush f"Validated brew source tgz: {(clean-path-string tgz-path)}")
   ) ; end begin validate-brew-tgz!
 ) ; end define validate-brew-tgz!
@@ -836,19 +1301,18 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
 
 (define (build-brew! c)
   (begin
-    (define helper (cfg-brew-helper c))
-    (define brew-stage (build-path (cfg-stage-dir c) "brew-source"))
     (define finalizers '())
-    (define formula-for-helper #f)
+    (define generated-formula #f)
+    (define packages (brew-source-packages c))
+    (println/flush f"Brew source packages: {(string-join packages " ")}")
     (unless (cfg-dry-run? c)
       (assert-homebrew-tap! c)
-      (assert-file 'build-brew! (cfg-racket-bin c))
       (make-directory* (cfg-artifact-dir c))
       (when (cfg-update-formula? c)
         (define-values (generated original-digest)
           (prepare-generated-formula! c)
         ) ; end define-values generated/original-digest
-        (set! formula-for-helper generated)
+        (set! generated-formula generated)
         (set! finalizers
               (list (lambda ()
                       (install-generated-formula! c generated original-digest)
@@ -856,9 +1320,17 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
               ) ; end list finalizer
         ) ; end set! finalizers
       ) ; end when update formula
+      (define dist-root (stage-brew-source! c packages))
+      (make-brew-tgz! c dist-root)
+      (define digest (sha256-file (brew-output-tgz c)))
+      (println/flush f"sha256: {digest}")
+      (when (cfg-update-formula? c)
+        (set-formula-source! c generated-formula digest)
+        (set-formula-bottle-root-url! c generated-formula)
+      ) ; end when update formula fields
     ) ; end unless dry-run prepare brew
     (when (and (cfg-dry-run? c) (cfg-update-formula? c))
-      (set! formula-for-helper (brew-generated-formula c))
+      (set! generated-formula (brew-generated-formula c))
       (set! finalizers
             (list (lambda ()
                     (println/flush f"Would install brew formula: {(clean-path-string (cfg-formula c))}")
@@ -866,26 +1338,9 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
             ) ; end list dry-run finalizer
       ) ; end set! dry-run finalizers
     ) ; end when dry-run update formula
-    (define args
-      (append
-       (list (clean-path-string helper)
-             "--racket-root" (clean-path-string (cfg-racket-root c))
-             "--artifact-dir" (clean-path-string (cfg-artifact-dir c))
-             "--stage-dir" (clean-path-string brew-stage)
-             "--version" (cfg-version c))
-       (if (cfg-update-formula? c)
-           (list "--formula" (clean-path-string formula-for-helper))
-           (list "--no-update-formula"))
-       (append-map (lambda (pkg) (list "--package" pkg)) (cfg-brew-packages c))
-      ) ; end append brew args
-    ) ; end define args
-    (run! 'build-brew! (clean-path-string (cfg-racket-bin c)) args #:dry-run? (cfg-dry-run? c))
     (unless (cfg-dry-run? c)
-      (when (cfg-update-formula? c)
-        (set-formula-bottle-root-url! c formula-for-helper)
-      ) ; end when update formula root url
       (if (cfg-update-formula? c)
-          (validate-brew-artifact! c formula-for-helper)
+          (validate-brew-artifact! c generated-formula)
           (validate-brew-tgz! c))
     ) ; end unless dry-run validate brew
     finalizers
@@ -1168,7 +1623,13 @@ jobs:
           fi
 
           git add Formula/racket@9.rb
-          git commit -m '(BUILD \"Update racket@9 bottles\") [skip bottles]'
+          git commit -F - <<'COMMIT_MESSAGE'
+          (BUILD \"Update racket@9 bottles\"
+
+          ((CI \"brew publish bottles\" update-bottle-metadata))
+          \"Update Homebrew bottle metadata. [skip bottles]\"
+          )
+          COMMIT_MESSAGE
           git push origin HEAD:main
 "
   ) ; end begin publish-workflow-content
@@ -1334,10 +1795,8 @@ jobs:
   (define url-arg "https://racket-lang.org/")
   (define bottle-root-url-arg #f)
   (define homebrew-tap-arg #f)
-  (define brew-helper-arg #f)
   (define formula-arg #f)
   (define update-formula? #t)
-  (define racket-bin-arg #f)
   (define brew-ci-config-arg #f)
   (define ruby-bin-arg "ruby")
   (define brew-package-args '())
@@ -1405,14 +1864,10 @@ jobs:
                          (set! bottle-root-url-arg url)]
    [("--homebrew-tap") path "Required for brew and brew-ci; Homebrew tap root"
                       (set! homebrew-tap-arg path)]
-   [("--brew-helper") path "Homebrew source helper (derived from --homebrew-tap when omitted)"
-                    (set! brew-helper-arg path)]
    [("--formula") path "Homebrew formula to update (derived from --homebrew-tap when omitted)"
                 (set! formula-arg path)]
    [("--no-update-formula") "Do not update the Homebrew formula"
                           (set! update-formula? #f)]
-   [("--racket-bin") path "Racket executable for running the brew helper (default: --racket-root/racket/bin/racket)"
-                  (set! racket-bin-arg path)]
    [("--brew-ci-config") path "Package-racket source config for generated tap workflows (default: ./brew-ci-config.rktd)"
                        (set! brew-ci-config-arg path)]
    [("--ruby-bin") path "Ruby executable for YAML validation (default: ruby)"
@@ -1420,7 +1875,7 @@ jobs:
    #:multi
    [("--target") target "Packaging target: brew, brew-ci, apt, rpm, or all. May be repeated."
                 (set! target-args (append target-args (list target)))]
-   [("--brew-package") name "Extra package to pass to the brew source helper"
+   [("--brew-package") name "Extra package to include in the Homebrew source archive"
                      (set! brew-package-args (append brew-package-args (list name)))]
    [("--make-arg") arg "Extra VAR=VALUE argument passed to make unix-style. May be repeated."
                  (set! make-args (append make-args (list arg)))]
@@ -1444,16 +1899,6 @@ jobs:
     (assert-bottle-root-url bottle-root-url-arg)
   ) ; end when bottle root url provided
   (define homebrew-tap (and homebrew-tap-arg (complete-path* homebrew-tap-arg)))
-  (define brew-helper
-    (cond
-      [brew-helper-arg
-       (complete-path* brew-helper-arg)]
-      [homebrew-tap
-       (complete-path* (build-path homebrew-tap "racket-to-brew-tgz.rkt"))]
-      [else
-       #f]
-    ) ; end cond brew helper path
-  ) ; end define brew-helper
   (define formula
     (cond
       [formula-arg
@@ -1464,7 +1909,6 @@ jobs:
        #f]
     ) ; end cond formula path
   ) ; end define formula
-  (define racket-bin (complete-path* (or racket-bin-arg (build-path racket-root "racket" "bin" "racket"))))
   (define brew-ci-config (complete-path* (or brew-ci-config-arg (build-path script-dir "brew-ci-config.rktd"))))
   (assert-prefix prefix-arg)
   (assert-racket-root racket-root)
@@ -1499,10 +1943,8 @@ jobs:
        url-arg
        bottle-root-url-arg
        homebrew-tap
-       brew-helper
        formula
        update-formula?
-       racket-bin
        brew-ci-config
        ruby-bin-arg
        brew-package-args
@@ -1556,6 +1998,7 @@ jobs:
     (delete-managed-dir-if-present! (build-path (cfg-work-dir c) "brew"))
     (delete-managed-dir-if-present! (build-path (cfg-work-dir c) "brew-ci"))
     (delete-managed-dir-if-present! (build-path (cfg-work-dir c) "rpm"))
+    (delete-managed-dir-if-present! (build-path (cfg-stage-dir c) "brew-source"))
   ) ; end unless cleanup work dirs
   (println/flush "Done.")
 ) ; end define main

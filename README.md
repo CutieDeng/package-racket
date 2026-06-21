@@ -30,21 +30,75 @@ The script stops on safety-check failures instead of continuing. It checks
 required directories and tools, validates non-empty staged install roots,
 checks package metadata files, verifies `.deb` archive members, verifies RPM
 metadata with `rpm -qip`, and compares the generated Homebrew formula sha256
-against the generated source `.tgz`. The `brew-ci` flow also validates generated
-workflow YAML and required workflow content before replacing files in the tap.
-The publish workflow updates release assets and the Formula only after every
-bottle runner succeeds.
+against the generated source `.tgz`. The `brew` flow also verifies that the
+source `.tgz` contains this fork's custom core sandbox profile:
+`sandbox-lib`, `errortrace-lib`, and `source-syntax`, including the collection
+links needed for `racket/sandbox` and `syntax/source-syntax`. The `brew-ci`
+flow also validates generated workflow YAML and required workflow content before
+replacing files in the tap. The publish workflow updates release assets and the
+Formula only after every bottle runner succeeds.
 
 `package-racket` is the source of truth for generated packaging metadata. The
 Homebrew tap receives overwritten generated outputs such as `Formula/racket@9.rb`
 and `.github/workflows/*.yml`; keep their maintainable configuration here.
 
+## Git Commit Messages
+
+Do not use free-form git commit messages for this project. A commit message is a
+single Racket datum. Use this shape:
+
+```racket
+(FEAT "title"
+
+()
+"detail info"
+)
+```
+
+The first element is an uppercase change-kind symbol. The title and detail
+fields are strings. The third field is a feature information list; use `()` when
+there is no extra structured metadata to record. Do not write a literal
+`(feature ...)` form there; that notation is meta-syntax, not the datum shape.
+
+The repository includes a `commit-msg` hook dispatcher and validator:
+
+- `tools/git-hooks/commit-msg`
+- `tools/check-commit-message.rkt`
+
+From the `package-racket` repository root, install the dispatcher as a global
+Git hook path:
+
+```sh
+git config --global core.hooksPath "$(pwd)/tools/git-hooks"
+```
+
+The global hook is intentionally opt-in per repository. Enable the check in a
+repository with:
+
+```sh
+git config commit.datumMessage true
+```
+
+The hook only blocks commits when `commit.datumMessage` is true, or when the
+repository root contains `.git-commit-message.rktd`. This keeps unrelated
+repositories from being forced into this message format.
+Both `package-racket` and the generated Homebrew tap include that marker.
+
+During `git commit`, an invalid message is rejected with a warning and the
+expected shape. You can also run the same check directly:
+
+```sh
+tools/git-hooks/commit-msg .commit
+racket tools/check-commit-message.rkt --message-file .commit
+```
+
 ## Requirements
 
 - Racket with the `tstring` reader available.
 - For `brew`: an explicit `--homebrew-tap` whose root contains
-  `racket-to-brew-tgz.rkt` and `Formula/racket@9.rb`, plus an explicit
-  `--bottle-root-url` for the Homebrew bottle release assets.
+  `Formula/racket@9.rb`, plus an explicit `--bottle-root-url` for the
+  Homebrew bottle release assets. The brew source `.tgz` is generated directly
+  by `package-racket`; no helper script is required in the Homebrew tap.
 - For `brew-ci`: Ruby for YAML validation, plus an explicit
   `--bottle-root-url` for `brew test-bot`, release uploads, and
   `brew bottle --merge`.
@@ -70,6 +124,9 @@ staged copy, then replaces the tap formula only after all selected targets
 succeed. The generated Homebrew source archive is
 `racket-minimal-<version>-src.tgz`, matching the basename used by the Formula
 source URL. The Formula bottle `root_url` is taken from `--bottle-root-url`.
+For this fork, the brew source archive intentionally includes `sandbox-lib` and
+its transitive runtime packages so `racket/sandbox` is available as part of the
+custom minimal profile.
 
 Generate the Homebrew tap CI workflows from `brew-ci-config.rktd` and overwrite
 the tap workflow files after validation. The generated `publish.yml` runs on
