@@ -2370,9 +2370,11 @@ jobs:
       - run: brew test-bot --only-formulae --testing-formulae={formula} --skip-dependents --root-url={root-url}
 
       - name: List bottle files
+        shell: bash
         run: |
           set -euo pipefail
-          find \"$GITHUB_WORKSPACE\" -maxdepth 3 \\( -name '*.bottle.json' -o -name '*.bottle*.tar.gz' \\) -type f -print | sort
+          pwd
+          find . -maxdepth 3 \\( -name '*.bottle.json' -o -name '*.bottle*.tar.gz' \\) -type f -print | sort
 
       - name: Upload bottles as artifact
         uses: actions/upload-artifact@v6
@@ -2409,6 +2411,7 @@ jobs:
           merge-multiple: true
 
       - name: Publish bottles and update Formula
+        shell: bash
         env:
           GH_TOKEN: {token-expr}
           GH_REPO: {github-repository-expr}
