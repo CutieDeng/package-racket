@@ -59,22 +59,24 @@ agents must not make production changes directly in `homebrew-racket`; change
 `package-config.rktd` contains the explicit package-manager version:
 
 ```racket
-#hash((formula-version . "9.2.1.1"))
+#hash((source-version . "9.2.1")
+      (formula-version . "9.2.1.1"))
 ```
 
-`formula-version` is the version visible to package managers and generated
-release assets. It drives the Homebrew source archive name and Formula source
-URL, the Homebrew bottle release tag, the Debian `.deb` version and filename,
-and the RPM `Version:` field. Bump it to a four-level value such as `9.2.1.1`
-when you need users to see an update even though the Racket runtime still
-reports `9.2.1`.
+`formula-version` is the version visible to package managers. It drives the
+explicit Homebrew Formula `version`, the Homebrew bottle version, the Debian
+`.deb` version and filename, and the RPM `Version:` field. Bump it to a
+four-level value such as `9.2.1.1` when you need users to see an update even
+though the Racket runtime still reports `9.2.1`.
 
 The Racket source/runtime version is read from
-`racket/src/version/racket_version.h` in `--racket-root`. Formula runtime tests
-continue to check that source version. Use `--formula-version` only as a
-temporary command-line override; keeping the stable value in
-`package-config.rktd` is the normal workflow. The old `--version` flag is a
-compatibility alias for `--formula-version`.
+`racket/src/version/racket_version.h` in `--racket-root`, and must match
+`source-version` in `package-config.rktd`. Upload-only targets without
+`--racket-root` use the configured `source-version` to derive stable source
+asset names. Formula runtime tests continue to check that source version. Use
+`--formula-version` only as a temporary command-line override; keeping the
+stable value in `package-config.rktd` is the normal workflow. The old
+`--version` flag is a compatibility alias for `--formula-version`.
 
 ## Git Commit Messages
 
@@ -172,7 +174,7 @@ racket package-racket.rkt \
   --target brew \
   --racket-root /Users/cutiedeng/Y2026/M04/D03/racket.git \
   --homebrew-tap /opt/homebrew/Library/Taps/cutiedeng/homebrew-racket \
-  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1.1
+  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1
 ```
 
 Create the Homebrew source archive and overwrite the tap formula from the
@@ -184,7 +186,7 @@ racket package-racket.rkt \
   --formula-build-mode full \
   --racket-root /Users/cutiedeng/Y2026/M04/D03/racket.git \
   --homebrew-tap /opt/homebrew/Library/Taps/cutiedeng/homebrew-racket \
-  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1.1
+  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1
 ```
 
 Create the Homebrew source archive, upload it to the configured
@@ -197,7 +199,7 @@ racket package-racket.rkt \
   --target source-release \
   --racket-root /Users/cutiedeng/Y2026/M04/D03/racket.git \
   --homebrew-tap /opt/homebrew/Library/Taps/cutiedeng/homebrew-racket \
-  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1.1
+  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1
 ```
 
 Upload an already generated source `.tgz` without rebuilding it:
@@ -242,7 +244,7 @@ racket package-racket.rkt \
   --target brew-ci \
   --racket-root /Users/cutiedeng/Y2026/M04/D03/racket.git \
   --homebrew-tap /opt/homebrew/Library/Taps/cutiedeng/homebrew-racket \
-  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1.1
+  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1
 ```
 
 Use `--dry-run` with any entrypoint to print the resolved paths and planned
@@ -252,8 +254,8 @@ assets.
 ### GitHub Release Token
 
 The stable GitHub release settings live in `source-release-config.rktd`. The
-release tag defaults to `v<formula-version>`, and the source asset defaults to
-`racket-minimal-<formula-version>-src.tgz`. The default token file is
+release tag is configured there, while the source asset defaults to
+`racket-minimal-<source-version>-src.tgz`. The default token file is
 `secret/ghtoken.rktd`, and it must contain exactly one Racket string datum:
 
 ```racket
@@ -270,9 +272,9 @@ chmod 600 secret/ghtoken.rktd
 ```
 
 The stable Debian package release settings live in `apt-release-config.rktd`.
-The release tag defaults to `v<formula-version>`, and the asset defaults to the
-`.deb` basename generated from `formula-version`, `--release`, and `--deb-arch`,
-for example `racket9_9.2.1.1-1_amd64.deb`.
+The release tag is configured there, while the asset defaults to the `.deb`
+basename generated from `formula-version`, `--release`, and `--deb-arch`, for
+example `racket9_9.2.1.1-1_amd64.deb`.
 
 For `brew`, `--formula` means the final tap formula path. When omitted, it is
 derived from the explicit `--homebrew-tap` as `Formula/racket@9.rb`.
@@ -289,11 +291,15 @@ bottle sha256 metadata because that is generated by the Homebrew bottle CI; the
 publish workflow writes the bottle block back after successful bottle builds.
 
 The generated Homebrew source archive is
-`racket-minimal-<formula-version>-src.tgz`, matching the basename used by the
-Formula source URL. In incremental mode, the Formula bottle `root_url` is taken
-from `--bottle-root-url`; in full mode, the same value is still required for
-brew CI and bottle publishing. When `--bottle-root-url` points at a GitHub
-release URL, the tag must match `v<formula-version>`.
+`racket-minimal-<source-version>-src.tgz`, matching the basename used by the
+Formula source URL. `package-racket` writes an explicit Formula
+`version "<formula-version>"`, so Homebrew can detect packaging-only updates
+even when the source archive basename and release tag stay at the source
+version. In incremental mode, the Formula bottle `root_url` is taken from
+`--bottle-root-url`; in full mode, the same value is still required for brew CI
+and bottle publishing. The Formula source URL uses the source release tag from
+`source-release-config.rktd`, and the bottle publish workflow uses the release
+tag embedded in `--bottle-root-url`.
 For this fork, the brew source archive intentionally includes `sandbox-lib` and
 its transitive runtime packages so `racket/sandbox` is available as part of the
 custom minimal profile.

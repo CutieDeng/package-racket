@@ -296,6 +296,15 @@
   ) ; end begin read-package-formula-version
 ) ; end define read-package-formula-version
 
+(define (read-package-source-version package-config)
+  (begin
+    (define raw (read-rktd-hash 'read-package-config package-config))
+    (assert-version-string 'read-package-config
+                           'source-version
+                           (config-required-string 'read-package-config raw 'source-version))
+  ) ; end begin read-package-source-version
+) ; end define read-package-source-version
+
 (define (assert-racket-root racket-root)
   (assert-directory 'main (build-path racket-root "racket" "src"))
   (assert-directory 'main (build-path racket-root "racket" "collects"))
@@ -366,7 +375,7 @@
     (raise-user-error 'main f"--prefix must be absolute: {prefix}"))
   (void))
 
-(define (assert-bottle-root-url root-url formula-version)
+(define (assert-bottle-root-url root-url)
   (begin
     (unless (and (string? root-url) (not (string=? root-url "")))
       (raise-user-error 'main "--bottle-root-url must be a non-empty string")
@@ -382,13 +391,6 @@
     (when (string-suffix? root-url "/")
       (raise-user-error 'main f"--bottle-root-url must not end with /: {root-url}")
     ) ; end when trailing slash bottle root url
-    (when (regexp-match? #rx"^https://github[.]com/[^/]+/[^/]+/releases/download/" root-url)
-      (define expected-suffix f"/releases/download/v{formula-version}")
-      (unless (string-suffix? root-url expected-suffix)
-        (raise-user-error 'main
-                          f"--bottle-root-url must target formula-version v{formula-version}: {root-url}")
-      ) ; end unless github release tag matches formula version
-    ) ; end when github release bottle root url
   ) ; end begin assert-bottle-root-url
 ) ; end define assert-bottle-root-url
 
@@ -734,10 +736,10 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
   (build-path (cfg-stage-dir c) "brew-source"))
 
 (define (brew-source-dist-root c)
-  (build-path (brew-source-stage-root c) f"racket-{(cfg-formula-version c)}"))
+  (build-path (brew-source-stage-root c) f"racket-{(cfg-source-version c)}"))
 
 (define (brew-source-tgz-name c)
-  f"racket-minimal-{(cfg-formula-version c)}-src.tgz")
+  f"racket-minimal-{(cfg-source-version c)}-src.tgz")
 
 (define (brew-output-tgz c)
   (build-path (cfg-artifact-dir c) (brew-source-tgz-name c)))
@@ -1206,7 +1208,7 @@ information.
 ) ; end define make-brew-tgz!
 
 (define (brew-tgz-member-path c relative-path)
-  f"racket-{(cfg-formula-version c)}/{relative-path}")
+  f"racket-{(cfg-source-version c)}/{relative-path}")
 
 (define (brew-tgz-file-content c relative-path)
   (capture! 'validate-brew-tgz!
@@ -1257,6 +1259,63 @@ information.
 (define (formula-mode-full? c)
   (string=? (cfg-formula-build-mode c) "full"))
 
+(define (default-source-tag who source-version)
+  (begin
+    (when (string=? source-version "unknown")
+      (raise-user-error who "release tag must be configured when Racket source version is unknown")
+    ) ; end when source version unknown
+    f"v{source-version}"
+  ) ; end begin default-source-tag
+) ; end define default-source-tag
+
+(define (release-tag-from-config-or-source-version who config-path tag-key source-version)
+  (begin
+    (define fallback (lambda () (default-source-tag who source-version)))
+    (cond
+      [(file-exists? config-path)
+       (define raw (read-rktd-hash who config-path))
+       (define value (hash-ref raw tag-key #f))
+       (cond
+         [(not value) (fallback)]
+         [(and (string? value) (not (string=? value ""))) value]
+         [else (raise-user-error who f"config key must be a non-empty string: {tag-key}")]
+       ) ; end cond configured tag
+      ]
+      [else
+       (fallback)]
+    ) ; end cond config exists
+  ) ; end begin release-tag-from-config-or-source-version
+) ; end define release-tag-from-config-or-source-version
+
+(define (formula-source-tag c)
+  (release-tag-from-config-or-source-version
+   'formula-source-url
+   (cfg-source-release-config c)
+   'source-release-tag
+   (cfg-source-version c)))
+
+(define (source-release-default-tag c)
+  (release-tag-from-config-or-source-version
+   'source-release-config
+   (cfg-source-release-config c)
+   'source-release-tag
+   (cfg-source-version c)))
+
+(define (apt-release-default-tag c)
+  (release-tag-from-config-or-source-version
+   'apt-release-config
+   (cfg-apt-release-config c)
+   'apt-release-tag
+   (cfg-source-version c)))
+
+(define (github-release-tag-from-root-url who root-url)
+  (match (regexp-match #rx"^https://github[.]com/[^/]+/[^/]+/releases/download/([^/]+)$" root-url)
+    [(list _ tag) tag]
+    [_ (raise-user-error who
+                         f"--bottle-root-url must be a GitHub release download URL: {root-url}")]
+  ) ; end match github release root url
+) ; end define github-release-tag-from-root-url
+
 (define (assert-homebrew-tap! c)
   (begin
     (assert-directory 'assert-homebrew-tap! (cfg-homebrew-tap c))
@@ -1279,7 +1338,7 @@ information.
 ) ; end define assert-homebrew-tap!
 
 (define (formula-source-url c)
-  f"https://github.com/CutieDeng/racket/releases/download/v{(cfg-formula-version c)}/{(brew-source-tgz-name c)}")
+  f"https://github.com/CutieDeng/racket/releases/download/{(formula-source-tag c)}/{(brew-source-tgz-name c)}")
 
 (define (formula-root-url c)
   f"root_url \"{(cfg-bottle-root-url c)}\"")
@@ -1292,6 +1351,9 @@ information.
 
 (define (formula-source-sha256-line digest)
   f"  sha256 \"{digest}\"")
+
+(define (formula-version-line c)
+  f"  version \"{(cfg-formula-version c)}\"")
 
 (define (formula-sha256 formula-path)
   (begin
@@ -1311,6 +1373,7 @@ information.
     (for ([needle (in-list (list "class RacketAT9 < Formula"
                                  generated-code-notice-marker
                                  f"url \"{(formula-source-url c)}\""
+                                 f"version \"{(cfg-formula-version c)}\""
                                  "depends_on \"openssl@3\""
                                  "depends_on \"ncurses\""
                                  "test do"
@@ -1324,6 +1387,10 @@ information.
       (raise-user-error 'validate-formula-file!
                         f"formula must contain exactly one source sha256 line: {(clean-path-string formula-path)}")
     ) ; end unless one source sha
+    (unless (= 1 (regexp-match-count #px"(?m:^  version \"[^\"]+\")" content))
+      (raise-user-error 'validate-formula-file!
+                        f"formula must contain exactly one version line: {(clean-path-string formula-path)}")
+    ) ; end unless one formula version
     (when (> (regexp-match-count #px"(?m:^    root_url \"[^\"]+\")" content) 1)
       (raise-user-error 'validate-formula-file!
                         f"formula must contain at most one bottle root_url line: {(clean-path-string formula-path)}")
@@ -1354,6 +1421,10 @@ information.
       (raise-user-error 'validate-formula-template!
                         f"formula template must contain exactly one source sha256 line: {(clean-path-string formula-path)}")
     ) ; end unless one source sha
+    (when (> (regexp-match-count #px"(?m:^  version \"[^\"]+\")" content) 1)
+      (raise-user-error 'validate-formula-template!
+                        f"formula template must contain at most one version line: {(clean-path-string formula-path)}")
+    ) ; end when too many formula versions
     (when (> (regexp-match-count #px"(?m:^    root_url \"[^\"]+\")" content) 1)
       (raise-user-error 'validate-formula-template!
                         f"formula template must contain at most one bottle root_url line: {(clean-path-string formula-path)}")
@@ -1386,6 +1457,7 @@ information.
     (define content (file->string formula-path))
     (define source-url-rx #px"(?m:^  url \"[^\"]+racket-minimal-[^\"]+-src[.]tgz\")")
     (define source-sha-rx #px"(?m:^  sha256 \"[0-9a-f]{64}\")")
+    (define formula-version-rx #px"(?m:^  version \"[^\"]+\")")
     (unless (= 1 (regexp-match-count source-url-rx content))
       (raise-user-error 'set-formula-source!
                         f"formula must contain exactly one source url line: {(clean-path-string formula-path)}")
@@ -1394,12 +1466,27 @@ information.
       (raise-user-error 'set-formula-source!
                         f"formula must contain exactly one source sha256 line: {(clean-path-string formula-path)}")
     ) ; end unless exactly one source sha
+    (when (> (regexp-match-count formula-version-rx content) 1)
+      (raise-user-error 'set-formula-source!
+                        f"formula must contain at most one version line: {(clean-path-string formula-path)}")
+    ) ; end when too many version lines
     (define with-source-url
       (regexp-replace source-url-rx content (formula-source-url-line c))
     ) ; end define with-source-url
+    (define with-source-sha
+      (regexp-replace source-sha-rx with-source-url (formula-source-sha256-line digest))
+    ) ; end define with-source-sha
+    (define with-version
+      (if (regexp-match? formula-version-rx with-source-sha)
+          (regexp-replace formula-version-rx with-source-sha (formula-version-line c))
+          (regexp-replace source-sha-rx
+                          with-source-sha
+                          f"{(formula-source-sha256-line digest)}
+{(formula-version-line c)}"))
+    ) ; end define with-version
     (write-text-file!
      formula-path
-     (regexp-replace source-sha-rx with-source-url (formula-source-sha256-line digest)))
+     with-version)
     (validate-formula-file! c formula-path)
   ) ; end begin set-formula-source!
 ) ; end define set-formula-source!
@@ -1428,6 +1515,7 @@ information.
   homepage \"https://racket-lang.org/\"
   url \"{(formula-source-url c)}\"
   sha256 \"{digest}\"
+  version \"{(cfg-formula-version c)}\"
   license any_of: [\"MIT\", \"Apache-2.0\"]
 
   livecheck do
@@ -2177,7 +2265,7 @@ body: {(safe-response-body body)}")]
                          'source-release-tag
                          'source-release-asset
                          'source-release-token-file
-                         f"v{(cfg-formula-version c)}"
+                         (source-release-default-tag c)
                          (brew-source-tgz-name c)))
 
 (define (apt-release-config c)
@@ -2192,7 +2280,7 @@ body: {(safe-response-body body)}")]
                          'apt-release-tag
                          'apt-release-asset
                          'apt-release-token-file
-                         f"v{(cfg-formula-version c)}"
+                         (apt-release-default-tag c)
                          (apt-deb-name c)))
 
 (define (validate-source-release-artifact! c asset-name)
@@ -2599,7 +2687,7 @@ jobs:
     (define bottle-rebuild (required-config-positive-integer config 'bottle-rebuild))
     (define bottle-runners (config-ref* config 'bottle-runners '()))
     (define root-url (cfg-bottle-root-url c))
-    (define release-tag f"v{(cfg-formula-version c)}")
+    (define release-tag (github-release-tag-from-root-url 'publish-workflow-content root-url))
     (define matrix-os "${{ matrix.os }}")
     (define container-expr "${{ matrix.container }}")
     (define token-expr "${{ secrets.GITHUB_TOKEN }}")
@@ -3258,9 +3346,16 @@ jobs:
       [(needs-racket-root? targets)
        (assert-version-string 'main 'source-version (read-racket-version racket-root))]
       [else
-       "unknown"]
+       (read-package-source-version package-config)]
     ) ; end cond source version
   ) ; end define source-version
+  (when (needs-racket-root? targets)
+    (define configured-source-version (read-package-source-version package-config))
+    (unless (string=? configured-source-version source-version)
+      (raise-user-error 'main
+                        f"package-config source-version {configured-source-version} does not match racket-root source version {source-version}")
+    ) ; end unless configured source version matches checkout
+  ) ; end when compare source version
   (define formula-version
     (assert-version-string
      'main
@@ -3269,7 +3364,7 @@ jobs:
          (read-package-formula-version package-config)))
   ) ; end define formula-version
   (when bottle-root-url-arg
-    (assert-bottle-root-url bottle-root-url-arg formula-version)
+    (assert-bottle-root-url bottle-root-url-arg)
   ) ; end when bottle root url provided
   (cfg targets
        racket-root
@@ -3486,18 +3581,19 @@ jobs:
   (test-case "formula-version drives package-manager outputs without changing runtime version"
     (define c (test-cfg #:source-version "9.2.1"
                         #:formula-version "9.2.1.1"))
-    (check-equal? (brew-source-tgz-name c) "racket-minimal-9.2.1.1-src.tgz")
+    (check-equal? (brew-source-tgz-name c) "racket-minimal-9.2.1-src.tgz")
     (check-equal? (apt-deb-name c) "racket9_9.2.1.1-1_amd64.deb")
     (check-equal? (brew-tgz-member-path c "src/README.txt")
-                  "racket-9.2.1.1/src/README.txt")
+                  "racket-9.2.1/src/README.txt")
     (define content (formula-content/full c test-sha256))
     (check-true
      (string-contains? content
-                       "url \"https://github.com/CutieDeng/racket/releases/download/v9.2.1.1/racket-minimal-9.2.1.1-src.tgz\""))
+                       "url \"https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz\""))
+    (check-true (string-contains? content "version \"9.2.1.1\""))
     (check-true (string-contains? content "assert_match \"9.2.1\""))
     (check-false (string-contains? content "Welcome to Racket v9.2.1.1 [cs]."))
     (define publish-content (publish-workflow-content c test-brew-ci-config))
-    (check-true (string-contains? publish-content "RELEASE_TAG: v9.2.1.1"))
+    (check-true (string-contains? publish-content "RELEASE_TAG: v9.2.1"))
     (define rpm-root (make-temporary-file "package-racket-rpm-spec~a" 'directory))
     (dynamic-wind
       void
@@ -3520,6 +3616,7 @@ jobs:
                                  generated-code-notice-marker
                                  "url \"https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz\""
                                  f"sha256 \"{test-sha256}\""
+                                 "version \"9.2.1\""
                                  "depends_on \"openssl@3\""
                                  "depends_on \"ncurses\""
                                  "depends_on \"zlib-ng-compat\""
