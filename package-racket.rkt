@@ -333,14 +333,14 @@
       ) ; end for*/list pieces
     ) ; end define pieces
     (when (null? pieces)
-      (raise-user-error 'main "missing --target; use brew, brew-ci, source-release, apt, apt-release, rpm, rpm-repo, or all")
+      (raise-user-error 'main "missing --target; use brew, brew-ci, source-release, apt, apt-release, rpm, rpm-spec, rpm-repo, or all")
     ) ; end when missing target
     (define expanded
       (append-map
        (lambda (target)
          (match target
            ["all" '("brew" "apt" "rpm")]
-           [(or "brew" "apt" "apt-release" "rpm" "rpm-repo" "brew-ci" "source-release") (list target)]
+           [(or "brew" "apt" "apt-release" "rpm" "rpm-spec" "rpm-repo" "brew-ci" "source-release") (list target)]
            [_ (raise-user-error 'main f"unknown --target: {target}")]
          ) ; end match target
        ) ; end lambda target
@@ -348,13 +348,14 @@
       ) ; end append-map
     ) ; end define expanded
     (filter (lambda (target) (member target expanded string=?))
-            '("brew-ci" "brew" "source-release" "apt" "apt-release" "rpm" "rpm-repo"))
+            '("brew-ci" "brew" "source-release" "apt" "apt-release" "rpm-spec" "rpm" "rpm-repo"))
   ) ; end begin normalize-targets
 ) ; end define normalize-targets
 
 (define (upload-only-target? target)
   (or (string=? target "source-release")
       (string=? target "apt-release")
+      (string=? target "rpm-spec")
       (string=? target "rpm-repo")))
 
 (define (needs-racket-root? targets)
@@ -370,6 +371,10 @@
 
 (define (target-selected? c target)
   (and (member target (cfg-targets c) string=?) #t))
+
+(define (needs-rpm-repo-config? targets)
+  (or (member "rpm-spec" targets string=?)
+      (member "rpm-repo" targets string=?)))
 
 (define (prefix-relative-elements prefix)
   (define trimmed (regexp-replace #rx"^/+" prefix ""))
@@ -834,17 +839,22 @@ Description: {(cfg-summary c)}
   ) ; end begin build-deb-with-ar!
 ) ; end define build-deb-with-ar!
 
-(define (write-rpm-spec! c spec-path source-name [file-list (rpm-file-list c)])
-  (begin
-    (write-text-file!
-     spec-path
-     f"Name: {(cfg-package-name c)}
+(define (rpm-payload-source-name c)
+  f"{(cfg-package-name c)}-{(cfg-formula-version c)}-payload.tar.gz")
+
+(define (rpm-file-list-source-name c)
+  f"{(cfg-package-name c)}.files")
+
+(define (rpm-spec-content c [source-name (rpm-payload-source-name c)]
+                          [file-list-name (rpm-file-list-source-name c)])
+  f"Name: {(cfg-package-name c)}
 Version: {(cfg-formula-version c)}
 Release: {(cfg-release c)}
 Summary: {(cfg-summary c)}
 License: {(cfg-license c)}
 URL: {(cfg-url c)}
 Source0: {source-name}
+Source1: {file-list-name}
 AutoReqProv: no
 %global __brp_compress %{{nil}}
 
@@ -860,29 +870,30 @@ rm -rf %{{buildroot}}
 mkdir -p %{{buildroot}}
 tar -xzf %{{SOURCE0}} -C %{{buildroot}}
 
-%files
+%files -f %{{SOURCE1}}
 %defattr(-,root,root,-)
-{(string-join file-list "\n")}
-"
-    )
-    (validate-rpm-spec! c spec-path source-name file-list)
+")
+
+(define (write-rpm-spec! c spec-path [source-name (rpm-payload-source-name c)]
+                         [file-list-name (rpm-file-list-source-name c)])
+  (begin
+    (write-text-file! spec-path (rpm-spec-content c source-name file-list-name))
+    (validate-rpm-spec! c spec-path source-name file-list-name)
   ) ; end begin write-rpm-spec!
 ) ; end define write-rpm-spec!
 
-(define (validate-rpm-spec! c spec-path source-name file-list)
+(define (validate-rpm-spec! c spec-path source-name file-list-name)
   (begin
     (assert-nonempty-file 'validate-rpm-spec! spec-path)
-    (when (null? file-list)
-      (raise-user-error 'validate-rpm-spec! "generated RPM file list is empty")
-    ) ; end when empty file list
     (define content (file->string spec-path))
     (for ([needle (in-list (list f"Name: {(cfg-package-name c)}"
                                  f"Version: {(cfg-formula-version c)}"
                                  f"Release: {(cfg-release c)}"
                                  f"Source0: {source-name}"
+                                 f"Source1: {file-list-name}"
                                  "%global __brp_compress %{nil}"
                                  "tar -xzf %{SOURCE0} -C %{buildroot}"
-                                 (car file-list)))])
+                                 "%files -f %{SOURCE1}"))])
       (unless (string-contains? content needle)
         (raise-user-error 'validate-rpm-spec!
                           f"generated RPM spec is missing: {needle}")
@@ -958,10 +969,13 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
     (define rpm-root (build-path (cfg-work-dir c) "rpm"))
     (define sources-dir (build-path rpm-root "SOURCES"))
     (define specs-dir (build-path rpm-root "SPECS"))
-    (define source-name f"{(cfg-package-name c)}-{(cfg-formula-version c)}-payload.tar.gz")
+    (define source-name (rpm-payload-source-name c))
+    (define file-list-name (rpm-file-list-source-name c))
     (define payload-tar (build-path sources-dir source-name))
     (define spec-path (build-path specs-dir f"{(cfg-package-name c)}.spec"))
-    (define manifest-path (build-path specs-dir f"{(cfg-package-name c)}.files"))
+    (define manifest-path (build-path sources-dir file-list-name))
+    (println/flush f"RPM spec: {(clean-path-string spec-path)}")
+    (println/flush f"RPM file manifest: {(clean-path-string manifest-path)}")
     (unless (cfg-dry-run? c)
       (make-directory* (cfg-artifact-dir c))
       (assert-executable 'build-rpm! (cfg-rpmbuild-bin c))
@@ -980,8 +994,7 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
     (unless (cfg-dry-run? c)
       (define file-list (rpm-file-list c))
       (write-rpm-file-list! c manifest-path file-list)
-      (write-rpm-spec! c spec-path source-name file-list)
-      (println/flush f"RPM file manifest: {(clean-path-string manifest-path)}")
+      (write-rpm-spec! c spec-path source-name file-list-name)
     ) ; end unless dry-run write spec
     (run! 'build-rpm!
           (cfg-rpmbuild-bin c)
@@ -1014,6 +1027,9 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
 
 (define (rpm-repo-readme-path c)
   (build-path (cfg-rpm-repo-root c) "README.md"))
+
+(define (rpm-repo-gitignore-path c)
+  (build-path (cfg-rpm-repo-root c) ".gitignore"))
 
 (define (rpm-repo-bool value)
   (if value "1" "0"))
@@ -1076,7 +1092,12 @@ Install the generated repository config on a compatible Linux host:
 sudo curl -L -o /etc/yum.repos.d/{(cfg-package-name c)}.repo \\
   https://raw.githubusercontent.com/CutieDeng/rpm-racket/main/{(cfg-package-name c)}.repo
 sudo dnf install {(cfg-package-name c)}
-```
+	```
+	")
+
+(define rpm-repo-gitignore-content
+  ".DS_Store
+*.tmp
 ")
 
 (define (assert-rpm-repo-root! c)
@@ -1098,6 +1119,7 @@ sudo dnf install {(cfg-package-name c)}
       (make-directory* packages-dir)
       (write-text-file! (build-path packages-dir ".gitkeep") "")
     ) ; end for rpm repo arch
+    (write-text-file! (rpm-repo-gitignore-path c) rpm-repo-gitignore-content)
     (write-text-file! (rpm-repo-file-path c) (rpm-repo-file-content c))
     (write-text-file! (rpm-repo-readme-path c) (rpm-repo-readme-content c))
     (validate-rpm-repo-scaffold! c)
@@ -1108,6 +1130,7 @@ sudo dnf install {(cfg-package-name c)}
   (begin
     (assert-nonempty-file 'validate-rpm-repo-scaffold! (rpm-repo-file-path c))
     (assert-nonempty-file 'validate-rpm-repo-scaffold! (rpm-repo-readme-path c))
+    (assert-nonempty-file 'validate-rpm-repo-scaffold! (rpm-repo-gitignore-path c))
     (define repo-content (file->string (rpm-repo-file-path c)))
     (for ([needle (in-list (list generated-rpm-repo-notice-marker
                                  f"[{(cfg-rpm-repo-id c)}]"
