@@ -220,7 +220,7 @@ racket package-racket.rkt \
   --racket-root /path/to/racket.git \
   --package-name racket9 \
   --release 1 \
-  --prefix /opt/racket9 \
+  --prefix /usr \
   --deb-arch amd64 \
   --artifact-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/artifacts \
   --work-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/.build \
@@ -324,11 +324,22 @@ loop.
 ### Package Prefix
 
 `--prefix` controls where the staged installation is rooted inside `apt` and
-`rpm` packages. For example, with `--prefix /opt/racket9`, the staged
-installation should be under `/tmp/racket-package-root/opt/racket9`.
-The generated `.deb` file itself is written to `--artifact-dir`, not to `/opt`.
+`rpm` packages. For system-level Linux packages, use `--prefix /usr`. With that
+setting, the staged installation should be under
+`/tmp/racket-package-root/usr`.
+The generated `.deb` file itself is written to `--artifact-dir`, not into the
+install prefix.
 After a user installs that `.deb`, the package payload is installed under the
-configured prefix, such as `/opt/racket9`.
+configured prefix, such as `/usr`.
+
+For RPM, `package-racket` generates the `%files` list from the staged
+filesystem. It lists real package files and package-owned directories instead
+of claiming the whole prefix. Shared parent directories such as `/usr`,
+`/usr/bin`, `/usr/lib`, and `/usr/share` are intentionally skipped so uninstall
+remains precise while the package still installs as a system-level package.
+
+For Debian packages, `package-racket` also writes `DEBIAN/md5sums` for payload
+files so `dpkg --verify` can check installed file contents.
 
 This value is not the Homebrew installation prefix. Homebrew chooses its own
 Cellar and opt paths when building the Formula, and `source-release` only
@@ -341,7 +352,7 @@ Create a Debian package from a Linux x64 build:
 racket package-racket.rkt \
   --target apt \
   --racket-root /path/to/racket.git \
-  --prefix /opt/racket9 \
+  --prefix /usr \
   --deb-arch amd64
 ```
 
@@ -362,7 +373,7 @@ Create an RPM package from a Linux x64 build:
 racket package-racket.rkt \
   --target rpm \
   --racket-root /path/to/racket.git \
-  --prefix /opt/racket9 \
+  --prefix /usr \
   --rpm-arch x86_64
 ```
 
@@ -372,7 +383,7 @@ Create an RPM package from a Linux arm64 build:
 racket package-racket.rkt \
   --target rpm \
   --racket-root /path/to/racket.git \
-  --prefix /opt/racket9 \
+  --prefix /usr \
   --rpm-arch arm64
 ```
 
@@ -393,7 +404,7 @@ layout, and runtime startup without building the full distribution package set:
 racket package-racket.rkt \
   --target rpm \
   --racket-root /path/to/clean-racket.git \
-  --prefix /opt/racket9 \
+  --prefix /usr \
   --rpm-arch arm64 \
   --make-arg "PKGS=racket-lib sandbox-lib errortrace-lib source-syntax tstring racket-tstring"
 ```
@@ -407,7 +418,7 @@ racket package-racket.rkt \
   --racket-root /path/to/racket.git \
   --skip-build \
   --install-root /tmp/racket-package-root \
-  --prefix /opt/racket9
+  --prefix /usr
 ```
 
 The `--install-root` directory must contain the package filesystem root.

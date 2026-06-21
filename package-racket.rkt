@@ -1,6 +1,7 @@
 #lang reader tstring/lang/reader racket/base
 
 (require file/tar
+         file/md5
          json
          net/uri-codec
          net/url
@@ -375,6 +376,140 @@
     (raise-user-error 'main f"--prefix must be absolute: {prefix}"))
   (void))
 
+(define rpm-shared-directories
+  '("/bin"
+    "/boot"
+    "/dev"
+    "/etc"
+    "/lib"
+    "/lib64"
+    "/opt"
+    "/run"
+    "/sbin"
+    "/usr"
+    "/usr/bin"
+    "/usr/etc"
+    "/usr/games"
+    "/usr/include"
+    "/usr/lib"
+    "/usr/lib64"
+    "/usr/libexec"
+    "/usr/local"
+    "/usr/sbin"
+    "/usr/share"
+    "/usr/share/applications"
+    "/usr/share/doc"
+    "/usr/share/icons"
+    "/usr/share/icons/hicolor"
+    "/usr/share/man"
+    "/usr/share/man/man1"
+    "/usr/share/man/man2"
+    "/usr/share/man/man3"
+    "/usr/share/man/man4"
+    "/usr/share/man/man5"
+    "/usr/share/man/man6"
+    "/usr/share/man/man7"
+    "/usr/share/man/man8"
+    "/var"))
+
+(define (rpm-shared-directory? installed-path)
+  (member installed-path rpm-shared-directories string=?))
+
+(define (installed-path-under-prefix? installed-path prefix)
+  (or (string=? installed-path prefix)
+      (string-prefix? installed-path f"{prefix}/")))
+
+(define (installed-path-string install-root path)
+  (begin
+    (define rel (find-relative-path (complete-path* install-root)
+                                    (complete-path* path)))
+    (define rel-str (path->string rel))
+    (when (or (absolute-path? rel)
+              (string=? rel-str "")
+              (string-prefix? rel-str ".."))
+      (raise-user-error 'rpm-file-list
+                        f"path is outside install root: {(clean-path-string path)}")
+    ) ; end when unsafe relative path
+    (string-append "/" rel-str)
+  ) ; end begin installed-path-string
+) ; end define installed-path-string
+
+(define (rpm-file-list-quote installed-path)
+  (begin
+    (define escaped-percent (regexp-replace* #rx"%" installed-path "%%"))
+    (cond
+      [(regexp-match? #rx"^[A-Za-z0-9_./+@%=-]+$" escaped-percent)
+       escaped-percent]
+      [else
+       (define escaped-quotes (regexp-replace* #rx"\"" escaped-percent "\\\\\""))
+       (string-append "\"" escaped-quotes "\"")]
+    ) ; end cond quote needed
+  ) ; end begin rpm-file-list-quote
+) ; end define rpm-file-list-quote
+
+(define (rpm-file-list c)
+  (begin
+    (define root (cfg-install-root c))
+    (define prefix (cfg-prefix c))
+    (assert-nonempty-directory 'rpm-file-list root)
+    (define entries '())
+    (define (record! path type)
+      (begin
+        (define installed (installed-path-string root path))
+        (unless (installed-path-under-prefix? installed prefix)
+          (raise-user-error 'rpm-file-list
+                            f"staged path is outside --prefix {prefix}: {installed}")
+        ) ; end unless path under prefix
+        (match type
+          ['directory
+           (unless (rpm-shared-directory? installed)
+             (set! entries (cons f"%dir {(rpm-file-list-quote installed)}" entries))
+           ) ; end unless shared directory
+          ]
+          [(or 'file 'link)
+           (set! entries (cons (rpm-file-list-quote installed) entries))
+          ]
+          [other
+           (raise-user-error 'rpm-file-list
+                             f"unsupported staged file type {other}: {(clean-path-string path)}")]
+        ) ; end match type
+      ) ; end begin record
+    ) ; end define record!
+    (define (walk path)
+      (begin
+        (define type (file-or-directory-type path))
+        (record! path type)
+        (when (eq? type 'directory)
+          (for ([child (in-list (sort (directory-list path #:build? #t)
+                                      string<?
+                                      #:key path->string))])
+            (walk child)
+          ) ; end for child
+        ) ; end when directory
+      ) ; end begin walk
+    ) ; end define walk
+    (for ([child (in-list (sort (directory-list root #:build? #t)
+                                string<?
+                                #:key path->string))])
+      (walk child)
+    ) ; end for root child
+    (define sorted-entries (sort entries string<?))
+    (when (null? sorted-entries)
+      (raise-user-error 'rpm-file-list
+                        f"RPM file list is empty under {(clean-path-string root)}")
+    ) ; end when empty file list
+    sorted-entries
+  ) ; end begin rpm-file-list
+) ; end define rpm-file-list
+
+(define (write-rpm-file-list! c manifest-path entries)
+  (begin
+    (write-text-file! manifest-path
+                      (string-append (string-join entries "\n") "\n"))
+    (assert-nonempty-file 'write-rpm-file-list! manifest-path)
+  ) ; end begin write-rpm-file-list!
+) ; end define write-rpm-file-list!
+
 (define (assert-bottle-root-url root-url)
   (begin
     (unless (and (string? root-url) (not (string=? root-url "")))
@@ -496,6 +631,75 @@ Description: {(cfg-summary c)}
   ) ; end begin validate-deb-control!
 ) ; end define validate-deb-control!
 
+(define (deb-relative-path root path)
+  (begin
+    (define rel (find-relative-path (complete-path* root)
+                                    (complete-path* path)))
+    (define rel-str (path->string rel))
+    (when (or (absolute-path? rel)
+              (string=? rel-str "")
+              (string-prefix? rel-str ".."))
+      (raise-user-error 'write-deb-md5sums!
+                        f"path is outside deb root: {(clean-path-string path)}")
+    ) ; end when unsafe relative path
+    rel-str
+  ) ; end begin deb-relative-path
+) ; end define deb-relative-path
+
+(define (md5-file-hex path)
+  (call-with-input-file path
+    (lambda (in)
+      (bytes->string/utf-8 (md5 in))
+    ) ; end lambda in
+  ) ; end call-with-input-file
+) ; end define md5-file-hex
+
+(define (deb-md5sum-lines deb-root)
+  (begin
+    (define lines '())
+    (define (walk path)
+      (begin
+        (define type (file-or-directory-type path))
+        (match type
+          ['directory
+           (for ([child (in-list (sort (directory-list path #:build? #t)
+                                       string<?
+                                       #:key path->string))])
+             (walk child)
+           ) ; end for child
+          ]
+          ['file
+           (define rel (deb-relative-path deb-root path))
+           (set! lines (cons f"{(md5-file-hex path)}  {rel}" lines))
+          ]
+          ['link
+           (void)]
+          [other
+           (raise-user-error 'write-deb-md5sums!
+                             f"unsupported staged file type {other}: {(clean-path-string path)}")]
+        ) ; end match type
+      ) ; end begin walk
+    ) ; end define walk
+    (for ([child (in-list (sort (directory-list deb-root #:build? #t)
+                                string<?
+                                #:key path->string))]
+          #:unless (equal? (file-name-from-path child) (string->path "DEBIAN")))
+      (walk child)
+    ) ; end for root child
+    (sort lines string<?)
+  ) ; end begin deb-md5sum-lines
+) ; end define deb-md5sum-lines
+
+(define (write-deb-md5sums! deb-root)
+  (begin
+    (define md5-path (build-path deb-root "DEBIAN" "md5sums"))
+    (define lines (deb-md5sum-lines deb-root))
+    (write-text-file! md5-path
+                      (string-append (string-join lines "\n") "\n"))
+    (assert-nonempty-file 'write-deb-md5sums! md5-path)
+  ) ; end begin write-deb-md5sums!
+) ; end define write-deb-md5sums!
+
 (define (validate-deb! c deb-path)
   (begin
     (assert-nonempty-file 'validate-deb! deb-path)
@@ -532,6 +736,7 @@ Description: {(cfg-summary c)}
       (clear-managed-dir! 'build-apt! deb-root)
       (copy-directory/files install-root deb-root)
       (write-deb-control! c deb-root)
+      (write-deb-md5sums! deb-root)
     ) ; end unless dry-run prepare deb root
     (if (use-dpkg-deb? c)
         (run! 'build-apt!
@@ -604,7 +809,7 @@ Description: {(cfg-summary c)}
   ) ; end begin build-deb-with-ar!
 ) ; end define build-deb-with-ar!
 
-(define (write-rpm-spec! c spec-path source-name)
+(define (write-rpm-spec! c spec-path source-name [file-list (rpm-file-list c)])
   (begin
     (write-text-file!
      spec-path
@@ -631,28 +836,35 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
 
 %files
 %defattr(-,root,root,-)
-{(cfg-prefix c)}
+{(string-join file-list "\n")}
 "
     )
-    (validate-rpm-spec! c spec-path source-name)
+    (validate-rpm-spec! c spec-path source-name file-list)
   ) ; end begin write-rpm-spec!
 ) ; end define write-rpm-spec!
 
-(define (validate-rpm-spec! c spec-path source-name)
+(define (validate-rpm-spec! c spec-path source-name file-list)
   (begin
     (assert-nonempty-file 'validate-rpm-spec! spec-path)
+    (when (null? file-list)
+      (raise-user-error 'validate-rpm-spec! "generated RPM file list is empty")
+    ) ; end when empty file list
     (define content (file->string spec-path))
     (for ([needle (in-list (list f"Name: {(cfg-package-name c)}"
                                  f"Version: {(cfg-formula-version c)}"
                                  f"Release: {(cfg-release c)}"
                                  f"Source0: {source-name}"
                                  "tar -xzf %{SOURCE0} -C %{buildroot}"
-                                 f"{(cfg-prefix c)}"))])
+                                 (car file-list)))])
       (unless (string-contains? content needle)
         (raise-user-error 'validate-rpm-spec!
                           f"generated RPM spec is missing: {needle}")
       ) ; end unless needle present
     ) ; end for needle
+    (when (regexp-match? #px"(?m:^/usr$|^%dir /usr$)" content)
+      (raise-user-error 'validate-rpm-spec!
+                        "generated RPM spec must not claim the shared /usr directory")
+    ) ; end when owns /usr
   ) ; end begin validate-rpm-spec!
 ) ; end define validate-rpm-spec!
 
@@ -707,6 +919,7 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
     (define source-name f"{(cfg-package-name c)}-{(cfg-formula-version c)}-payload.tar.gz")
     (define payload-tar (build-path sources-dir source-name))
     (define spec-path (build-path specs-dir f"{(cfg-package-name c)}.spec"))
+    (define manifest-path (build-path specs-dir f"{(cfg-package-name c)}.files"))
     (unless (cfg-dry-run? c)
       (make-directory* (cfg-artifact-dir c))
       (assert-executable 'build-rpm! (cfg-rpmbuild-bin c))
@@ -723,7 +936,10 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
           (list "-C" (clean-path-string install-root) "-czf" (clean-path-string payload-tar) ".")
           #:dry-run? (cfg-dry-run? c))
     (unless (cfg-dry-run? c)
-      (write-rpm-spec! c spec-path source-name)
+      (define file-list (rpm-file-list c))
+      (write-rpm-file-list! c manifest-path file-list)
+      (write-rpm-spec! c spec-path source-name file-list)
+      (println/flush f"RPM file manifest: {(clean-path-string manifest-path)}")
     ) ; end unless dry-run write spec
     (run! 'build-rpm!
           (cfg-rpmbuild-bin c)
@@ -3165,7 +3381,7 @@ jobs:
   (define formula-version-arg #f)
   (define package-name-arg "racket9")
   (define release-arg "1")
-  (define prefix-arg "/opt/racket9")
+  (define prefix-arg "/usr")
   (define artifact-dir-arg "artifacts")
   (define work-dir-arg ".build")
   (define stage-dir-arg #f)
@@ -3225,7 +3441,7 @@ jobs:
                       (set! package-name-arg name)]
    [("--release") release "Package release value (default: 1)"
                  (set! release-arg release)]
-   [("--prefix") path "Install prefix inside the package (default: /opt/racket9)"
+   [("--prefix") path "Install prefix inside the package (default: /usr)"
                 (set! prefix-arg path)]
    [("--artifact-dir" "--output-dir") path "Directory for package artifacts (default: ./artifacts)"
                                         (set! artifact-dir-arg path)]
@@ -3524,7 +3740,7 @@ jobs:
          formula-version
          "racket9"
          "1"
-         "/opt/racket9"
+         "/usr"
          (build-path test-root "artifacts")
          (build-path test-root "work")
          (build-path test-root "stage")
@@ -3596,6 +3812,33 @@ jobs:
     (check-false (member "racket-aarch64-macosx-4" packages string=?))
   ) ; end test-case brew package closure
 
+  (test-case "deb md5sums track payload files only"
+    (define deb-root (make-temporary-file "package-racket-deb-root~a" 'directory))
+    (dynamic-wind
+      void
+      (lambda ()
+        (make-directory* (build-path deb-root "usr" "bin"))
+        (make-directory* (build-path deb-root "DEBIAN"))
+        (write-text-file! (build-path deb-root "usr" "bin" "racket") "abc")
+        (write-text-file! (build-path deb-root "DEBIAN" "control") "Package: racket9\n")
+        (define lines (deb-md5sum-lines deb-root))
+        (check-true (and (member "900150983cd24fb0d6963f7d28e17f72  usr/bin/racket"
+                                 lines
+                                 string=?)
+                         #t))
+        (check-false
+         (ormap (lambda (line) (string-contains? line "DEBIAN/control")) lines))
+        (write-deb-md5sums! deb-root)
+        (define md5-content (file->string (build-path deb-root "DEBIAN" "md5sums")))
+        (check-true (string-contains? md5-content "usr/bin/racket"))
+        (check-false (string-contains? md5-content "DEBIAN/control"))
+      ) ; end lambda write md5sums
+      (lambda ()
+        (delete-directory/files deb-root)
+      ) ; end lambda cleanup md5sums
+    ) ; end dynamic-wind deb md5sums
+  ) ; end test-case deb md5sums
+
   (test-case "formula-version drives package-manager outputs without changing runtime version"
     (define c (test-cfg #:source-version "9.2.1"
                         #:formula-version "9.2.1.1"))
@@ -3616,14 +3859,27 @@ jobs:
     (dynamic-wind
       void
       (lambda ()
+        (make-directory* (build-path (cfg-install-root c) "usr" "bin"))
+        (make-directory* (build-path (cfg-install-root c) "usr" "lib" "racket" "collects"))
+        (write-text-file! (build-path (cfg-install-root c) "usr" "bin" "racket")
+                          "#!/bin/sh\n")
+        (write-text-file! (build-path (cfg-install-root c) "usr" "lib" "racket" "collects" "main.rkt")
+                          "#lang racket/base\n")
         (define spec-path (build-path rpm-root "racket9.spec"))
         (write-rpm-spec! c spec-path "racket9-9.2.1.1-payload.tar.gz")
+        (define file-list (rpm-file-list c))
         (define spec-content (file->string spec-path))
         (check-true (string-contains? spec-content "Version: 9.2.1.1"))
         (check-true (string-contains? spec-content "Source0: racket9-9.2.1.1-payload.tar.gz"))
+        (check-true (and (member "/usr/bin/racket" file-list string=?) #t))
+        (check-true (and (member "%dir /usr/lib/racket" file-list string=?) #t))
+        (check-true (and (member "/usr/lib/racket/collects/main.rkt" file-list string=?) #t))
+        (check-false (member "/usr" file-list string=?))
+        (check-false (member "%dir /usr" file-list string=?))
       ) ; end lambda write rpm spec
       (lambda ()
         (delete-directory/files rpm-root)
+        (delete-directory/files (cfg-install-root c))
       ) ; end lambda cleanup rpm spec
     ) ; end dynamic-wind rpm spec
   ) ; end test-case formula-version package-manager outputs

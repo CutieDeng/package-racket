@@ -266,6 +266,7 @@ actual output:
        (check-contains text "Targets: rpm")
        (check-contains text "Formula/package version: 9.2.1.1")
        (check-contains text "Racket source version: 9.2.1")
+       (check-contains text "Prefix: /usr")
        (check-contains text "RPM target arch: aarch64")
        (check-contains text "racket9-9.2.1.1-payload.tar.gz")
        (check-contains text "--target aarch64")
