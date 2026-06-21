@@ -2488,7 +2488,7 @@ jobs:
 
       - run: brew test-bot --only-tap-syntax
 
-      - run: brew test-bot --only-formulae --testing-formulae={formula} --skip-dependents --root-url={root-url}
+      - run: brew test-bot --only-formulae --keep-old --testing-formulae={formula} --skip-dependents --root-url={root-url}
         if: {test-formula-if}
 
       - name: Upload bottles as artifact
@@ -2557,7 +2557,7 @@ jobs:
 
       - run: brew test-bot --only-tap-syntax
 
-      - run: brew test-bot --only-formulae --testing-formulae={formula} --skip-dependents --root-url={root-url}
+      - run: brew test-bot --only-formulae --keep-old --testing-formulae={formula} --skip-dependents --root-url={root-url}
 
       - name: List bottle files
         shell: bash
@@ -2759,6 +2759,7 @@ jobs:
     (for ([needle (in-list (list "name: brew test-bot"
                                  "pull_request:"
                                  f"--testing-formulae={formula}"
+                                 "--keep-old"
                                  f"--root-url={(cfg-bottle-root-url c)}"
                                  "test_formula: true"
                                  "if: matrix.test_formula"
@@ -2783,6 +2784,7 @@ jobs:
                                  "build-bottles:"
                                  "publish-bottles:"
                                  f"--testing-formulae={formula}"
+                                 "--keep-old"
                                  f"--root-url={(cfg-bottle-root-url c)}"
                                  "actions/download-artifact@v6"
                                  "GH_REPO:"
@@ -3342,12 +3344,14 @@ jobs:
                                  "ubuntu-latest"
                                  "ubuntu-24.04-arm"
                                  "ghcr.io/homebrew/brew:main"
+                                 "brew test-bot --only-formulae --keep-old"
                                  "*.bottle*.tar.gz"
                                  "if-no-files-found: error"))])
       (check-true (string-contains? tests-content needle) needle)
     ) ; end for tests workflow needle
     (for ([needle (in-list (list "shell: bash"
                                  "set -euo pipefail"
+                                 "brew test-bot --only-formulae --keep-old"
                                  "URI.decode_www_form_component"
                                  "Digest::SHA256.file"
                                  "brew bottle --merge --write --no-commit"
