@@ -1,5 +1,3 @@
 #hash((apt-release-repo . "CutieDeng/racket")
-      (apt-release-tag . "v9.2.1")
-      (apt-release-asset . "racket9_9.2.1-1_amd64.deb")
       (apt-release-token-file . "secret/ghtoken.rktd")
       (replace-release-asset . #t))

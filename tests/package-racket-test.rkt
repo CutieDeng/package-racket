@@ -84,6 +84,7 @@ end
    path
    "#hash((formula . \"racket@9\")
       (artifact-prefix . \"bottles\")
+      (bottle-rebuild . 1)
       (bottle-runners . (#hash((os . \"macos-26\"))
                          #hash((os . \"ubuntu-latest\")
                                (container . \"ghcr.io/homebrew/brew:main\"))
@@ -102,12 +103,20 @@ end
       (replace-release-asset . #t))
 "))
 
-(define (write-apt-release-config! path asset-name)
-  (write-text!
-   path
+  (define (write-apt-release-config! path asset-name)
+    (write-text!
+     path
    f"#hash((apt-release-repo . \"CutieDeng/racket\")
       (apt-release-tag . \"v9.2.1\")
       (apt-release-asset . \"{asset-name}\")
+      (apt-release-token-file . \"missing-token.rktd\")
+      (replace-release-asset . #t))
+"))
+
+  (define (write-derived-apt-release-config! path)
+    (write-text!
+     path
+     "#hash((apt-release-repo . \"CutieDeng/racket\")
       (apt-release-token-file . \"missing-token.rktd\")
       (replace-release-asset . #t))
 "))
@@ -239,6 +248,29 @@ actual output:
     ) ; end with-temp-dir
   ) ; end test-case apt dry-run isolation
 
+  (test-case "formula-version override drives apt package version"
+    (with-temp-dir
+     (lambda (tmp)
+       (define racket-root (make-fake-racket-root! tmp))
+       (define artifact-dir (build-path tmp "artifacts"))
+       (define work-dir (build-path tmp "work"))
+       (define-values (out err)
+         (run-package/success
+          (list "--target" "apt"
+                "--racket-root" (path-arg racket-root)
+                "--formula-version" "9.2.1.1"
+                "--artifact-dir" (path-arg artifact-dir)
+                "--work-dir" (path-arg work-dir)
+                "--dry-run")))
+       (define text (combined-output out err))
+       (check-contains text "Formula/package version: 9.2.1.1")
+       (check-contains text "Racket source version: 9.2.1")
+       (check-contains text "racket9_9.2.1.1-1_amd64.deb")
+       (check-false (directory-exists? artifact-dir))
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case formula-version override apt
+
   (test-case "apt-release dry-run validates an existing deb and does not read token"
     (with-temp-dir
      (lambda (tmp)
@@ -290,6 +322,34 @@ actual output:
       ) ; end lambda temp dir
     ) ; end with-temp-dir
   ) ; end test-case apt plus apt-release dry-run
+
+  (test-case "apt-release derives tag and asset from formula-version"
+    (with-temp-dir
+     (lambda (tmp)
+       (define racket-root (make-fake-racket-root! tmp))
+       (define artifact-dir (build-path tmp "artifacts"))
+       (define work-dir (build-path tmp "work"))
+       (define config-path (build-path tmp "apt-release-config.rktd"))
+       (write-derived-apt-release-config! config-path)
+       (define-values (out err)
+         (run-package/success
+          (list "--target" "apt"
+                "--target" "apt-release"
+                "--racket-root" (path-arg racket-root)
+                "--formula-version" "9.2.1.1"
+                "--artifact-dir" (path-arg artifact-dir)
+                "--work-dir" (path-arg work-dir)
+                "--apt-release-config" (path-arg config-path)
+                "--dry-run")))
+       (define text (combined-output out err))
+       (check-contains text "APT package:")
+       (check-contains text "racket9_9.2.1.1-1_amd64.deb")
+       (check-contains text "APT release tag: v9.2.1.1")
+       (check-contains text "APT release asset: racket9_9.2.1.1-1_amd64.deb")
+       (check-contains text "Would upload apt release asset from planned apt output")
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case apt release derives formula-version
 
   (test-case "source-release dry-run validates an existing tgz without racket root"
     (with-temp-dir
@@ -347,6 +407,29 @@ actual output:
       ) ; end lambda temp dir
     ) ; end with-temp-dir
   ) ; end test-case brew plus source-release dry-run
+
+  (test-case "brew-ci rejects GitHub bottle root URL that does not match formula-version"
+    (with-temp-dir
+     (lambda (tmp)
+       (define racket-root (make-fake-racket-root! tmp))
+       (define tap-dir (make-fake-homebrew-tap! tmp))
+       (define config-path (build-path tmp "brew-ci-config.rktd"))
+       (write-brew-ci-config! config-path)
+       (define-values (exit-code out err)
+         (run-package
+          (list "--target" "brew-ci"
+                "--racket-root" (path-arg racket-root)
+                "--formula-version" "9.2.1.1"
+                "--homebrew-tap" (path-arg tap-dir)
+                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1"
+                "--brew-ci-config" (path-arg config-path)
+                "--dry-run")))
+       (check-not-equal? exit-code 0)
+       (check-contains (combined-output out err)
+                       "--bottle-root-url must target formula-version v9.2.1.1")
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case bottle root version mismatch
 
   (test-case "brew-ci dry-run validates tap config and writes no workflows"
     (with-temp-dir

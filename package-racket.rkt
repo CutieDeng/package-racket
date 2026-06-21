@@ -27,7 +27,9 @@
   (targets
    racket-root
    make-dir
-   version
+   package-config
+   source-version
+   formula-version
    package-name
    release
    prefix
@@ -274,6 +276,26 @@
     [(not (zero? z)) f"{x}.{y}.{z}"]
     [else f"{x}.{y}"]))
 
+(define (assert-version-string who label version)
+  (begin
+    (unless (and (string? version)
+                 (regexp-match? #px"^[0-9]+([.][0-9]+)*$" version))
+      (raise-user-error who
+                        f"{label} must be a dotted numeric version such as 9.2.1 or 9.2.1.1: {version}")
+    ) ; end unless dotted numeric version
+    version
+  ) ; end begin assert-version-string
+) ; end define assert-version-string
+
+(define (read-package-formula-version package-config)
+  (begin
+    (define raw (read-rktd-hash 'read-package-config package-config))
+    (assert-version-string 'read-package-config
+                           'formula-version
+                           (config-required-string 'read-package-config raw 'formula-version))
+  ) ; end begin read-package-formula-version
+) ; end define read-package-formula-version
+
 (define (assert-racket-root racket-root)
   (assert-directory 'main (build-path racket-root "racket" "src"))
   (assert-directory 'main (build-path racket-root "racket" "collects"))
@@ -344,7 +366,7 @@
     (raise-user-error 'main f"--prefix must be absolute: {prefix}"))
   (void))
 
-(define (assert-bottle-root-url root-url)
+(define (assert-bottle-root-url root-url formula-version)
   (begin
     (unless (and (string? root-url) (not (string=? root-url "")))
       (raise-user-error 'main "--bottle-root-url must be a non-empty string")
@@ -360,6 +382,13 @@
     (when (string-suffix? root-url "/")
       (raise-user-error 'main f"--bottle-root-url must not end with /: {root-url}")
     ) ; end when trailing slash bottle root url
+    (when (regexp-match? #rx"^https://github[.]com/[^/]+/[^/]+/releases/download/" root-url)
+      (define expected-suffix f"/releases/download/v{formula-version}")
+      (unless (string-suffix? root-url expected-suffix)
+        (raise-user-error 'main
+                          f"--bottle-root-url must target formula-version v{formula-version}: {root-url}")
+      ) ; end unless github release tag matches formula version
+    ) ; end when github release bottle root url
   ) ; end begin assert-bottle-root-url
 ) ; end define assert-bottle-root-url
 
@@ -423,7 +452,7 @@
     (write-text-file!
      control-path
      f"Package: {(cfg-package-name c)}
-Version: {(cfg-version c)}-{(cfg-release c)}
+Version: {(cfg-formula-version c)}-{(cfg-release c)}
 Section: devel
 Priority: optional
 Architecture: {(cfg-deb-arch c)}
@@ -442,7 +471,7 @@ Description: {(cfg-summary c)}
     (assert-nonempty-file 'validate-deb-control! control-path)
     (define content (file->string control-path))
     (for ([needle (in-list (list f"Package: {(cfg-package-name c)}"
-                                 f"Version: {(cfg-version c)}-{(cfg-release c)}"
+                                 f"Version: {(cfg-formula-version c)}-{(cfg-release c)}"
                                  f"Architecture: {(cfg-deb-arch c)}"
                                  f"Description: {(cfg-summary c)}"))])
       (unless (string-contains? content needle)
@@ -472,7 +501,7 @@ Description: {(cfg-summary c)}
 ) ; end define validate-deb!
 
 (define (apt-deb-name c)
-  f"{(cfg-package-name c)}_{(cfg-version c)}-{(cfg-release c)}_{(cfg-deb-arch c)}.deb")
+  f"{(cfg-package-name c)}_{(cfg-formula-version c)}-{(cfg-release c)}_{(cfg-deb-arch c)}.deb")
 
 (define (apt-deb-path c)
   (build-path (cfg-artifact-dir c) (apt-deb-name c)))
@@ -566,7 +595,7 @@ Description: {(cfg-summary c)}
     (write-text-file!
      spec-path
      f"Name: {(cfg-package-name c)}
-Version: {(cfg-version c)}
+Version: {(cfg-formula-version c)}
 Release: {(cfg-release c)}
 Summary: {(cfg-summary c)}
 License: {(cfg-license c)}
@@ -600,7 +629,7 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
     (assert-nonempty-file 'validate-rpm-spec! spec-path)
     (define content (file->string spec-path))
     (for ([needle (in-list (list f"Name: {(cfg-package-name c)}"
-                                 f"Version: {(cfg-version c)}"
+                                 f"Version: {(cfg-formula-version c)}"
                                  f"Release: {(cfg-release c)}"
                                  f"Source0: {source-name}"
                                  "tar -xzf %{SOURCE0} -C %{buildroot}"
@@ -620,7 +649,7 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
       (capture! 'validate-rpm! (cfg-rpm-bin c) (list "-qip" (clean-path-string rpm-path)))
     ) ; end define metadata
     (for ([needle (in-list (list f"Name        : {(cfg-package-name c)}"
-                                 f"Version     : {(cfg-version c)}"
+                                 f"Version     : {(cfg-formula-version c)}"
                                  f"Release     : {(cfg-release c)}"))])
       (unless (string-contains? metadata needle)
         (raise-user-error 'validate-rpm!
@@ -660,7 +689,7 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
     (define rpm-root (build-path (cfg-work-dir c) "rpm"))
     (define sources-dir (build-path rpm-root "SOURCES"))
     (define specs-dir (build-path rpm-root "SPECS"))
-    (define source-name f"{(cfg-package-name c)}-{(cfg-version c)}-payload.tar.gz")
+    (define source-name f"{(cfg-package-name c)}-{(cfg-formula-version c)}-payload.tar.gz")
     (define payload-tar (build-path sources-dir source-name))
     (define spec-path (build-path specs-dir f"{(cfg-package-name c)}.spec"))
     (unless (cfg-dry-run? c)
@@ -705,13 +734,51 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
   (build-path (cfg-stage-dir c) "brew-source"))
 
 (define (brew-source-dist-root c)
-  (build-path (brew-source-stage-root c) f"racket-{(cfg-version c)}"))
+  (build-path (brew-source-stage-root c) f"racket-{(cfg-formula-version c)}"))
 
 (define (brew-source-tgz-name c)
-  f"racket-minimal-{(cfg-version c)}-src.tgz")
+  f"racket-minimal-{(cfg-formula-version c)}-src.tgz")
 
 (define (brew-output-tgz c)
   (build-path (cfg-artifact-dir c) (brew-source-tgz-name c)))
+
+(define generated-code-notice-marker
+  "GENERATED CODE - DO NOT EDIT IN homebrew-racket.")
+
+(define (generated-source-root)
+  (regexp-replace #rx"/$"
+                  (regexp-replace #rx"/[.]$" (clean-path-string script-dir) "")
+                  ""))
+
+(define (generated-code-notice comment-prefix)
+  f"{comment-prefix} {generated-code-notice-marker}
+{comment-prefix} Source of truth: {(generated-source-root)}
+{comment-prefix} Humans and LLM agents must change package-racket and regenerate; manual tap edits are not production-safe.
+
+")
+
+(define (generated-code-notice-rx comment-prefix)
+  (pregexp
+   (string-append
+    "^"
+    (regexp-quote (string-append comment-prefix " " generated-code-notice-marker "\n"))
+    (regexp-quote (string-append comment-prefix " Source of truth: "))
+    "[^\n]*\n"
+    (regexp-quote (string-append comment-prefix " Humans and LLM agents must change package-racket and regenerate; manual tap edits are not production-safe.\n\n")))))
+
+(define (ensure-generated-code-notice! who path comment-prefix)
+  (begin
+    (assert-nonempty-file who path)
+    (define content (file->string path))
+    (define stripped
+      (regexp-replace (generated-code-notice-rx comment-prefix) content ""))
+    (define normalized
+      (string-append (generated-code-notice comment-prefix) stripped))
+    (unless (string=? content normalized)
+      (write-text-file! path normalized)
+    ) ; end unless notice normalized
+  ) ; end begin ensure-generated-code-notice!
+) ; end define ensure-generated-code-notice!
 
 (define brew-custom-core-packages
   '("sandbox-lib"
@@ -1056,9 +1123,9 @@ information.
     (define dist-root (brew-source-dist-root c))
     (reset-managed-dir! 'stage-brew-source! stage-root)
     (make-directory* dist-root)
-    (write-brew-source-readme! (build-path dist-root "README") (cfg-version c))
+    (write-brew-source-readme! (build-path dist-root "README") (cfg-source-version c))
     (make-directory* (build-path dist-root "etc"))
-    (write-brew-config! (build-path dist-root "etc" "config.rktd") (cfg-version c))
+    (write-brew-config! (build-path dist-root "etc" "config.rktd") (cfg-source-version c))
     (copy-brew-tree! (build-path (cfg-racket-root c) "racket" "collects")
                      (build-path dist-root "collects"))
     (copy-brew-tree! (build-path (cfg-racket-root c) "racket" "src")
@@ -1139,7 +1206,7 @@ information.
 ) ; end define make-brew-tgz!
 
 (define (brew-tgz-member-path c relative-path)
-  f"racket-{(cfg-version c)}/{relative-path}")
+  f"racket-{(cfg-formula-version c)}/{relative-path}")
 
 (define (brew-tgz-file-content c relative-path)
   (capture! 'validate-brew-tgz!
@@ -1212,7 +1279,7 @@ information.
 ) ; end define assert-homebrew-tap!
 
 (define (formula-source-url c)
-  f"https://github.com/CutieDeng/racket/releases/download/v{(cfg-version c)}/{(brew-source-tgz-name c)}")
+  f"https://github.com/CutieDeng/racket/releases/download/v{(cfg-formula-version c)}/{(brew-source-tgz-name c)}")
 
 (define (formula-root-url c)
   f"root_url \"{(cfg-bottle-root-url c)}\"")
@@ -1242,11 +1309,12 @@ information.
     (assert-nonempty-file 'validate-formula-file! formula-path)
     (define content (file->string formula-path))
     (for ([needle (in-list (list "class RacketAT9 < Formula"
+                                 generated-code-notice-marker
                                  f"url \"{(formula-source-url c)}\""
                                  "depends_on \"openssl@3\""
                                  "depends_on \"ncurses\""
                                  "test do"
-                                 f"assert_match \"{(cfg-version c)}\""))])
+                                 f"assert_match \"{(cfg-source-version c)}\""))])
       (unless (string-contains? content needle)
         (raise-user-error 'validate-formula-file!
                           f"formula is missing expected content: {needle}")
@@ -1270,6 +1338,7 @@ information.
     (assert-nonempty-file 'validate-formula-template! formula-path)
     (define content (file->string formula-path))
     (for ([needle (in-list (list "class RacketAT9 < Formula"
+                                 generated-code-notice-marker
                                  "racket-minimal-"
                                  "test do"))])
       (unless (string-contains? content needle)
@@ -1340,7 +1409,7 @@ information.
 
 (define (formula-content/full c digest)
   (begin
-    (define version (cfg-version c))
+    (define version (cfg-source-version c))
     (define rb-prefix (ruby-interpolate "prefix"))
     (define rb-man (ruby-interpolate "man"))
     (define rb-etc (ruby-interpolate "etc"))
@@ -1354,7 +1423,7 @@ information.
                      (ruby-interpolate "Regexp.escape(HOMEBREW_CELLAR)")
                      "/racket@9/[^/]+}o"))
     (define macos-openssl-rx "%r{.*openssl@3/.*/libssl.*\\.dylib}")
-    f"class RacketAT9 < Formula
+    f"{(generated-code-notice "#")}class RacketAT9 < Formula
   desc \"Modern programming language in the Lisp/Scheme family\"
   homepage \"https://racket-lang.org/\"
   url \"{(formula-source-url c)}\"
@@ -1593,8 +1662,9 @@ end
        (unless original-digest
          (raise-user-error 'prepare-generated-formula!
                            f"incremental formula mode requires an existing formula: {(clean-path-string (cfg-formula c))}")
-       ) ; end unless existing formula digest
+      ) ; end unless existing formula digest
        (copy-file (cfg-formula c) generated #t)
+       (ensure-generated-code-notice! 'prepare-generated-formula! generated "#")
        (validate-formula-template! generated)]
       [(formula-mode-full? c)
        (void)]
@@ -2070,15 +2140,16 @@ body: {(safe-response-body body)}")]
 ) ; end define release-asset-by-name
 
 (define (release-upload-config c who config-path repo-arg tag-arg asset-arg token-file-arg
-                               repo-key tag-key asset-key token-key)
+                               repo-key tag-key asset-key token-key
+                               default-tag default-asset-name)
   (begin
     (define raw (read-rktd-hash who config-path))
     (define repo (or repo-arg
                      (config-required-string who raw repo-key)))
     (define tag (or tag-arg
-                    (config-required-string who raw tag-key)))
+                    (config-optional-string who raw tag-key default-tag)))
     (define asset-name (or asset-arg
-                           (config-required-string who raw asset-key)))
+                           (config-optional-string who raw asset-key default-asset-name)))
     (define token-file-value (or token-file-arg
                                  (config-optional-string who raw token-key "secret/ghtoken.rktd")))
     (define token-file (resolve-config-path config-path token-file-value))
@@ -2105,7 +2176,9 @@ body: {(safe-response-body body)}")]
                          'source-release-repo
                          'source-release-tag
                          'source-release-asset
-                         'source-release-token-file))
+                         'source-release-token-file
+                         f"v{(cfg-formula-version c)}"
+                         (brew-source-tgz-name c)))
 
 (define (apt-release-config c)
   (release-upload-config c
@@ -2118,7 +2191,9 @@ body: {(safe-response-body body)}")]
                          'apt-release-repo
                          'apt-release-tag
                          'apt-release-asset
-                         'apt-release-token-file))
+                         'apt-release-token-file
+                         f"v{(cfg-formula-version c)}"
+                         (apt-deb-name c)))
 
 (define (validate-source-release-artifact! c asset-name)
   (begin
@@ -2381,6 +2456,16 @@ body: {(safe-response-body body)}")]
   ) ; end begin required-config-string
 ) ; end define required-config-string
 
+(define (required-config-positive-integer config key)
+  (begin
+    (define value (hash-ref config key #f))
+    (unless (exact-positive-integer? value)
+      (raise-user-error 'required-config-positive-integer f"missing positive integer config key: {key}")
+    ) ; end unless valid positive integer
+    value
+  ) ; end begin required-config-positive-integer
+) ; end define required-config-positive-integer
+
 (define (runner-ref runner key default)
   (hash-ref runner key (lambda () default)))
 
@@ -2394,6 +2479,7 @@ body: {(safe-response-body body)}")]
   (begin
     (required-config-string config 'formula)
     (required-config-string config 'artifact-prefix)
+    (required-config-positive-integer config 'bottle-rebuild)
     (define bottle-runners (config-ref* config 'bottle-runners '()))
     (define syntax-runners (config-ref* config 'syntax-runners '()))
     (assert-runner-list 'validate-brew-ci-config! bottle-runners)
@@ -2458,7 +2544,7 @@ body: {(safe-response-body body)}")]
        (apply string-append (map (lambda (runner) (workflow-runner-lines runner #f)) syntax-runners))
       ) ; end string-append runner lines
     ) ; end define runner-lines
-    f"name: brew test-bot
+    f"{(generated-code-notice "#")}name: brew test-bot
 
 on:
   pull_request:
@@ -2488,7 +2574,7 @@ jobs:
 
       - run: brew test-bot --only-tap-syntax
 
-      - run: brew test-bot --only-formulae --keep-old --testing-formulae={formula} --skip-dependents --root-url={root-url}
+      - run: brew test-bot --only-formulae --testing-formulae={formula} --skip-dependents --root-url={root-url}
         if: {test-formula-if}
 
       - name: Upload bottles as artifact
@@ -2510,9 +2596,10 @@ jobs:
   (begin
     (define formula (required-config-string config 'formula))
     (define artifact-prefix (required-config-string config 'artifact-prefix))
+    (define bottle-rebuild (required-config-positive-integer config 'bottle-rebuild))
     (define bottle-runners (config-ref* config 'bottle-runners '()))
     (define root-url (cfg-bottle-root-url c))
-    (define release-tag f"v{(cfg-version c)}")
+    (define release-tag f"v{(cfg-formula-version c)}")
     (define matrix-os "${{ matrix.os }}")
     (define container-expr "${{ matrix.container }}")
     (define token-expr "${{ secrets.GITHUB_TOKEN }}")
@@ -2524,8 +2611,9 @@ jobs:
     (define bottle-json-count "${#bottle_jsons[@]}")
     (define bottle-tarball-count "${#bottle_tarballs[@]}")
     (define bottle-json-array "\"${bottle_jsons[@]}\"")
+    (define normalized-bottle-json-array "\"${normalized_bottle_jsons[@]}\"")
     (define bottle-tarball-array "\"${bottle_tarballs[@]}\"")
-    f"name: brew publish bottles
+    f"{(generated-code-notice "#")}name: brew publish bottles
 
 on:
   push:
@@ -2557,7 +2645,7 @@ jobs:
 
       - run: brew test-bot --only-tap-syntax
 
-      - run: brew test-bot --only-formulae --keep-old --testing-formulae={formula} --skip-dependents --root-url={root-url}
+      - run: brew test-bot --only-formulae --testing-formulae={formula} --skip-dependents --root-url={root-url}
 
       - name: List bottle files
         shell: bash
@@ -2607,6 +2695,7 @@ jobs:
           GH_REPO: {github-repository-expr}
           BOTTLE_ROOT_URL: {root-url}
           RELEASE_TAG: {release-tag}
+          BOTTLE_REBUILD: {bottle-rebuild}
         run: |
           set -euo pipefail
 
@@ -2635,10 +2724,31 @@ jobs:
           gh release view \"$RELEASE_TAG\" >/dev/null
 
           release_asset_dir=\"${{RUNNER_TEMP:-$GITHUB_WORKSPACE}}/bottle-release-assets\"
+          normalized_json_dir=\"${{RUNNER_TEMP:-$GITHUB_WORKSPACE}}/normalized-bottle-json\"
           rm -rf \"$release_asset_dir\"
+          rm -rf \"$normalized_json_dir\"
           mkdir -p \"$release_asset_dir\"
+          mkdir -p \"$normalized_json_dir\"
           release_assets=()
+          normalized_bottle_jsons=()
           declare -A tarballs_by_basename
+
+          normalize_bottle_json() {{
+            ruby -rjson -e '
+              desired = Integer(ENV.fetch(\"BOTTLE_REBUILD\"), 10)
+              abort \"BOTTLE_REBUILD must be positive\" unless desired.positive?
+
+              input_path = ARGV.fetch(0)
+              output_path = ARGV.fetch(1)
+              data = JSON.parse(File.read(input_path))
+
+              data.each_value do |formula|
+                formula.fetch(\"bottle\")[\"rebuild\"] = desired
+              end
+
+              File.write(output_path, JSON.pretty_generate(data))
+            ' \"$1\" \"$2\"
+          }}
 
           for bottle_tarball in \"${{bottle_tarballs[@]}}\"; do
             bottle_basename=\"${{bottle_tarball##*/}}\"
@@ -2651,15 +2761,33 @@ jobs:
             tarballs_by_basename[\"$bottle_basename\"]=\"$bottle_tarball\"
           done
 
+          for bottle_json in \"${{bottle_jsons[@]}}\"; do
+            normalized_json=\"$normalized_json_dir/${{bottle_json##*/}}\"
+            normalize_bottle_json \"$bottle_json\" \"$normalized_json\"
+            normalized_bottle_jsons+=(\"$normalized_json\")
+          done
+
           extract_bottle_metadata() {{
             ruby -rjson -ruri -e '
+              desired = ENV.fetch(\"BOTTLE_REBUILD\")
+
+              def normalize_bottle_asset_name(name, desired)
+                replacement = \".bottle.\" + desired + \".tar.gz\"
+                unless name.match?(/\\.bottle(?:\\.\\d+)?\\.tar\\.gz\\z/)
+                  abort \"not a Homebrew bottle tarball name: \" + name
+                end
+
+                name.sub(/\\.bottle(?:\\.\\d+)?\\.tar\\.gz\\z/, replacement)
+              end
+
               path = ARGV.fetch(0)
               JSON.parse(File.read(path)).each_value do |formula|
                 formula.fetch(\"bottle\").fetch(\"tags\").each_value do |tag|
                   local_filename = tag.fetch(\"local_filename\")
                   url_filename = tag.fetch(\"filename\")
                   sha256 = tag.fetch(\"sha256\")
-                  release_asset_name = URI.decode_www_form_component(url_filename)
+                  release_asset_name =
+                    normalize_bottle_asset_name(URI.decode_www_form_component(url_filename), desired)
 
                   if local_filename.empty? || release_asset_name.empty? || sha256.empty?
                     abort \"bottle JSON contains empty filename or sha256: #{{path}}\"
@@ -2671,7 +2799,7 @@ jobs:
             ' \"$1\"
           }}
 
-          for bottle_json in \"${{bottle_jsons[@]}}\"; do
+          for bottle_json in \"${{normalized_bottle_jsons[@]}}\"; do
             while IFS=$'\\t' read -r local_filename release_asset_name expected_sha256; do
               case \"$local_filename\" in
                 \"\"|*/*)
@@ -2717,7 +2845,18 @@ jobs:
           fi
 
           cd \"$(brew --repository \"$GITHUB_REPOSITORY\")\"
-          brew bottle --merge --write --no-commit --root-url=\"$BOTTLE_ROOT_URL\" {bottle-json-array}
+          brew bottle --merge --write --no-commit --root-url=\"$BOTTLE_ROOT_URL\" {normalized-bottle-json-array}
+          ruby <<'RUBY'
+            path = \"Formula/{formula}.rb\"
+            desired = ENV.fetch(\"BOTTLE_REBUILD\")
+            rebuild_line = File.readlines(path).find do |line|
+              line.match?(/^\\s*rebuild\\s+/)
+            end
+
+            unless rebuild_line && rebuild_line.split.fetch(1, nil) == desired
+              abort \"Formula bottle rebuild did not stay at \" + desired
+            end
+          RUBY
 
           gh release upload \"$RELEASE_TAG\" \"${{release_assets[@]}}\" --clobber
 
@@ -2757,9 +2896,9 @@ jobs:
     (define content (file->string path))
     (define formula (required-config-string config 'formula))
     (for ([needle (in-list (list "name: brew test-bot"
+                                 generated-code-notice-marker
                                  "pull_request:"
                                  f"--testing-formulae={formula}"
-                                 "--keep-old"
                                  f"--root-url={(cfg-bottle-root-url c)}"
                                  "test_formula: true"
                                  "if: matrix.test_formula"
@@ -2779,12 +2918,15 @@ jobs:
     (define content (file->string path))
     (define formula (required-config-string config 'formula))
     (for ([needle (in-list (list "name: brew publish bottles"
+                                 generated-code-notice-marker
                                  "push:"
                                  "workflow_dispatch:"
                                  "build-bottles:"
                                  "publish-bottles:"
+                                 "BOTTLE_REBUILD:"
+                                 "normalize_bottle_json"
+                                 "normalized_bottle_jsons"
                                  f"--testing-formulae={formula}"
-                                 "--keep-old"
                                  f"--root-url={(cfg-bottle-root-url c)}"
                                  "actions/download-artifact@v6"
                                  "GH_REPO:"
@@ -2918,7 +3060,8 @@ jobs:
   (define target-args '())
   (define racket-root-arg #f)
   (define make-dir-arg #f)
-  (define version-arg #f)
+  (define package-config-arg #f)
+  (define formula-version-arg #f)
   (define package-name-arg "racket9")
   (define release-arg "1")
   (define prefix-arg "/opt/racket9")
@@ -2971,8 +3114,12 @@ jobs:
                       (set! racket-root-arg path)]
    [("--make-dir") path "Directory that contains the unix-style make target (default: --racket-root)"
                   (set! make-dir-arg path)]
-   [("--version") version "Override version derived from racket_version.h"
-                (set! version-arg version)]
+   [("--package-config") path "Package metadata config with formula-version (default: ./package-config.rktd)"
+                         (set! package-config-arg path)]
+   [("--formula-version") version "Override package-manager formula-version from package-config.rktd"
+                          (set! formula-version-arg version)]
+   [("--version") version "Compatibility alias for --formula-version"
+                (set! formula-version-arg version)]
    [("--package-name") name "Package name (default: racket9)"
                       (set! package-name-arg name)]
    [("--release") release "Package release value (default: 1)"
@@ -3078,15 +3225,13 @@ jobs:
   (define work-dir (complete-path* work-dir-arg))
   (define stage-dir (complete-path* (or stage-dir-arg (build-path work-dir "stage"))))
   (define install-root (complete-path* (or install-root-arg (build-path work-dir "install-root"))))
+  (define package-config (complete-path* (or package-config-arg (build-path script-dir "package-config.rktd"))))
   (when (and (needs-homebrew-tap? targets) (not homebrew-tap-arg))
     (raise-user-error 'main "--homebrew-tap is required when --target includes brew or brew-ci")
   ) ; end when missing homebrew tap
   (when (and (needs-bottle-root-url? targets) (not bottle-root-url-arg))
     (raise-user-error 'main "--bottle-root-url is required when --target includes brew or brew-ci")
   ) ; end when missing bottle root url
-  (when bottle-root-url-arg
-    (assert-bottle-root-url bottle-root-url-arg)
-  ) ; end when bottle root url provided
   (assert-formula-build-mode formula-build-mode-arg)
   (define homebrew-tap (and homebrew-tap-arg (complete-path* homebrew-tap-arg)))
   (define formula
@@ -3108,14 +3253,30 @@ jobs:
   (when (needs-racket-root? targets)
     (assert-racket-root racket-root)
   ) ; end when needs racket root
+  (define source-version
+    (cond
+      [(needs-racket-root? targets)
+       (assert-version-string 'main 'source-version (read-racket-version racket-root))]
+      [else
+       "unknown"]
+    ) ; end cond source version
+  ) ; end define source-version
+  (define formula-version
+    (assert-version-string
+     'main
+     'formula-version
+     (or formula-version-arg
+         (read-package-formula-version package-config)))
+  ) ; end define formula-version
+  (when bottle-root-url-arg
+    (assert-bottle-root-url bottle-root-url-arg formula-version)
+  ) ; end when bottle root url provided
   (cfg targets
        racket-root
        make-dir
-       (cond
-         [version-arg version-arg]
-         [(needs-racket-root? targets) (read-racket-version racket-root)]
-         [else "unknown"]
-       ) ; end cond version
+       package-config
+       source-version
+       formula-version
        package-name-arg
        release-arg
        prefix-arg
@@ -3170,9 +3331,11 @@ jobs:
 
 (define (print-config c)
   (println/flush f"Targets: {(string-join (cfg-targets c) ", ")}")
+  (println/flush f"Package config: {(clean-path-string (cfg-package-config c))}")
+  (println/flush f"Formula/package version: {(cfg-formula-version c)}")
   (when (needs-racket-root? (cfg-targets c))
     (println/flush f"Racket root: {(clean-path-string (cfg-racket-root c))}")
-    (println/flush f"Version: {(cfg-version c)}")
+    (println/flush f"Racket source version: {(cfg-source-version c)}")
   ) ; end when needs racket root
   (println/flush f"Artifact dir: {(clean-path-string (cfg-artifact-dir c))}")
   (println/flush f"Work dir: {(clean-path-string (cfg-work-dir c))}")
@@ -3239,11 +3402,15 @@ jobs:
                     #:dry-run? [dry-run? #t]
                     #:update-formula? [update-formula? #t]
                     #:formula-build-mode [formula-build-mode "full"]
+                    #:source-version [source-version "9.2.1"]
+                    #:formula-version [formula-version "9.2.1"]
                     #:brew-packages [brew-packages '()])
     (cfg targets
          (build-path test-root "racket-root")
          (build-path test-root "racket-root")
-         "9.2.1"
+         (build-path test-root "package-config.rktd")
+         source-version
+         formula-version
          "racket9"
          "1"
          "/opt/racket9"
@@ -3294,6 +3461,7 @@ jobs:
   (define test-brew-ci-config
     #hash((formula . "racket@9")
           (artifact-prefix . "bottles")
+          (bottle-rebuild . 1)
           (bottle-runners . (#hash((os . "macos-26"))
                              #hash((os . "ubuntu-latest")
                                    (container . "ghcr.io/homebrew/brew:main"))
@@ -3315,9 +3483,41 @@ jobs:
     (check-false (member "racket-aarch64-macosx-4" packages string=?))
   ) ; end test-case brew package closure
 
+  (test-case "formula-version drives package-manager outputs without changing runtime version"
+    (define c (test-cfg #:source-version "9.2.1"
+                        #:formula-version "9.2.1.1"))
+    (check-equal? (brew-source-tgz-name c) "racket-minimal-9.2.1.1-src.tgz")
+    (check-equal? (apt-deb-name c) "racket9_9.2.1.1-1_amd64.deb")
+    (check-equal? (brew-tgz-member-path c "src/README.txt")
+                  "racket-9.2.1.1/src/README.txt")
+    (define content (formula-content/full c test-sha256))
+    (check-true
+     (string-contains? content
+                       "url \"https://github.com/CutieDeng/racket/releases/download/v9.2.1.1/racket-minimal-9.2.1.1-src.tgz\""))
+    (check-true (string-contains? content "assert_match \"9.2.1\""))
+    (check-false (string-contains? content "Welcome to Racket v9.2.1.1 [cs]."))
+    (define publish-content (publish-workflow-content c test-brew-ci-config))
+    (check-true (string-contains? publish-content "RELEASE_TAG: v9.2.1.1"))
+    (define rpm-root (make-temporary-file "package-racket-rpm-spec~a" 'directory))
+    (dynamic-wind
+      void
+      (lambda ()
+        (define spec-path (build-path rpm-root "racket9.spec"))
+        (write-rpm-spec! c spec-path "racket9-9.2.1.1-payload.tar.gz")
+        (define spec-content (file->string spec-path))
+        (check-true (string-contains? spec-content "Version: 9.2.1.1"))
+        (check-true (string-contains? spec-content "Source0: racket9-9.2.1.1-payload.tar.gz"))
+      ) ; end lambda write rpm spec
+      (lambda ()
+        (delete-directory/files rpm-root)
+      ) ; end lambda cleanup rpm spec
+    ) ; end dynamic-wind rpm spec
+  ) ; end test-case formula-version package-manager outputs
+
   (test-case "full brew Formula template keeps runtime checks and dependencies"
     (define content (formula-content/full (test-cfg) test-sha256))
     (for ([needle (in-list (list "class RacketAT9 < Formula"
+                                 generated-code-notice-marker
                                  "url \"https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz\""
                                  f"sha256 \"{test-sha256}\""
                                  "depends_on \"openssl@3\""
@@ -3341,17 +3541,20 @@ jobs:
     (define tests-content (tests-workflow-content c test-brew-ci-config))
     (define publish-content (publish-workflow-content c test-brew-ci-config))
     (for ([needle (in-list (list "macos-26"
+                                 generated-code-notice-marker
                                  "ubuntu-latest"
                                  "ubuntu-24.04-arm"
                                  "ghcr.io/homebrew/brew:main"
-                                 "brew test-bot --only-formulae --keep-old"
                                  "*.bottle*.tar.gz"
                                  "if-no-files-found: error"))])
       (check-true (string-contains? tests-content needle) needle)
     ) ; end for tests workflow needle
     (for ([needle (in-list (list "shell: bash"
+                                 generated-code-notice-marker
                                  "set -euo pipefail"
-                                 "brew test-bot --only-formulae --keep-old"
+                                 "BOTTLE_REBUILD: 1"
+                                 "normalize_bottle_json"
+                                 "normalized_bottle_jsons"
                                  "URI.decode_www_form_component"
                                  "Digest::SHA256.file"
                                  "brew bottle --merge --write --no-commit"
@@ -3370,6 +3573,7 @@ jobs:
                  (validate-brew-ci-config!
                   #hash((formula . "racket@9")
                         (artifact-prefix . "bottles")
+                        (bottle-rebuild . 1)
                         (bottle-runners . ())
                         (syntax-runners . ()))))
     ) ; end check-exn missing bottle runners

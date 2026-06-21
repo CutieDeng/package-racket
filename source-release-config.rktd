@@ -1,5 +1,3 @@
 #hash((source-release-repo . "CutieDeng/racket")
-      (source-release-tag . "v9.2.1")
-      (source-release-asset . "racket-minimal-9.2.1-src.tgz")
       (source-release-token-file . "secret/ghtoken.rktd")
       (replace-release-asset . #t))

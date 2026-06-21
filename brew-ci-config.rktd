@@ -1,5 +1,6 @@
 #hash((formula . "racket@9")
       (artifact-prefix . "bottles")
+      (bottle-rebuild . 1)
       (bottle-runners . (#hash((os . "macos-26"))
                          #hash((os . "ubuntu-latest")
                                (container . "ghcr.io/homebrew/brew:main"))
