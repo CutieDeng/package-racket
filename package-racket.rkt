@@ -2,8 +2,8 @@
 
 (require file/tar
          json
-         net/http-client
          net/uri-codec
+         net/url
          racket/cmdline
          racket/file
          racket/list
@@ -685,7 +685,6 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
 (define brew-default-packages
   '("base"
     "racket-lib"
-    "racket-aarch64-macosx-4"
     "racket-tstring"
     "tstring"
     "xrepl-lib"
@@ -708,7 +707,6 @@ tar -xzf %{{SOURCE0}} -C %{{buildroot}}
 (define brew-package-links
   '(("base" . root)
     ("racket-lib" . root)
-    ("racket-aarch64-macosx-4" . root)
     ("racket-tstring" . "racket-tstring")
     ("tstring" . "tstring")
     ("xrepl-lib" . root)
@@ -1537,22 +1535,58 @@ information.
         f"Authorization: Bearer {token}"
         f"X-GitHub-Api-Version: {github-api-version}"))
 
+(define (strip-http-line-cr line)
+  (regexp-replace #rx"\r$" line ""))
+
+(define (github-response-port method url headers data)
+  (match method
+    ["GET" (get-impure-port url headers)]
+    ["DELETE" (delete-impure-port url headers)]
+    ["POST"
+     (unless data
+       (raise-user-error 'github-response-port "POST requires request data")
+     ) ; end unless post data
+     (post-impure-port url data headers)]
+    [_ (raise-user-error 'github-response-port f"unsupported HTTP method: {method}")]
+  ) ; end match method
+) ; end define github-response-port
+
+(define (read-github-impure-response! who port)
+  (begin
+    (define raw-status (read-line port 'any))
+    (when (eof-object? raw-status)
+      (raise-user-error who "HTTP response ended before status line")
+    ) ; end when missing status line
+    (define status-line (strip-http-line-cr raw-status))
+    (define headers
+      (let loop ([acc '()])
+        (define raw-line (read-line port 'any))
+        (cond
+          [(eof-object? raw-line)
+           (raise-user-error who "HTTP response ended before headers completed")]
+          [else
+           (define line (strip-http-line-cr raw-line))
+           (if (string=? line "")
+               (reverse acc)
+               (loop (cons (string->bytes/utf-8 line) acc)))]
+        ) ; end cond header line
+      ) ; end let loop headers
+    ) ; end define headers
+    (values (string->bytes/utf-8 status-line) headers port)
+  ) ; end begin read-github-impure-response!
+) ; end define read-github-impure-response!
+
 (define (http-send/port! who method host path headers data)
   (begin
     (with-handlers ([exn:fail?
                      (lambda (exn)
-                       (raise-user-error who f"HTTP request failed: {method} https://{host}{path}")
+                       (raise-user-error who
+                                         f"HTTP request failed: {method} https://{host}{path}
+{(exn-message exn)}")
                      )])
-      (if data
-          (http-sendrecv host path
-                         #:ssl? #t
-                         #:method method
-                         #:headers headers
-                         #:data data)
-          (http-sendrecv host path
-                         #:ssl? #t
-                         #:method method
-                         #:headers headers)))
+      (define url (string->url f"https://{host}{path}"))
+      (define response-port (github-response-port method url headers data))
+      (read-github-impure-response! who response-port))
   ) ; end begin http-send/port!
 ) ; end define http-send/port!
 
@@ -1743,6 +1777,23 @@ body: {(safe-response-body body)}")]
        (string=? (hash-ref existing 'digest "")
                  f"sha256:{local-sha}")))
 
+(define (verify-uploaded-asset-digest! owner repo-name token uploaded expected-sha)
+  (begin
+    (define uploaded-id (hash-ref uploaded 'id))
+    (define uploaded-digest (hash-ref uploaded 'digest #f))
+    (cond
+      [(and (string? uploaded-digest)
+            (string=? uploaded-digest f"sha256:{expected-sha}"))
+       (println/flush f"Uploaded asset digest matches local sha256: {uploaded-digest}")]
+      [(string? uploaded-digest)
+       (raise-user-error 'verify-uploaded-asset!
+                         f"uploaded asset digest {uploaded-digest} does not match local sha256 {expected-sha}")]
+      [else
+       (verify-uploaded-asset! owner repo-name token uploaded-id expected-sha)]
+    ) ; end cond digest
+  ) ; end begin verify-uploaded-asset-digest!
+) ; end define verify-uploaded-asset-digest!
+
 (define (upload-source-release-real! owner repo-name tag asset-name asset-path local-sha token-file replace?)
   (begin
     (define token (read-github-token token-file))
@@ -1769,11 +1820,10 @@ body: {(safe-response-body body)}")]
     ) ; end when existing asset
     (unless existing-current?
       (println/flush f"Uploading source release asset: {asset-name}")
-      (let* ([uploaded (github-upload-asset! upload-url asset-name asset-path token)]
-             [uploaded-id (hash-ref uploaded 'id)])
-        (verify-uploaded-asset! owner repo-name token uploaded-id local-sha)
+      (let ([uploaded (github-upload-asset! upload-url asset-name asset-path token)])
+        (verify-uploaded-asset-digest! owner repo-name token uploaded local-sha)
         (println/flush f"Uploaded and verified source release asset: {asset-name}")
-      ) ; end let* uploaded asset
+      ) ; end let uploaded asset
     ) ; end unless existing current
   ) ; end begin upload-source-release-real!
 ) ; end define upload-source-release-real!
