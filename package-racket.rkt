@@ -2460,8 +2460,8 @@ jobs:
   ) ; end when needs racket root
   (println/flush f"Artifact dir: {(clean-path-string (cfg-artifact-dir c))}")
   (println/flush f"Work dir: {(clean-path-string (cfg-work-dir c))}")
-  (println/flush f"Install root: {(clean-path-string (cfg-install-root c))}")
   (when (needs-install-root? (cfg-targets c))
+    (println/flush f"Install root: {(clean-path-string (cfg-install-root c))}")
     (println/flush f"Prefix: {(cfg-prefix c)}")
   ) ; end when install-root target
   (when (cfg-bottle-root-url c)

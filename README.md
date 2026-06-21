@@ -114,7 +114,9 @@ racket tools/check-commit-message.rkt --message-file .commit
 
 ## Examples
 
-Create the Homebrew source archive and update the formula:
+### Common Entrypoints
+
+Create the Homebrew source archive and update the tap formula:
 
 ```sh
 racket package-racket.rkt \
@@ -124,8 +126,9 @@ racket package-racket.rkt \
   --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1
 ```
 
-Create the Homebrew source archive, upload it to the `CutieDeng/racket`
-`v9.2.1` release, then update the formula only if the upload succeeds:
+Create the Homebrew source archive, upload it to the configured
+`CutieDeng/racket` release, then update the tap formula only if the upload
+succeeds:
 
 ```sh
 racket package-racket.rkt \
@@ -135,6 +138,31 @@ racket package-racket.rkt \
   --homebrew-tap /opt/homebrew/Library/Taps/cutiedeng/homebrew-racket \
   --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1
 ```
+
+Upload an already generated source `.tgz` without rebuilding it:
+
+```sh
+racket package-racket.rkt \
+  --target source-release \
+  --artifact-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/artifacts
+```
+
+Generate the Homebrew tap CI workflows from `brew-ci-config.rktd` and overwrite
+the tap workflow files after validation:
+
+```sh
+racket package-racket.rkt \
+  --target brew-ci \
+  --racket-root /Users/cutiedeng/Y2026/M04/D03/racket.git \
+  --homebrew-tap /opt/homebrew/Library/Taps/cutiedeng/homebrew-racket \
+  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1
+```
+
+Use `--dry-run` with any entrypoint to print the resolved paths and planned
+actions without writing artifacts, replacing tap files, or uploading release
+assets.
+
+### Source Release Token
 
 The stable GitHub release settings live in `source-release-config.rktd`. The
 default token file is `secret/ghtoken.rktd`, and it must contain exactly one
@@ -153,14 +181,6 @@ $EDITOR secret/ghtoken.rktd
 chmod 600 secret/ghtoken.rktd
 ```
 
-Upload an already generated source `.tgz` without rebuilding it:
-
-```sh
-racket package-racket.rkt \
-  --target source-release \
-  --artifact-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/artifacts
-```
-
 For `brew`, `--formula` means the final tap formula path. When omitted, it is
 derived from the explicit `--homebrew-tap` as `Formula/racket@9.rb`. The script
 copies that file into `.build/brew/Formula/`, lets the brew helper update the
@@ -172,25 +192,26 @@ For this fork, the brew source archive intentionally includes `sandbox-lib` and
 its transitive runtime packages so `racket/sandbox` is available as part of the
 custom minimal profile.
 
-Generate the Homebrew tap CI workflows from `brew-ci-config.rktd` and overwrite
-the tap workflow files after validation. The generated `publish.yml` runs on
-pushes to `main`, builds macOS arm64 and Linux x64 bottles, uploads them to the
-release selected by `--bottle-root-url`, merges the bottle JSON back into
-`Formula/racket@9.rb`, then pushes a `[skip bottles]` Formula update to avoid a
-publish loop:
-
-```sh
-racket package-racket.rkt \
-  --target brew-ci \
-  --racket-root /Users/cutiedeng/Y2026/M04/D03/racket.git \
-  --homebrew-tap /opt/homebrew/Library/Taps/cutiedeng/homebrew-racket \
-  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1
-```
-
 Use `--brew-ci-config` to point at another workflow config file, and
 `--homebrew-tap` to explicitly select the tap that receives the generated
 workflows. The generated workflows pass `--bottle-root-url` to Homebrew as
 `--root-url`. If any bottle build fails, the publish job does not run.
+
+The generated `publish.yml` runs on pushes to `main`, builds macOS arm64 and
+Linux x64 bottles, uploads them to the release selected by
+`--bottle-root-url`, merges the bottle JSON back into `Formula/racket@9.rb`,
+then pushes a `[skip bottles]` Formula update to avoid a publish loop.
+
+### Package Prefix
+
+`--prefix` controls where the staged installation is rooted inside `apt` and
+`rpm` packages. For example, with `--prefix /opt/racket9`, the staged
+installation should be under `/tmp/racket-package-root/opt/racket9`.
+
+This value is not the Homebrew installation prefix. Homebrew chooses its own
+Cellar and opt paths when building the Formula, and `source-release` only
+uploads an existing `.tgz`. Therefore the command output prints `Prefix:` only
+for targets that actually stage an install root, such as `apt` and `rpm`.
 
 Create a Debian package from a Linux x64 build:
 
@@ -235,8 +256,6 @@ racket package-racket.rkt \
   --prefix /opt/racket9
 ```
 
-The `--install-root` directory must contain the package filesystem root. For
-example, with `--prefix /opt/racket9`, the staged installation should be under
-`/tmp/racket-package-root/opt/racket9`.
+The `--install-root` directory must contain the package filesystem root.
 
 Use `--dry-run` to print the commands without writing package artifacts.
