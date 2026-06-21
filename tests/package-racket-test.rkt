@@ -97,7 +97,7 @@ end
   (write-text!
    path
    f"#hash((source-release-repo . \"CutieDeng/racket\")
-      (source-release-tag . \"v9.2.1\")
+      (source-release-tag . \"v9.2.1.1\")
       (source-release-asset . \"{asset-name}\")
       (source-release-token-file . \"missing-token.rktd\")
       (replace-release-asset . #t))
@@ -107,7 +107,7 @@ end
     (write-text!
      path
    f"#hash((apt-release-repo . \"CutieDeng/racket\")
-      (apt-release-tag . \"v9.2.1\")
+      (apt-release-tag . \"v9.2.1.1\")
       (apt-release-asset . \"{asset-name}\")
       (apt-release-token-file . \"missing-token.rktd\")
       (replace-release-asset . #t))
@@ -240,7 +240,7 @@ actual output:
        (define text (combined-output out err))
        (check-contains text "Targets: apt")
        (check-contains text "APT package:")
-       (check-contains text "racket9_9.2.1-1_amd64.deb")
+       (check-contains text "racket9_9.2.1.1-1_amd64.deb")
        (check-not-contains text "APT release config:")
        (check-false (directory-exists? artifact-dir))
        (check-false (directory-exists? work-dir))
@@ -275,7 +275,7 @@ actual output:
     (with-temp-dir
      (lambda (tmp)
        (define artifact-dir (build-path tmp "artifacts"))
-       (define deb-name "racket9_9.2.1-1_amd64.deb")
+       (define deb-name "racket9_9.2.1.1-1_amd64.deb")
        (define deb-path (build-path artifact-dir deb-name))
        (define config-path (build-path tmp "apt-release-config.rktd"))
        (make-fake-deb! deb-path)
@@ -301,7 +301,7 @@ actual output:
        (define racket-root (make-fake-racket-root! tmp))
        (define artifact-dir (build-path tmp "artifacts"))
        (define work-dir (build-path tmp "work"))
-       (define deb-name "racket9_9.2.1-1_amd64.deb")
+       (define deb-name "racket9_9.2.1.1-1_amd64.deb")
        (define config-path (build-path tmp "apt-release-config.rktd"))
        (write-apt-release-config! config-path deb-name)
        (define-values (out err)
@@ -355,7 +355,7 @@ actual output:
     (with-temp-dir
      (lambda (tmp)
        (define artifact-dir (build-path tmp "artifacts"))
-       (define asset-name "racket-minimal-9.2.1-src.tgz")
+       (define asset-name "racket-minimal-9.2.1.1-src.tgz")
        (define config-path (build-path tmp "source-release-config.rktd"))
        (write-text! (build-path artifact-dir asset-name) "source archive")
        (write-source-release-config! config-path asset-name)
@@ -381,7 +381,7 @@ actual output:
        (define artifact-dir (build-path tmp "artifacts"))
        (define work-dir (build-path tmp "work"))
        (define tap-dir (make-fake-homebrew-tap! tmp))
-       (define asset-name "racket-minimal-9.2.1-src.tgz")
+       (define asset-name "racket-minimal-9.2.1.1-src.tgz")
        (define config-path (build-path tmp "source-release-config.rktd"))
        (write-source-release-config! config-path asset-name)
        (define-values (out err)
@@ -390,7 +390,7 @@ actual output:
                 "--target" "source-release"
                 "--racket-root" (path-arg racket-root)
                 "--homebrew-tap" (path-arg tap-dir)
-                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1"
+                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1.1"
                 "--artifact-dir" (path-arg artifact-dir)
                 "--work-dir" (path-arg work-dir)
                 "--source-release-config" (path-arg config-path)
@@ -419,14 +419,14 @@ actual output:
          (run-package
           (list "--target" "brew-ci"
                 "--racket-root" (path-arg racket-root)
-                "--formula-version" "9.2.1.1"
+                "--formula-version" "9.2.1.2"
                 "--homebrew-tap" (path-arg tap-dir)
-                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1"
+                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1.1"
                 "--brew-ci-config" (path-arg config-path)
                 "--dry-run")))
        (check-not-equal? exit-code 0)
        (check-contains (combined-output out err)
-                       "--bottle-root-url must target formula-version v9.2.1.1")
+                       "--bottle-root-url must target formula-version v9.2.1.2")
       ) ; end lambda temp dir
     ) ; end with-temp-dir
   ) ; end test-case bottle root version mismatch
@@ -444,7 +444,7 @@ actual output:
           (list "--target" "brew-ci"
                 "--racket-root" (path-arg racket-root)
                 "--homebrew-tap" (path-arg tap-dir)
-                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1"
+                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1.1"
                 "--work-dir" (path-arg work-dir)
                 "--brew-ci-config" (path-arg config-path)
                 "--dry-run")))
@@ -474,7 +474,7 @@ actual output:
           (list "--target" "brew-ci"
                 "--racket-root" (path-arg racket-root)
                 "--homebrew-tap" (path-arg tap-dir)
-                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1"
+                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1.1"
                 "--work-dir" (path-arg work-dir)
                 "--brew-ci-config" (path-arg config-path))))
        (define text (combined-output out err))

@@ -59,7 +59,7 @@ agents must not make production changes directly in `homebrew-racket`; change
 `package-config.rktd` contains the explicit package-manager version:
 
 ```racket
-#hash((formula-version . "9.2.1"))
+#hash((formula-version . "9.2.1.1"))
 ```
 
 `formula-version` is the version visible to package managers and generated
@@ -172,7 +172,7 @@ racket package-racket.rkt \
   --target brew \
   --racket-root /Users/cutiedeng/Y2026/M04/D03/racket.git \
   --homebrew-tap /opt/homebrew/Library/Taps/cutiedeng/homebrew-racket \
-  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1
+  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1.1
 ```
 
 Create the Homebrew source archive and overwrite the tap formula from the
@@ -184,7 +184,7 @@ racket package-racket.rkt \
   --formula-build-mode full \
   --racket-root /Users/cutiedeng/Y2026/M04/D03/racket.git \
   --homebrew-tap /opt/homebrew/Library/Taps/cutiedeng/homebrew-racket \
-  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1
+  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1.1
 ```
 
 Create the Homebrew source archive, upload it to the configured
@@ -197,7 +197,7 @@ racket package-racket.rkt \
   --target source-release \
   --racket-root /Users/cutiedeng/Y2026/M04/D03/racket.git \
   --homebrew-tap /opt/homebrew/Library/Taps/cutiedeng/homebrew-racket \
-  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1
+  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1.1
 ```
 
 Upload an already generated source `.tgz` without rebuilding it:
@@ -242,7 +242,7 @@ racket package-racket.rkt \
   --target brew-ci \
   --racket-root /Users/cutiedeng/Y2026/M04/D03/racket.git \
   --homebrew-tap /opt/homebrew/Library/Taps/cutiedeng/homebrew-racket \
-  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1
+  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1.1
 ```
 
 Use `--dry-run` with any entrypoint to print the resolved paths and planned
