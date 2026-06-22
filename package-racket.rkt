@@ -4040,7 +4040,9 @@ and regenerate this repository instead.
 ## Build
 
 The generated workflow builds Racket on `{runner}` for `{arch}` and uploads
-`{zip-name}` as a GitHub Actions artifact. Release asset publishing is
+`{zip-name}` as a GitHub Actions artifact. It runs `nmake all` before the
+configured `nmake` target so a clean CI checkout never tries to install missing
+build outputs. Release asset publishing is
 disabled unless `windows-ci-config.rktd` enables `publish-release`.
 
 ## Regenerate
@@ -4254,7 +4256,7 @@ jobs:
           call \"%VCVARSALL_BAT%\" %MSVC_ARCH%
           cd /d \"%SRC_DIR%\"
           if exist Makefile (
-            nmake /f Makefile %NMAKE_TARGET% JOBS=%BUILD_JOBS%
+            echo Reusing existing top-level Makefile in %CD%
           ) else if exist src\\winfig.bat (
             dir src\\winfig.bat
             dir src\\Makefile.nt
@@ -4265,16 +4267,53 @@ jobs:
               dir
               exit /b 1
             )
-            nmake /f Makefile %NMAKE_TARGET% JOBS=%BUILD_JOBS%
           ) else (
             dir
             echo Neither top-level Makefile nor src\\winfig.bat exists in %SRC_DIR%
             exit /b 1
           )
+          for %%D in (bin lib share include etc) do (
+            if exist \"%%D\" (
+              if not exist \"%%D\\\" (
+                echo Expected install layout directory but found non-directory: %%D
+                exit /b 1
+              )
+            ) else (
+              mkdir \"%%D\"
+            )
+          )
+          dir lib
+          call :RunNmake all
+          if errorlevel 1 exit /b %errorlevel%
+          if /I \"%NMAKE_TARGET%\"==\"all\" goto after_nmake
+          call :RunNmake %NMAKE_TARGET%
+          if errorlevel 1 exit /b %errorlevel%
+          goto after_nmake
+          :RunNmake
+          echo Running nmake target %*
+          nmake /f Makefile %* JOBS=%BUILD_JOBS%
+          exit /b %errorlevel%
+          :after_nmake
           \"@
           Set-Content -Path build-racket.cmd -Value $buildScript -Encoding ASCII
           cmd.exe /c build-racket.cmd
           if ($LASTEXITCODE -ne 0) {{
+            if ($env:SRC_DIR) {{
+              Write-Host \"Source root after failed nmake:\"
+              Get-ChildItem $env:SRC_DIR -Force | Select-Object -First 80 Mode, Length, FullName
+              foreach ($relative in @(\"bin\", \"lib\", \"share\", \"include\", \"etc\", \"cs\\c\", \"cs\\c\\lib\")) {{
+                $candidate = Join-Path $env:SRC_DIR $relative
+                if (Test-Path $candidate) {{
+                  Write-Host \"Directory snapshot: $candidate\"
+                  Get-ChildItem $candidate -Force | Select-Object -First 80 Mode, Length, FullName
+                }} else {{
+                  Write-Host \"Missing directory snapshot target: $candidate\"
+                }}
+              }}
+              Write-Host \"Known Racket CS DLL files after failed nmake:\"
+              Get-ChildItem $env:SRC_DIR -Recurse -Filter libracketcs*.dll -ErrorAction SilentlyContinue |
+                Select-Object -First 80 Mode, Length, FullName
+            }}
             throw \"nmake build failed with exit $LASTEXITCODE\"
           }}
 
