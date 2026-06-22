@@ -85,6 +85,7 @@
    rpm-repo-gpgcheck?
    replace-release-asset
    ruby-bin
+   with-docs?
    brew-packages
    make-args)
   #:transparent)
@@ -2729,6 +2730,16 @@ jobs:
     "errortrace-lib"
     "source-syntax"))
 
+(define brew-doc-packages
+  '("racket-index"
+    "scribble-lib"
+    "scribble-html-lib"
+    "net-lib"
+    "srfi-lite-lib"
+    "compatibility-lib"
+    "planet-lib"
+    "draw-lib"))
+
 (define brew-default-packages
   '("base"
     "racket-lib"
@@ -2771,23 +2782,54 @@ jobs:
     ("errortrace-lib" . root)
     ("source-syntax" . "syntax")
     ("compiler-lib" . root)
-    ("zo-lib" . root)))
+    ("zo-lib" . root)
+    ("racket-index" . root)
+    ("scribble-lib" . root)
+    ("scribble-html-lib" . root)
+    ("net-lib" . root)
+    ("srfi-lite-lib" . root)
+    ("compatibility-lib" . root)
+    ("planet-lib" . root)
+    ("draw-lib" . root)))
 
-(define brew-required-package-files
+(define brew-core-required-package-files
   '("share/pkgs/sandbox-lib/racket/sandbox.rkt"
     "share/pkgs/sandbox-lib/scheme/sandbox.rkt"
     "share/pkgs/errortrace-lib/errortrace/stacktrace.rkt"
     "share/pkgs/source-syntax/source-syntax.rkt"))
 
-(define brew-required-link-needles
+(define brew-doc-required-package-files
+  '("share/pkgs/racket-index/help/info.rkt"
+    "share/pkgs/racket-index/help/private/command.rkt"
+    "share/pkgs/racket-index/help/private/search.rkt"
+    "share/pkgs/scribble-lib/scribble/xref.rkt"
+    "share/pkgs/scribble-html-lib/scribble/html.rkt"
+    "share/pkgs/net-lib/net/sendurl.rkt"
+    "share/pkgs/draw-lib/racket/draw/gif.rkt"))
+
+(define brew-core-required-link-needles
   '("root (#\"pkgs\" #\"sandbox-lib\")"
     "root (#\"pkgs\" #\"errortrace-lib\")"
     "\"syntax\" (#\"pkgs\" #\"source-syntax\")"))
 
-(define brew-required-pkgs-db-needles
+(define brew-doc-required-link-needles
+  '("root (#\"pkgs\" #\"racket-index\")"
+    "root (#\"pkgs\" #\"scribble-lib\")"
+    "root (#\"pkgs\" #\"scribble-html-lib\")"
+    "root (#\"pkgs\" #\"net-lib\")"
+    "root (#\"pkgs\" #\"draw-lib\")"))
+
+(define brew-core-required-pkgs-db-needles
   '("\"sandbox-lib\""
     "\"errortrace-lib\""
     "\"source-syntax\""))
+
+(define brew-doc-required-pkgs-db-needles
+  '("\"racket-index\""
+    "\"scribble-lib\""
+    "\"scribble-html-lib\""
+    "\"net-lib\""
+    "\"draw-lib\""))
 
 (define brew-racket-lib-excluded-dependency
   "(\"racket-aarch64-macosx-4\" #:platform \"aarch64-macosx\")")
@@ -2796,10 +2838,40 @@ jobs:
   f"    {brew-racket-lib-excluded-dependency}
 ")
 
+(define brew-draw-lib-excluded-dependencies
+  '("(\"draw-i386-macosx-3\" #:platform \"i386-macosx\")"
+    "(\"draw-x86_64-macosx-3\" #:platform \"x86_64-macosx\")"
+    "(\"draw-ppc-macosx-3\" #:platform \"ppc-macosx\")"
+    "(\"draw-aarch64-macosx-3\" #:platform \"aarch64-macosx\")"
+    "(\"draw-win32-i386-3\" #:platform \"win32\\\\i386\")"
+    "(\"draw-win32-x86_64-3\" #:platform \"win32\\\\x86_64\")"
+    "(\"draw-win32-arm64-3\" #:platform \"win32\\\\arm64\")"
+    "(\"draw-x86_64-linux-natipkg-3\" #:platform \"x86_64-linux-natipkg\")"
+    "(\"draw-x11-x86_64-linux-natipkg\" #:platform \"x86_64-linux-natipkg\")"
+    "(\"draw-ttf-x86_64-linux-natipkg\" #:platform \"x86_64-linux-natipkg\")"
+    "(\"draw-aarch64-linux-natipkg-3\" #:platform \"aarch64-linux-natipkg\")"
+    "(\"draw-x11-aarch64-linux-natipkg\" #:platform \"aarch64-linux-natipkg\")"
+    "(\"draw-ttf-aarch64-linux-natipkg\" #:platform \"aarch64-linux-natipkg\")"))
+
 (define (brew-source-packages c)
   (remove-duplicates
-   (append brew-default-packages brew-custom-core-packages (cfg-brew-packages c))
+   (append brew-default-packages
+           brew-custom-core-packages
+           (if (cfg-with-docs? c) brew-doc-packages '())
+           (cfg-brew-packages c))
    string=?))
+
+(define (brew-required-package-files c)
+  (append brew-core-required-package-files
+          (if (cfg-with-docs? c) brew-doc-required-package-files '())))
+
+(define (brew-required-link-needles c)
+  (append brew-core-required-link-needles
+          (if (cfg-with-docs? c) brew-doc-required-link-needles '())))
+
+(define (brew-required-pkgs-db-needles c)
+  (append brew-core-required-pkgs-db-needles
+          (if (cfg-with-docs? c) brew-doc-required-pkgs-db-needles '())))
 
 (define (release-catalog-url version)
   (match (regexp-match #rx"^([0-9]+)[.]([0-9]+)" version)
@@ -3038,6 +3110,41 @@ information.
   ) ; end begin patch-brew-racket-lib-info!
 ) ; end define patch-brew-racket-lib-info!
 
+(define (remove-exact-dependency! who info-path content dependency)
+  (begin
+    (define dependency-rx (regexp (regexp-quote dependency)))
+    (define dependency-count (regexp-match-count dependency-rx content))
+    (unless (= dependency-count 1)
+      (raise-user-error who
+                        f"expected exactly one excluded platform dependency in {(clean-path-string info-path)}, found {dependency-count}: {dependency}")
+    ) ; end unless exactly one dependency
+    (regexp-replace dependency-rx content "")
+  ) ; end begin remove-exact-dependency!
+) ; end define remove-exact-dependency!
+
+(define (patch-brew-draw-lib-info! pkgs-dir)
+  (begin
+    (define info-path (build-path pkgs-dir "draw-lib" "info.rkt"))
+    (assert-file 'patch-brew-draw-lib-info! info-path)
+    (define patched-content
+      (for/fold ([content (file->string info-path)])
+                ([dependency (in-list brew-draw-lib-excluded-dependencies)])
+        (remove-exact-dependency! 'patch-brew-draw-lib-info!
+                                  info-path
+                                  content
+                                  dependency)
+      ) ; end for/fold remove dependencies
+    ) ; end define patched-content
+    (for ([dependency (in-list brew-draw-lib-excluded-dependencies)])
+      (when (string-contains? patched-content dependency)
+        (raise-user-error 'patch-brew-draw-lib-info!
+                          f"excluded platform dependency still present after patch: {(clean-path-string info-path)}")
+      ) ; end when dependency still present
+    ) ; end for dependency check
+    (write-text-file! info-path patched-content)
+  ) ; end begin patch-brew-draw-lib-info!
+) ; end define patch-brew-draw-lib-info!
+
 (define (copy-brew-licenses! racket-root dest-share)
   (begin
     (for ([name (in-list '("LICENSE-APACHE.txt"
@@ -3086,6 +3193,9 @@ information.
                        (build-path pkgs-dir name))
     ) ; end for package copy
     (patch-brew-racket-lib-info! pkgs-dir)
+    (when (cfg-with-docs? c)
+      (patch-brew-draw-lib-info! pkgs-dir)
+    ) ; end when docs require draw-lib metadata patch
     dist-root
   ) ; end begin stage-brew-source!
 ) ; end define stage-brew-source!
@@ -3169,18 +3279,18 @@ information.
 (define (validate-brew-tgz-content! c)
   (begin
     (assert-executable 'validate-brew-tgz! (cfg-tar-bin c))
-    (for ([relative-path (in-list brew-required-package-files)])
+    (for ([relative-path (in-list (brew-required-package-files c))])
       (validate-brew-tgz-file! c relative-path)
     ) ; end for required package files
     (define links-content (brew-tgz-file-content c "share/links.rktd"))
-    (for ([needle (in-list brew-required-link-needles)])
+    (for ([needle (in-list (brew-required-link-needles c))])
       (unless (string-contains? links-content needle)
         (raise-user-error 'validate-brew-tgz!
                           f"brew source tgz links.rktd is missing: {needle}")
       ) ; end unless link needle
     ) ; end for required links
     (define pkgs-db-content (brew-tgz-file-content c "share/pkgs/pkgs.rktd"))
-    (for ([needle (in-list brew-required-pkgs-db-needles)])
+    (for ([needle (in-list (brew-required-pkgs-db-needles c))])
       (unless (string-contains? pkgs-db-content needle)
         (raise-user-error 'validate-brew-tgz!
                           f"brew source tgz pkgs.rktd is missing: {needle}")
@@ -3192,6 +3302,16 @@ information.
       (raise-user-error 'validate-brew-tgz!
                         f"brew source tgz racket-lib/info.rkt still depends on excluded package: {brew-racket-lib-excluded-dependency}")
     ) ; end when excluded dependency still present
+    (when (cfg-with-docs? c)
+      (define draw-lib-info-content
+        (brew-tgz-file-content c "share/pkgs/draw-lib/info.rkt"))
+      (for ([dependency (in-list brew-draw-lib-excluded-dependencies)])
+        (when (string-contains? draw-lib-info-content dependency)
+          (raise-user-error 'validate-brew-tgz!
+                            f"brew source tgz draw-lib/info.rkt still depends on excluded package: {dependency}")
+        ) ; end when excluded draw dependency still present
+      ) ; end for excluded draw dependency
+    ) ; end when docs enabled
   ) ; end begin validate-brew-tgz-content!
 ) ; end define validate-brew-tgz-content!
 
@@ -3297,6 +3417,15 @@ information.
 (define (formula-version-line c)
   f"  version \"{(cfg-formula-version c)}\"")
 
+(define (formula-docs-test-content rb-bin)
+  f"
+    output = shell_output(\"{rb-bin}/raco docs --help\")
+    assert_match \"search-terms\", output
+
+    output = shell_output(\"{rb-bin}/raco doc --help\")
+    assert_match \"search-terms\", output
+")
+
 (define (formula-sha256 formula-path)
   (begin
     (define content (file->string formula-path))
@@ -3325,6 +3454,15 @@ information.
                           f"formula is missing expected content: {needle}")
       ) ; end unless needle present
     ) ; end for formula needle
+    (when (cfg-with-docs? c)
+      (for ([needle (in-list (list "raco docs --help"
+                                   "raco doc --help"))])
+        (unless (string-contains? content needle)
+          (raise-user-error 'validate-formula-file!
+                            f"formula with --within-docs is missing expected content: {needle}")
+        ) ; end unless docs needle present
+      ) ; end for docs formula needle
+    ) ; end when docs enabled
     (unless (= 1 (regexp-match-count #px"(?m:^  sha256 \"[0-9a-f]{64}\")" content))
       (raise-user-error 'validate-formula-file!
                         f"formula must contain exactly one source sha256 line: {(clean-path-string formula-path)}")
@@ -3432,9 +3570,32 @@ information.
     (write-text-file!
      formula-path
      with-version)
+    (ensure-formula-docs-test! c formula-path)
     (validate-formula-file! c formula-path)
   ) ; end begin set-formula-source!
 ) ; end define set-formula-source!
+
+(define (ensure-formula-docs-test! c formula-path)
+  (begin
+    (when (cfg-with-docs? c)
+      (assert-nonempty-file 'ensure-formula-docs-test! formula-path)
+      (define content (file->string formula-path))
+      (unless (string-contains? content "raco docs --help")
+        (unless (= 1 (regexp-match-count #px"(?m:^  test do\n)" content))
+          (raise-user-error 'ensure-formula-docs-test!
+                            f"formula must contain exactly one test block for docs test insertion: {(clean-path-string formula-path)}")
+        ) ; end unless exactly one test block
+        (write-text-file!
+         formula-path
+         (regexp-replace #px"(?m:^  test do\n)"
+                         content
+                         (string-append "  test do\n"
+                                        (formula-docs-test-content (ruby-interpolate "bin")))))
+      ) ; end unless docs test already present
+      (validate-formula-file! c formula-path)
+    ) ; end when docs enabled
+  ) ; end begin ensure-formula-docs-test!
+) ; end define ensure-formula-docs-test!
 
 (define (ruby-interpolate expression)
   (string-append "#{" expression "}"))
@@ -3554,6 +3715,7 @@ information.
     require \"timeout\"
 
     assert_match \"{version}\", shell_output(\"{rb-bin}/racket -e '(displayln (version))'\")
+{(if (cfg-with-docs? c) (formula-docs-test-content rb-bin) "")}
 
     output = shell_output(\"{rb-bin}/racket -e '(require racket/pvector) (displayln (pvector->list (pvector 1 2 3)))'\")
     assert_match \"(1 2 3)\", output
@@ -3669,6 +3831,7 @@ end
     (println/flush f"Would set Formula source URL: {(formula-source-url c)}")
     (println/flush f"Would set Formula bottle root URL: {(cfg-bottle-root-url c)}")
     (println/flush f"Would use Formula build mode: {(cfg-formula-build-mode c)}")
+    (println/flush f"Would include brew docs: {(if (cfg-with-docs? c) "yes" "no")}")
     (println/flush f"Would include brew package count: {(number->string (length packages))}")
     (if (cfg-update-formula? c)
         (begin
@@ -5365,6 +5528,7 @@ jobs:
   (define rpm-repo-gpgcheck-arg 'unset)
   (define replace-release-asset-arg 'unset)
   (define ruby-bin-arg "ruby")
+  (define with-docs? #f)
   (define brew-package-args '())
   (define make-args '())
   (command-line
@@ -5492,6 +5656,8 @@ jobs:
                                  (set! replace-release-asset-arg #f)]
    [("--ruby-bin") path "Ruby executable for YAML validation (default: ruby)"
                   (set! ruby-bin-arg path)]
+   [("--within-docs" "--with-docs") "Include raco docs support and the core documentation runtime package group in the Homebrew source archive"
+                                   (set! with-docs? #t)]
    #:multi
    [("--target") target "Packaging target: brew, brew-ci, source-release, apt, apt-release, rpm, rpm-spec, rpm-ci, rpm-repo, or all. May be repeated."
 		(set! target-args (append target-args (list target)))]
@@ -5674,6 +5840,7 @@ jobs:
        rpm-repo-gpgcheck?
        replace-release-asset-arg
        ruby-bin-arg
+       with-docs?
        brew-package-args
        make-args
   ) ; end cfg
@@ -5718,6 +5885,7 @@ jobs:
   ) ; end when bottle root url
   (when (member "brew" (cfg-targets c) string=?)
     (println/flush f"Formula build mode: {(cfg-formula-build-mode c)}")
+    (println/flush f"Brew docs: {(if (cfg-with-docs? c) "enabled" "disabled")}")
   ) ; end when brew target
   (when (member "source-release" (cfg-targets c) string=?)
     (println/flush f"Source release config: {(clean-path-string (cfg-source-release-config c))}")
@@ -5781,6 +5949,7 @@ jobs:
                     #:rpm-system [rpm-system "el9"]
                     #:rpm-release [rpm-release "1"]
                     #:rpm-arch [rpm-arch "x86_64"]
+                    #:with-docs? [with-docs? #f]
                     #:brew-packages [brew-packages '()])
     (cfg targets
          (build-path test-root "racket-root")
@@ -5842,6 +6011,7 @@ jobs:
          #f
          'unset
          "ruby"
+         with-docs?
          brew-packages
          '())
   ) ; end define test-cfg
@@ -5884,7 +6054,45 @@ jobs:
     (check-true (and (member "custom-extra" packages string=?) #t))
     (check-equal? (count (lambda (name) (string=? name "sandbox-lib")) packages) 1)
     (check-false (member "racket-aarch64-macosx-4" packages string=?))
+    (check-false (member "racket-index" packages string=?))
+    (define docs-packages (brew-source-packages (test-cfg #:with-docs? #t)))
+    (for ([name (in-list '("racket-index"
+                           "scribble-lib"
+                           "scribble-html-lib"
+                           "net-lib"
+                           "srfi-lite-lib"
+                           "compatibility-lib"
+                           "planet-lib"
+                           "draw-lib"))])
+      (check-true (and (member name docs-packages string=?) #t) name)
+      (check-equal? (brew-package-link-name name) 'root)
+    ) ; end for docs package
+    (check-false (member "draw-aarch64-linux-natipkg-3" docs-packages string=?))
   ) ; end test-case brew package closure
+
+  (test-case "brew docs patch removes draw platform package dependencies exactly"
+    (define pkgs-dir (make-temporary-file "package-racket-draw-pkgs~a" 'directory))
+    (dynamic-wind
+      void
+      (lambda ()
+        (make-directory* (build-path pkgs-dir "draw-lib"))
+        (write-text-file!
+         (build-path pkgs-dir "draw-lib" "info.rkt")
+         (string-append "(define deps '(\"base\" "
+                        (string-join brew-draw-lib-excluded-dependencies " ")
+                        "))\n"))
+        (patch-brew-draw-lib-info! pkgs-dir)
+        (define patched-content
+          (file->string (build-path pkgs-dir "draw-lib" "info.rkt")))
+        (for ([dependency (in-list brew-draw-lib-excluded-dependencies)])
+          (check-false (string-contains? patched-content dependency))
+        ) ; end for removed draw dependency
+      ) ; end lambda patch draw info
+      (lambda ()
+        (delete-directory/files pkgs-dir)
+      ) ; end lambda cleanup draw info
+    ) ; end dynamic-wind draw info
+  ) ; end test-case brew docs patch
 
   (test-case "rpm system release and arch stay explicit"
     (define el9 (test-cfg #:rpm-system "el9"
@@ -6061,7 +6269,26 @@ end
     ) ; end for formula needle
     (check-true (formula-version-before-sha? content))
     (check-false (string-contains? content "assert_match(/\\e\\["))
+    (check-false (string-contains? content "raco docs --help"))
   ) ; end test-case full Formula template
+
+  (test-case "within-docs Formula template checks raco docs command"
+    (define content (formula-content/full (test-cfg #:with-docs? #t) test-sha256))
+    (check-true (string-contains? content "raco docs --help"))
+    (check-true (string-contains? content "raco doc --help"))
+    (check-true (string-contains? content "assert_match \"search-terms\", output"))
+    (define formula-path (make-temporary-file "package-racket-formula~a.rb"))
+    (dynamic-wind
+      void
+      (lambda ()
+        (write-text-file! formula-path content)
+        (validate-formula-file! (test-cfg #:with-docs? #t) formula-path)
+      ) ; end lambda validate formula
+      (lambda ()
+        (delete-file formula-path)
+      ) ; end lambda cleanup formula
+    ) ; end dynamic-wind formula
+  ) ; end test-case within-docs Formula template
 
   (test-case "brew CI config and workflows keep bottle publication contract"
     (validate-brew-ci-config! test-brew-ci-config)

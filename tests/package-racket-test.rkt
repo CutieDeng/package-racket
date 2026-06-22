@@ -814,6 +814,33 @@ actual output:
     ) ; end with-temp-dir
   ) ; end test-case brew plus source-release dry-run
 
+  (test-case "brew within-docs dry-run reports optional docs package group"
+    (with-temp-dir
+     (lambda (tmp)
+       (define racket-root (make-fake-racket-root! tmp))
+       (define artifact-dir (build-path tmp "artifacts"))
+       (define work-dir (build-path tmp "work"))
+       (define tap-dir (make-fake-homebrew-tap! tmp))
+       (define-values (out err)
+         (run-package/success
+          (list "--target" "brew"
+                "--racket-root" (path-arg racket-root)
+                "--homebrew-tap" (path-arg tap-dir)
+                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1"
+                "--artifact-dir" (path-arg artifact-dir)
+                "--work-dir" (path-arg work-dir)
+                "--within-docs"
+                "--dry-run")))
+       (define text (combined-output out err))
+       (check-contains text "Targets: brew")
+       (check-contains text "Brew docs: enabled")
+       (check-contains text "Would include brew docs: yes")
+       (check-false (directory-exists? artifact-dir))
+       (check-false (directory-exists? work-dir))
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case brew within-docs dry-run
+
   (test-case "brew-ci accepts release tag independent of formula-version"
     (with-temp-dir
      (lambda (tmp)

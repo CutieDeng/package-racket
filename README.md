@@ -236,6 +236,17 @@ racket package-racket.rkt \
   --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1
 ```
 
+Create the Homebrew source archive with `raco docs` support:
+
+```sh
+racket package-racket.rkt \
+  --target brew \
+  --within-docs \
+  --racket-root /Users/cutiedeng/Y2026/M04/D03/racket.git \
+  --homebrew-tap /opt/homebrew/Library/Taps/cutiedeng/homebrew-racket \
+  --bottle-root-url https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1
+```
+
 Create the Homebrew source archive, upload it to the configured
 `CutieDeng/racket` release, then update the tap formula only if the upload
 succeeds:
@@ -350,10 +361,17 @@ tag embedded in `--bottle-root-url`.
 For this fork, the brew source archive intentionally includes `sandbox-lib` and
 its transitive runtime packages so `racket/sandbox` is available as part of the
 custom minimal profile.
+By default, the brew source archive does not include the `raco docs` command
+or its documentation runtime package group. Pass `--within-docs` to include
+`racket-index`, `scribble-lib`, `net-lib`, `draw-lib`, and their required
+runtime packages; with that option, generated Formula tests also verify
+`raco docs --help` and the unambiguous `raco doc --help` prefix.
 The brew archive also excludes the official macOS arm64 binary platform package
 and rewrites the staged `racket-lib/info.rkt` dependency entry for it, because
 Homebrew builds from source and links platform libraries through Formula
 dependencies instead.
+When `--within-docs` is enabled, the staged `draw-lib/info.rkt` platform native
+package dependencies are removed with the same source-build rationale.
 
 Use `--brew-ci-config` to point at another workflow config file, and
 `--homebrew-tap` to explicitly select the tap that receives the generated
