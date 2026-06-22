@@ -762,6 +762,11 @@ actual output:
        (check-contains workflow-content "apt-get install -y \"${deb_files[0]}\"")
        (check-contains workflow-content "racket -e '(displayln f\"deb-ci-ok\")'")
        (check-contains workflow-content "racket -e '(require readline/readline) (displayln f\"deb-readline-ok\")'")
+       (check-contains workflow-content "GH_REPO: ${{ github.repository }}")
+       (check-contains workflow-content "--repo \"$GITHUB_REPOSITORY\"")
+       (check-contains workflow-content "Downloaded DEB files")
+       (check-contains workflow-content "Release assets before upload")
+       (check-contains workflow-content "Release assets after upload")
        (check-contains workflow-content "gh release upload")
       ) ; end lambda temp dir
     ) ; end with-temp-dir
@@ -799,6 +804,8 @@ actual output:
        (check-contains workflow-content "Downloaded RPM files")
        (check-contains workflow-content "Release assets before upload")
        (check-contains workflow-content "Release assets after upload")
+       (check-contains workflow-content "GH_REPO: ${{ github.repository }}")
+       (check-contains workflow-content "--repo \"$GITHUB_REPOSITORY\"")
        (check-contains workflow-content "racket -e '(displayln f\"rpm-ci-ok\")'")
        (check-contains workflow-content "racket -e '(require readline/readline) (displayln f\"rpm-readline-ok\")'")
        (check-contains workflow-content "gh release upload")

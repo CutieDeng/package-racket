@@ -3228,6 +3228,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: {token-expr}
+          GH_REPO: ${{{{ github.repository }}}}
           RELEASE_TAG: {(yaml-single-quote release-tag)}
           RELEASE_NAME: {(yaml-single-quote release-name)}
           CREATE_RELEASE: {(yaml-single-quote (if create-release? "true" "false"))}
@@ -3257,16 +3258,16 @@ jobs:
           done
           printf 'Release assets before upload for %s:\\n' \"$RELEASE_TAG\"
           gh api \"repos/${{GITHUB_REPOSITORY}}/releases/tags/$RELEASE_TAG\" --jq '.assets[].name' || true
-          if ! gh release view \"$RELEASE_TAG\" >/dev/null 2>&1; then
+          if ! gh release view \"$RELEASE_TAG\" --repo \"$GITHUB_REPOSITORY\" >/dev/null 2>&1; then
             if [ \"$CREATE_RELEASE\" != true ]; then
               echo \"GitHub release does not exist and create-release is false: $RELEASE_TAG\"
               exit 1
             fi
-            gh release create \"$RELEASE_TAG\" --title \"$RELEASE_NAME\" --notes \"Generated RPM artifacts for $PACKAGE_NAME $PACKAGE_VERSION.\"
+            gh release create \"$RELEASE_TAG\" --repo \"$GITHUB_REPOSITORY\" --title \"$RELEASE_NAME\" --notes \"Generated RPM artifacts for $PACKAGE_NAME $PACKAGE_VERSION.\"
           fi
           printf 'Uploading RPM files to release %s:\\n' \"$RELEASE_TAG\"
           printf '  %s\\n' {rpm-files-array}
-          gh release upload \"$RELEASE_TAG\" {rpm-files-array} --clobber
+          gh release upload \"$RELEASE_TAG\" --repo \"$GITHUB_REPOSITORY\" {rpm-files-array} --clobber
           printf 'Release assets after upload for %s:\\n' \"$RELEASE_TAG\"
           gh api \"repos/${{GITHUB_REPOSITORY}}/releases/tags/$RELEASE_TAG\" --jq '.assets[].name'
 "
@@ -3303,7 +3304,9 @@ jobs:
                                  "actions/checkout@v6"
                                  "actions/upload-artifact@v6"
                                  "actions/download-artifact@v6"
+                                 "GH_REPO:"
                                  "gh release upload"
+                                 "--repo \"$GITHUB_REPOSITORY\""
                                  "contents: write"
                                  "Downloaded RPM files"
                                  "Release assets before upload"
@@ -3687,6 +3690,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: {token-expr}
+          GH_REPO: ${{{{ github.repository }}}}
           RELEASE_TAG: {(yaml-single-quote release-tag)}
           RELEASE_NAME: {(yaml-single-quote release-name)}
           CREATE_RELEASE: {(yaml-single-quote (if create-release? "true" "false"))}
@@ -3696,6 +3700,8 @@ jobs:
         run: |
           set -euo pipefail
           command -v gh >/dev/null 2>&1 || {{ echo 'gh CLI is required on the publish runner'; exit 1; }}
+          gh --version | sed -n '1,2p'
+          gh auth status -h github.com || true
           mapfile -t deb_files < <(find \"$GITHUB_WORKSPACE/release-assets\" -maxdepth 2 -name '*.deb' -type f | sort)
           printf 'Downloaded DEB files (%s):\\n' \"{deb-files-count}\"
           printf '  %s\\n' {deb-files-array}
@@ -3712,14 +3718,20 @@ jobs:
             fi
             seen[\"$asset_name\"]=1
           done
-          if ! gh release view \"$RELEASE_TAG\" >/dev/null 2>&1; then
+          printf 'Release assets before upload for %s:\\n' \"$RELEASE_TAG\"
+          gh api \"repos/${{GITHUB_REPOSITORY}}/releases/tags/$RELEASE_TAG\" --jq '.assets[].name' || true
+          if ! gh release view \"$RELEASE_TAG\" --repo \"$GITHUB_REPOSITORY\" >/dev/null 2>&1; then
             if [ \"$CREATE_RELEASE\" != true ]; then
               echo \"GitHub release does not exist and create-release is false: $RELEASE_TAG\"
               exit 1
             fi
-            gh release create \"$RELEASE_TAG\" --title \"$RELEASE_NAME\" --notes \"Generated DEB artifacts for $PACKAGE_NAME $PACKAGE_VERSION.\"
+            gh release create \"$RELEASE_TAG\" --repo \"$GITHUB_REPOSITORY\" --title \"$RELEASE_NAME\" --notes \"Generated DEB artifacts for $PACKAGE_NAME $PACKAGE_VERSION.\"
           fi
-          gh release upload \"$RELEASE_TAG\" {deb-files-array} --clobber
+          printf 'Uploading DEB files to release %s:\\n' \"$RELEASE_TAG\"
+          printf '  %s\\n' {deb-files-array}
+          gh release upload \"$RELEASE_TAG\" --repo \"$GITHUB_REPOSITORY\" {deb-files-array} --clobber
+          printf 'Release assets after upload for %s:\\n' \"$RELEASE_TAG\"
+          gh api \"repos/${{GITHUB_REPOSITORY}}/releases/tags/$RELEASE_TAG\" --jq '.assets[].name'
 "
   ) ; end begin deb-ci-workflow-content
 ) ; end define deb-ci-workflow-content
@@ -3751,8 +3763,13 @@ jobs:
                                  "scripts/verify-deb.sh"
                                  "actions/upload-artifact@v6"
                                  "actions/download-artifact@v6"
+                                 "GH_REPO:"
                                  "gh release upload"
+                                 "--repo \"$GITHUB_REPOSITORY\""
                                  "apt-get install -y \"${deb_files[0]}\""
+                                 "Downloaded DEB files"
+                                 "Release assets before upload"
+                                 "Release assets after upload"
                                  "racket -e '(displayln f\"deb-ci-ok\")'"
                                  "racket -e '(require readline/readline) (displayln f\"deb-readline-ok\")'"
                                  "EXPECTED_DEB_COUNT:"))])
