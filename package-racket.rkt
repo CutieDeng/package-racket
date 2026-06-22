@@ -77,7 +77,9 @@
    apt-release-token-file
    rpm-repo-config
    rpm-ci-config
+   windows-ci-config
    rpm-repo-root
+   windows-repo-root
    rpm-repo-id
    rpm-repo-name
    rpm-repo-baseurl
@@ -358,14 +360,14 @@
       ) ; end for*/list pieces
     ) ; end define pieces
     (when (null? pieces)
-      (raise-user-error 'main "missing --target; use brew, brew-ci, source-release, apt, apt-release, rpm, rpm-spec, rpm-ci, rpm-repo, or all")
+      (raise-user-error 'main "missing --target; use brew, brew-ci, source-release, apt, apt-release, rpm, rpm-spec, rpm-ci, rpm-repo, windows-portable-ci, or all")
     ) ; end when missing target
     (define expanded
       (append-map
        (lambda (target)
          (match target
            ["all" '("brew" "apt" "rpm")]
-           [(or "brew" "apt" "apt-release" "rpm" "rpm-spec" "rpm-ci" "rpm-repo" "brew-ci" "source-release") (list target)]
+           [(or "brew" "apt" "apt-release" "rpm" "rpm-spec" "rpm-ci" "rpm-repo" "brew-ci" "source-release" "windows-portable-ci") (list target)]
            [_ (raise-user-error 'main f"unknown --target: {target}")]
          ) ; end match target
        ) ; end lambda target
@@ -373,7 +375,7 @@
       ) ; end append-map
     ) ; end define expanded
     (filter (lambda (target) (member target expanded string=?))
-            '("brew-ci" "brew" "source-release" "apt" "apt-release" "rpm-spec" "rpm-ci" "rpm" "rpm-repo"))
+            '("brew-ci" "brew" "source-release" "apt" "apt-release" "rpm-spec" "rpm-ci" "rpm" "rpm-repo" "windows-portable-ci"))
   ) ; end begin normalize-targets
 ) ; end define normalize-targets
 
@@ -383,7 +385,8 @@
       (string=? target "rpm")
       (string=? target "rpm-spec")
       (string=? target "rpm-ci")
-      (string=? target "rpm-repo")))
+      (string=? target "rpm-repo")
+      (string=? target "windows-portable-ci")))
 
 (define (needs-racket-root? targets)
   (not (andmap racket-root-free-target? targets)))
@@ -406,6 +409,9 @@
 
 (define (needs-rpm-ci-config? targets)
   (member "rpm-ci" targets string=?))
+
+(define (needs-windows-ci-config? targets)
+  (member "windows-portable-ci" targets string=?))
 
 (define (needs-rpm-target? targets)
   (or (member "rpm-spec" targets string=?)
@@ -2639,6 +2645,540 @@ jobs:
         (write-rpm-ci-workflow! c config))
   ) ; end begin build-rpm-ci!
 ) ; end define build-rpm-ci!
+
+(define generated-windows-ci-notice-marker
+  "GENERATED WINDOWS PORTABLE PACKAGING METADATA - DO NOT EDIT.")
+
+(define (generated-windows-ci-code-notice comment-prefix)
+  f"{comment-prefix} {generated-windows-ci-notice-marker}
+{comment-prefix} Source of truth: {(generated-source-root)}
+{comment-prefix} Humans and LLM agents must change package-racket and regenerate; manual workflow edits are not production-safe.
+
+")
+
+(define (assert-windows-ci-safe-token value)
+  (begin
+    (assert-single-line-string 'windows-ci-config 'token-secret value)
+    (unless (regexp-match? #px"^[A-Z0-9_]+$" value)
+      (raise-user-error 'windows-ci-config
+                        f"token-secret must contain only uppercase letters, digits, or _: {value}")
+    ) ; end unless safe secret name
+    value
+  ) ; end begin assert-windows-ci-safe-token
+) ; end define assert-windows-ci-safe-token
+
+(define (assert-windows-ci-runner value)
+  (begin
+    (assert-single-line-string 'windows-ci-config 'runner value)
+    (unless (regexp-match? #px"^[A-Za-z0-9_.:-]+$" value)
+      (raise-user-error 'windows-ci-config
+                        f"runner must contain only letters, digits, _, ., :, or -: {value}")
+    ) ; end unless safe runner
+    value
+  ) ; end begin assert-windows-ci-runner
+) ; end define assert-windows-ci-runner
+
+(define (assert-windows-ci-artifact-prefix value)
+  (begin
+    (assert-single-line-string 'windows-ci-config 'artifact-prefix value)
+    (unless (regexp-match? #px"^[A-Za-z0-9_.+-]+$" value)
+      (raise-user-error 'windows-ci-config
+                        f"artifact-prefix must contain only letters, digits, _, ., +, or -: {value}")
+    ) ; end unless safe artifact prefix
+    value
+  ) ; end begin assert-windows-ci-artifact-prefix
+) ; end define assert-windows-ci-artifact-prefix
+
+(define (assert-windows-ci-release-tag value)
+  (begin
+    (assert-single-line-string 'windows-ci-config 'release-tag value)
+    (unless (regexp-match? #px"^[A-Za-z0-9._/-]+$" value)
+      (raise-user-error 'windows-ci-config
+                        f"release-tag must contain only letters, digits, _, ., /, or -: {value}")
+    ) ; end unless safe release tag
+    value
+  ) ; end begin assert-windows-ci-release-tag
+) ; end define assert-windows-ci-release-tag
+
+(define (assert-windows-ci-release-name value)
+  (assert-single-line-string 'windows-ci-config 'release-name value))
+
+(define (assert-windows-ci-arch value)
+  (begin
+    (assert-single-line-string 'windows-ci-config 'arch value)
+    (match (string-downcase value)
+      [(or "x86_64" "amd64" "x64") "x86_64"]
+      [_ (raise-user-error 'windows-ci-config
+                           f"arch must be x86_64, amd64, or x64 for this first portable target: {value}")]
+    ) ; end match arch value
+  ) ; end begin assert-windows-ci-arch
+) ; end define assert-windows-ci-arch
+
+(define (assert-windows-ci-msvc-arch value)
+  (begin
+    (assert-single-line-string 'windows-ci-config 'msvc-arch value)
+    (unless (member value '("x64" "x86" "x86_amd64" "x64_arm64") string=?)
+      (raise-user-error 'windows-ci-config
+                        f"msvc-arch must be x64, x86, x86_amd64, or x64_arm64: {value}")
+    ) ; end unless known msvc mode
+    value
+  ) ; end begin assert-windows-ci-msvc-arch
+) ; end define assert-windows-ci-msvc-arch
+
+(define (assert-windows-ci-nmake-target value)
+  (begin
+    (assert-single-line-string 'windows-ci-config 'nmake-target value)
+    (unless (regexp-match? #px"^[A-Za-z0-9_.:+-]+$" value)
+      (raise-user-error 'windows-ci-config
+                        f"nmake-target contains unsupported characters: {value}")
+    ) ; end unless safe target
+    value
+  ) ; end begin assert-windows-ci-nmake-target
+) ; end define assert-windows-ci-nmake-target
+
+(define (assert-windows-ci-portable-dir value)
+  (begin
+    (assert-single-line-string 'windows-ci-config 'portable-dir-name value)
+    (unless (regexp-match? #px"^[A-Za-z0-9_.+-]+$" value)
+      (raise-user-error 'windows-ci-config
+                        f"portable-dir-name must contain only letters, digits, _, ., +, or -: {value}")
+    ) ; end unless safe portable dir
+    value
+  ) ; end begin assert-windows-ci-portable-dir
+) ; end define assert-windows-ci-portable-dir
+
+(define (assert-windows-ci-release-repo value)
+  (begin
+    (assert-single-line-string 'windows-ci-config 'release-repo value)
+    (unless (regexp-match? #px"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" value)
+      (raise-user-error 'windows-ci-config
+                        f"release-repo must be OWNER/REPO: {value}")
+    ) ; end unless owner/repo
+    value
+  ) ; end begin assert-windows-ci-release-repo
+) ; end define assert-windows-ci-release-repo
+
+(define (validate-windows-ci-config! config)
+  (begin
+    (config-required-string 'windows-ci-config config 'windows-repo-root)
+    (assert-windows-ci-runner (config-required-string 'windows-ci-config config 'runner))
+    (assert-windows-ci-arch (config-required-string 'windows-ci-config config 'arch))
+    (assert-windows-ci-msvc-arch (config-required-string 'windows-ci-config config 'msvc-arch))
+    (assert-windows-ci-nmake-target (config-required-string 'windows-ci-config config 'nmake-target))
+    (assert-windows-ci-portable-dir (config-required-string 'windows-ci-config config 'portable-dir-name))
+    (assert-windows-ci-artifact-prefix (config-required-string 'windows-ci-config config 'artifact-prefix))
+    (assert-windows-ci-release-repo (config-required-string 'windows-ci-config config 'release-repo))
+    (assert-windows-ci-release-tag (config-required-string 'windows-ci-config config 'release-tag))
+    (assert-windows-ci-release-name (config-required-string 'windows-ci-config config 'release-name))
+    (config-required-boolean 'windows-ci-config config 'create-release)
+    (config-required-boolean 'windows-ci-config config 'publish-release)
+    (assert-windows-ci-safe-token (config-required-string 'windows-ci-config config 'token-secret))
+    (required-config-positive-integer config 'build-jobs)
+    (void)
+  ) ; end begin validate-windows-ci-config!
+) ; end define validate-windows-ci-config!
+
+(define (read-windows-ci-config c)
+  (begin
+    (define path (cfg-windows-ci-config c))
+    (define config (read-rktd-hash 'windows-ci-config path))
+    (validate-windows-ci-config! config)
+    config
+  ) ; end begin read-windows-ci-config
+) ; end define read-windows-ci-config
+
+(define (read-windows-ci-config-values config-path)
+  (begin
+    (define raw (read-rktd-hash 'windows-ci-config config-path))
+    (validate-windows-ci-config! raw)
+    (define root-value
+      (config-required-string 'windows-ci-config raw 'windows-repo-root))
+    (values (resolve-config-path config-path root-value))
+  ) ; end begin read-windows-ci-config-values
+) ; end define read-windows-ci-config-values
+
+(define (windows-ci-workflows-dir c)
+  (build-path (cfg-windows-repo-root c) ".github" "workflows"))
+
+(define (windows-ci-workflow-path c)
+  (build-path (windows-ci-workflows-dir c) "build-windows-portable.yml"))
+
+(define (assert-windows-ci-repo-root! c #:write? [write? #t])
+  (begin
+    (define root (cfg-windows-repo-root c))
+    (assert-directory 'windows-ci root)
+    (assert-directory 'windows-ci (build-path root ".git"))
+    (when write?
+      (assert-writable-directory 'windows-ci root)
+    ) ; end when write check requested
+  ) ; end begin assert-windows-ci-repo-root!
+) ; end define assert-windows-ci-repo-root!
+
+(define (windows-ci-portable-zip-name c config)
+  (begin
+    (define arch
+      (assert-windows-ci-arch (config-required-string 'windows-ci-config config 'arch)))
+    f"{(cfg-package-name c)}-{(cfg-formula-version c)}-windows-{arch}.zip"
+  ) ; end begin windows-ci-portable-zip-name
+) ; end define windows-ci-portable-zip-name
+
+(define (windows-ci-artifact-name config)
+  (begin
+    (define artifact-prefix
+      (assert-windows-ci-artifact-prefix (config-required-string 'windows-ci-config config 'artifact-prefix)))
+    (define arch
+      (assert-windows-ci-arch (config-required-string 'windows-ci-config config 'arch)))
+    f"{artifact-prefix}-{arch}"
+  ) ; end begin windows-ci-artifact-name
+) ; end define windows-ci-artifact-name
+
+(define (resolve-source-archive-sha256! who c source-url label)
+  (begin
+    (define local-source (brew-output-tgz c))
+    (cond
+      [(file-exists? local-source)
+       (define sha (sha256-file local-source))
+       (println/flush f"{label} sha256 from local artifact: {sha}")
+       sha]
+      [else
+       (define-values (owner repo tag asset-name)
+         (github-release-download-url-values who source-url)
+       ) ; end define-values release URL parts
+       (define remote-digest
+         (github-release-asset-sha256/digest who owner repo tag asset-name)
+       ) ; end define remote digest
+       (cond
+         [remote-digest
+          (println/flush f"{label} sha256 from GitHub release digest: {remote-digest}")
+          remote-digest]
+         [else
+          (define source-dir (build-path (cfg-work-dir c) "source-archive-sha256"))
+          (define downloaded-source (build-path source-dir asset-name))
+          (reset-managed-dir! who source-dir)
+          (println/flush f"Downloading {label} for sha256: {source-url}")
+          (download-https-url! who source-url downloaded-source)
+          (assert-nonempty-file who downloaded-source)
+          (define sha (sha256-file downloaded-source))
+          (println/flush f"{label} sha256 from downloaded artifact: {sha}")
+          sha]
+       ) ; end cond remote digest
+      ]
+    ) ; end cond local or remote source
+  ) ; end begin resolve-source-archive-sha256!
+) ; end define resolve-source-archive-sha256!
+
+(define (windows-ci-publish-job-content config)
+  (begin
+    (define publish-release?
+      (config-required-boolean 'windows-ci-config config 'publish-release))
+    (if publish-release?
+        (let* ([release-repo
+                (assert-windows-ci-release-repo
+                 (config-required-string 'windows-ci-config config 'release-repo))]
+               [release-tag
+                (assert-windows-ci-release-tag
+                 (config-required-string 'windows-ci-config config 'release-tag))]
+               [release-name
+                (assert-windows-ci-release-name
+                 (config-required-string 'windows-ci-config config 'release-name))]
+               [create-release?
+                (config-required-boolean 'windows-ci-config config 'create-release)]
+               [token-secret
+                (assert-windows-ci-safe-token
+                 (config-required-string 'windows-ci-config config 'token-secret))]
+               [token-expr
+                (string-append "${{ secrets." token-secret " }}")])
+          f"
+  publish-windows-portable:
+    needs: build-windows-portable
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download Windows portable artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: {(yaml-single-quote (windows-ci-artifact-name config))}
+          path: release-assets
+
+      - name: Publish Windows portable release asset
+        shell: bash
+        env:
+          GH_TOKEN: {token-expr}
+          RELEASE_REPO: {(yaml-single-quote release-repo)}
+          RELEASE_TAG: {(yaml-single-quote release-tag)}
+          RELEASE_NAME: {(yaml-single-quote release-name)}
+          CREATE_RELEASE: {(yaml-single-quote (if create-release? "true" "false"))}
+        run: |
+          set -euo pipefail
+          command -v gh >/dev/null 2>&1 || {{ echo 'gh CLI is required on the publish runner'; exit 1; }}
+          mapfile -t zip_files < <(find \"$GITHUB_WORKSPACE/release-assets\" -maxdepth 1 -name '*.zip' -type f | sort)
+          if [ \"${{#zip_files[@]}}\" -ne 1 ]; then
+            printf 'Expected exactly one Windows portable zip, got %s\\n' \"${{#zip_files[@]}}\"
+            printf '  %s\\n' \"${{zip_files[@]}}\"
+            exit 1
+          fi
+          if ! gh release view \"$RELEASE_TAG\" -R \"$RELEASE_REPO\" >/dev/null 2>&1; then
+            if [ \"$CREATE_RELEASE\" != true ]; then
+              echo \"GitHub release does not exist and create-release is false: $RELEASE_REPO $RELEASE_TAG\"
+              exit 1
+            fi
+            gh release create \"$RELEASE_TAG\" -R \"$RELEASE_REPO\" --title \"$RELEASE_NAME\" --notes \"Generated Windows portable Racket artifact.\"
+          fi
+          gh release upload \"$RELEASE_TAG\" -R \"$RELEASE_REPO\" \"${{zip_files[0]}}\" --clobber
+")
+        "")
+  ) ; end begin windows-ci-publish-job-content
+) ; end define windows-ci-publish-job-content
+
+(define (windows-ci-workflow-content c config)
+  (begin
+    (define runner
+      (assert-windows-ci-runner (config-required-string 'windows-ci-config config 'runner)))
+    (define arch
+      (assert-windows-ci-arch (config-required-string 'windows-ci-config config 'arch)))
+    (define msvc-arch
+      (assert-windows-ci-msvc-arch (config-required-string 'windows-ci-config config 'msvc-arch)))
+    (define nmake-target
+      (assert-windows-ci-nmake-target (config-required-string 'windows-ci-config config 'nmake-target)))
+    (define portable-dir
+      (assert-windows-ci-portable-dir (config-required-string 'windows-ci-config config 'portable-dir-name)))
+    (define jobs
+      (required-config-positive-integer config 'build-jobs))
+    (define source-url (formula-source-url c))
+    (define source-sha
+      (resolve-source-archive-sha256! 'windows-ci-workflow-content
+                                      c
+                                      source-url
+                                      "Windows source archive"))
+    (define zip-name (windows-ci-portable-zip-name c config))
+    f"{(generated-windows-ci-code-notice "#")}name: windows portable build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-portable:
+    name: build windows {arch}
+    runs-on: {runner}
+    permissions:
+      contents: read
+    env:
+      PACKAGE_NAME: {(yaml-single-quote (cfg-package-name c))}
+      SOURCE_VERSION: {(yaml-single-quote (cfg-source-version c))}
+      FORMULA_VERSION: {(yaml-single-quote (cfg-formula-version c))}
+      SOURCE_URL: {(yaml-single-quote source-url)}
+      SOURCE_SHA256: {(yaml-single-quote source-sha)}
+      ZIP_NAME: {(yaml-single-quote zip-name)}
+      PORTABLE_DIR: {(yaml-single-quote portable-dir)}
+      BUILD_JOBS: {(yaml-single-quote (number->string jobs))}
+      MSVC_ARCH: {(yaml-single-quote msvc-arch)}
+      NMAKE_TARGET: {(yaml-single-quote nmake-target)}
+    steps:
+      - name: Checkout packaging workflow
+        uses: actions/checkout@v6
+
+      - name: Locate Visual Studio build tools
+        shell: pwsh
+        run: |
+          $programFilesX86 = [Environment]::GetFolderPath(\"ProgramFilesX86\")
+          $vswhere = Join-Path $programFilesX86 \"Microsoft Visual Studio\\Installer\\vswhere.exe\"
+          if (!(Test-Path $vswhere)) {{
+            throw \"vswhere.exe not found: $vswhere\"
+          }}
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) {{
+            throw \"Visual Studio with VC tools was not found\"
+          }}
+          $vcvarsall = Join-Path $vs \"VC\\Auxiliary\\Build\\vcvarsall.bat\"
+          if (!(Test-Path $vcvarsall)) {{
+            throw \"vcvarsall.bat not found: $vcvarsall\"
+          }}
+          \"VCVARSALL_BAT=$vcvarsall\" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Download and verify source archive
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force source -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force source | Out-Null
+          Invoke-WebRequest -Uri $env:SOURCE_URL -OutFile source.tgz
+          $actual = (Get-FileHash source.tgz -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:SOURCE_SHA256) {{
+            throw \"Source sha256 mismatch: expected $env:SOURCE_SHA256 got $actual\"
+          }}
+          tar -xzf source.tgz -C source
+          $entries = @(Get-ChildItem source -Directory)
+          if ($entries.Count -ne 1) {{
+            Get-ChildItem source | Format-Table -AutoSize
+            throw \"source archive must contain exactly one top-level directory\"
+          }}
+          \"SRC_DIR=$($entries[0].FullName)\" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build Racket with nmake
+        shell: pwsh
+        run: |
+          $buildScript = @\"
+          @echo on
+          call \"%VCVARSALL_BAT%\" %MSVC_ARCH%
+          cd /d \"%SRC_DIR%\"
+          if exist Makefile (
+            nmake /f Makefile %NMAKE_TARGET% JOBS=%BUILD_JOBS%
+          ) else if exist src\\winfig.bat (
+            call src\\winfig.bat %MSVC_ARCH%
+            nmake /f Makefile %NMAKE_TARGET% JOBS=%BUILD_JOBS%
+          ) else (
+            dir
+            echo Neither top-level Makefile nor src\\winfig.bat exists in %SRC_DIR%
+            exit /b 1
+          )
+          \"@
+          Set-Content -Path build-racket.cmd -Value $buildScript -Encoding ASCII
+          cmd.exe /c build-racket.cmd
+          if ($LASTEXITCODE -ne 0) {{
+            throw \"nmake build failed with exit $LASTEXITCODE\"
+          }}
+
+      - name: Assemble portable zip
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force portable, artifacts -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force portable, artifacts | Out-Null
+          $preferredRoot = Join-Path $env:SRC_DIR \"racket\"
+          if (Test-Path $preferredRoot) {{
+            $packageRoot = $preferredRoot
+          }} else {{
+            $packageRoot = $env:SRC_DIR
+          }}
+          $portableRoot = Join-Path \"portable\" $env:PORTABLE_DIR
+          Copy-Item -Recurse -Force $packageRoot $portableRoot
+          $racketExe = @(Get-ChildItem $portableRoot -Recurse -Filter racket.exe | Sort-Object FullName | Select-Object -First 1)
+          $racoExe = @(Get-ChildItem $portableRoot -Recurse -Filter raco.exe | Sort-Object FullName | Select-Object -First 1)
+          if (!$racketExe) {{
+            Get-ChildItem $portableRoot -Recurse -File | Select-Object -First 80 FullName
+            throw \"racket.exe not found in portable tree\"
+          }}
+          if (!$racoExe) {{
+            Get-ChildItem $portableRoot -Recurse -File | Select-Object -First 80 FullName
+            throw \"raco.exe not found in portable tree\"
+          }}
+          & $racketExe.FullName -e '(displayln (version))' | Tee-Object -Variable versionOut
+          if ($versionOut -notmatch [regex]::Escape($env:SOURCE_VERSION)) {{
+            throw \"Racket version output does not include $env:SOURCE_VERSION: $versionOut\"
+          }}
+          & $racketExe.FullName -e '(displayln \"windows-portable-ok\")'
+          & $racoExe.FullName pkg show --all | Select-Object -First 40
+          @(
+            \"Racket portable build\",
+            \"Source: $env:SOURCE_URL\",
+            \"Version: $env:SOURCE_VERSION\",
+            \"Package version: $env:FORMULA_VERSION\",
+            \"Find racket.exe and raco.exe inside this directory; paths are preserved from the Racket build tree.\"
+          ) | Set-Content -Path (Join-Path $portableRoot \"README-portable.txt\") -Encoding UTF8
+          $artifactPath = Join-Path \"artifacts\" $env:ZIP_NAME
+          Compress-Archive -Path $portableRoot -DestinationPath $artifactPath -Force
+          if ((Get-Item $artifactPath).Length -le 0) {{
+            throw \"portable zip is empty: $artifactPath\"
+          }}
+          Get-FileHash $artifactPath -Algorithm SHA256
+
+      - name: Upload Windows portable artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: {(yaml-single-quote (windows-ci-artifact-name config))}
+          path: artifacts/*.zip
+          if-no-files-found: error
+{(windows-ci-publish-job-content config)}"
+  ) ; end begin windows-ci-workflow-content
+) ; end define windows-ci-workflow-content
+
+(define (assert-windows-ci-workflow-replaceable! path)
+  (begin
+    (when (file-exists? path)
+      (define content (file->string path))
+      (unless (string-contains? content generated-windows-ci-notice-marker)
+        (raise-user-error 'write-windows-ci-workflow!
+                          f"refusing to overwrite workflow without generated marker: {(clean-path-string path)}")
+      ) ; end unless generated marker present
+    ) ; end when workflow exists
+  ) ; end begin assert-windows-ci-workflow-replaceable!
+) ; end define assert-windows-ci-workflow-replaceable!
+
+(define (validate-windows-ci-workflow! c config path)
+  (begin
+    (validate-yaml! c path)
+    (define content (file->string path))
+    (define zip-name (windows-ci-portable-zip-name c config))
+    (for ([needle (in-list (list "name: windows portable build"
+                                 generated-windows-ci-notice-marker
+                                 "runs-on:"
+                                 "windows-"
+                                 "actions/checkout@v6"
+                                 "Invoke-WebRequest"
+                                 "Get-FileHash source.tgz -Algorithm SHA256"
+                                 "src\\winfig.bat"
+                                 "nmake /f Makefile"
+                                 "Compress-Archive"
+                                 "windows-portable-ok"
+                                 "actions/upload-artifact@v6"
+                                 zip-name))])
+      (unless (string-contains? content needle)
+        (raise-user-error 'validate-windows-ci-workflow! f"Windows CI workflow missing: {needle}")
+      ) ; end unless workflow contains required needle
+    ) ; end for workflow needle
+    (when (config-required-boolean 'windows-ci-config config 'publish-release)
+      (for ([needle (in-list '("actions/download-artifact@v6"
+                               "gh release upload"
+                               "RELEASE_REPO:"))])
+        (unless (string-contains? content needle)
+          (raise-user-error 'validate-windows-ci-workflow! f"Windows publish workflow missing: {needle}")
+        ) ; end unless workflow contains publish needle
+      ) ; end for publish needle
+    ) ; end when publish release
+  ) ; end begin validate-windows-ci-workflow!
+) ; end define validate-windows-ci-workflow!
+
+(define (write-windows-ci-workflow! c config)
+  (begin
+    (assert-windows-ci-repo-root! c #:write? #t)
+    (assert-executable 'write-windows-ci-workflow! (cfg-ruby-bin c))
+    (define workflow-path (windows-ci-workflow-path c))
+    (assert-windows-ci-workflow-replaceable! workflow-path)
+    (make-directory* (windows-ci-workflows-dir c))
+    (write-text-file! workflow-path (windows-ci-workflow-content c config))
+    (validate-windows-ci-workflow! c config workflow-path)
+    (println/flush f"Generated Windows portable CI workflow: {(clean-path-string workflow-path)}")
+  ) ; end begin write-windows-ci-workflow!
+) ; end define write-windows-ci-workflow!
+
+(define (print-windows-ci-dry-run-plan! c config)
+  (begin
+    (assert-windows-ci-repo-root! c #:write? #f)
+    (define workflow-path (windows-ci-workflow-path c))
+    (println/flush f"Would read Windows CI config: {(clean-path-string (cfg-windows-ci-config c))}")
+    (println/flush f"Would generate Windows portable CI workflow: {(clean-path-string workflow-path)}")
+    (println/flush f"Would validate Windows CI workflow YAML with: {(cfg-ruby-bin c)}")
+    (println/flush f"Would configure Windows runner: {(config-required-string 'windows-ci-config config 'runner)}")
+    (println/flush f"Would configure Windows portable zip: {(windows-ci-portable-zip-name c config)}")
+    (println/flush f"Would publish Windows release asset: {(if (config-required-boolean 'windows-ci-config config 'publish-release) "yes" "no")}")
+  ) ; end begin print-windows-ci-dry-run-plan!
+) ; end define print-windows-ci-dry-run-plan!
+
+(define (build-windows-ci! c)
+  (begin
+    (define config (read-windows-ci-config c))
+    (if (cfg-dry-run? c)
+        (print-windows-ci-dry-run-plan! c config)
+        (write-windows-ci-workflow! c config))
+  ) ; end begin build-windows-ci!
+) ; end define build-windows-ci!
 
 (define (validate-rpm-repo-metadata! c)
   (begin
@@ -5562,6 +6102,7 @@ jobs:
   (define apt-release-token-file-arg #f)
   (define rpm-repo-config-arg #f)
   (define rpm-ci-config-arg #f)
+  (define windows-ci-config-arg #f)
   (define rpm-repo-root-arg #f)
   (define rpm-repo-id-arg #f)
   (define rpm-repo-name-arg #f)
@@ -5678,6 +6219,8 @@ jobs:
 			  (set! rpm-repo-config-arg path)]
    [("--rpm-ci-config") path "Config for generated rpm-racket GitHub Actions workflow (default: ./rpm-ci-config.rktd)"
 		       (set! rpm-ci-config-arg path)]
+   [("--windows-ci-config") path "Config for generated Windows portable GitHub Actions workflow (default: ./windows-ci-config.rktd)"
+			    (set! windows-ci-config-arg path)]
    [("--rpm-repo-root") path "Override RPM repository root from config"
 		       (set! rpm-repo-root-arg path)]
    [("--rpm-repo-id") value "Override RPM repository id from config"
@@ -5701,7 +6244,7 @@ jobs:
    [("--within-docs" "--with-docs") "Include raco docs support and the core documentation runtime package group in the Homebrew source archive"
                                    (set! with-docs? #t)]
    #:multi
-   [("--target") target "Packaging target: brew, brew-ci, source-release, apt, apt-release, rpm, rpm-spec, rpm-ci, rpm-repo, or all. May be repeated."
+   [("--target") target "Packaging target: brew, brew-ci, source-release, apt, apt-release, rpm, rpm-spec, rpm-ci, rpm-repo, windows-portable-ci, or all. May be repeated."
 		(set! target-args (append target-args (list target)))]
    [("--brew-package") name "Extra package to include in the Homebrew source archive"
                      (set! brew-package-args (append brew-package-args (list name)))]
@@ -5745,6 +6288,8 @@ jobs:
     (complete-path* (or rpm-repo-config-arg (build-path script-dir "rpm-repo-config.rktd"))))
   (define rpm-ci-config
     (complete-path* (or rpm-ci-config-arg (build-path script-dir "rpm-ci-config.rktd"))))
+  (define windows-ci-config
+    (complete-path* (or windows-ci-config-arg (build-path script-dir "windows-ci-config.rktd"))))
   (assert-prefix prefix-arg)
   (when (needs-racket-root? targets)
     (assert-racket-root racket-root)
@@ -5786,6 +6331,11 @@ jobs:
                                      rpm-repo-gpgcheck-arg)
         (values #f #f #f #f #t #f))
   ) ; end define-values rpm repo config
+  (define-values (windows-repo-root)
+    (if (needs-windows-ci-config? targets)
+        (read-windows-ci-config-values windows-ci-config)
+        (values #f))
+  ) ; end define-values windows ci config
   (define rpm-system
     (cond
       [(needs-rpm-target? targets)
@@ -5874,7 +6424,9 @@ jobs:
 	       apt-release-token-file-arg
 	       rpm-repo-config
 	       rpm-ci-config
+	       windows-ci-config
 	       rpm-repo-root
+	       windows-repo-root
 	       rpm-repo-id
        rpm-repo-name
        rpm-repo-baseurl
@@ -5922,6 +6474,10 @@ jobs:
   (when (needs-rpm-ci-config? (cfg-targets c))
     (println/flush f"RPM CI config: {(clean-path-string (cfg-rpm-ci-config c))}")
   ) ; end when rpm ci target
+  (when (needs-windows-ci-config? (cfg-targets c))
+    (println/flush f"Windows CI config: {(clean-path-string (cfg-windows-ci-config c))}")
+    (println/flush f"Windows CI repo root: {(clean-path-string (cfg-windows-repo-root c))}")
+  ) ; end when windows ci target
   (when (cfg-bottle-root-url c)
     (println/flush f"Bottle root URL: {(cfg-bottle-root-url c)}")
   ) ; end when bottle root url
@@ -5956,6 +6512,7 @@ jobs:
 	 ["rpm-ci" (build-rpm-ci! c) '()]
 	 ["rpm" (build-rpm! c) '()]
          ["rpm-repo" (build-rpm-repo! c)]
+         ["windows-portable-ci" (build-windows-ci! c) '()]
          [_ (error 'main f"unreachable target: {target}")]
        ) ; end match target
      ) ; end lambda target
@@ -6045,7 +6602,9 @@ jobs:
 	         #f
 	         (build-path test-root "rpm-repo-config.rktd")
 	         (build-path test-root "rpm-ci-config.rktd")
+	         (build-path test-root "windows-ci-config.rktd")
 	         (build-path test-root "rpm-racket")
+	         (build-path test-root "package-racket")
          "cutiedeng-racket"
          "CutieDeng Racket RPM Repository"
          "https://raw.githubusercontent.com/CutieDeng/rpm-racket/main/repo/$basearch"
@@ -6086,6 +6645,8 @@ jobs:
                   '("rpm-spec" "rpm" "rpm-repo"))
     (check-equal? (normalize-targets '("rpm-repo" "rpm"))
                   '("rpm" "rpm-repo"))
+    (check-equal? (normalize-targets '("windows-portable-ci"))
+                  '("windows-portable-ci"))
     (check-equal? (normalize-rpm-arch "arm64") "aarch64")
     (check-equal? (normalize-rpm-arch "amd64") "x86_64")
     (check-equal? (brew-source-tgz-name c) "racket-minimal-9.2.1-src.tgz")

@@ -29,6 +29,10 @@ packaging flows:
 - `rpm-ci`: generates `rpm-racket/.github/workflows/build-rpm.yml` from
   `rpm-ci-config.rktd`, validates the workflow YAML, and publishes RPM release
   assets only after all configured matrix builds pass.
+- `windows-portable-ci`: generates a Windows GitHub Actions workflow from
+  `windows-ci-config.rktd`. The workflow builds Racket on a Windows runner,
+  assembles a portable `.zip`, and uploads it as an Actions artifact. Release
+  asset publishing is supported only when explicitly enabled in the config.
 - `rpm`: builds a `.rpm` from the same source-archive SPEC model used by the
   generated `rpm-racket` scripts.
 - `rpm-repo`: copies the configured `.rpm` into an explicit RPM repository
@@ -71,6 +75,12 @@ then uploads with the workflow `GITHUB_TOKEN`.
 The `rpm-repo` flow checks the target repository root, checks RPM metadata before
 copying it, runs `createrepo_c --update`, and requires `repodata/repomd.xml` to
 exist before reporting success.
+The `windows-portable-ci` flow checks that the configured workflow repository is
+a writable Git repository, validates the generated workflow YAML, pins the
+source archive sha256, verifies `racket.exe` and `raco.exe` after the Windows
+build, and uploads the zip with `actions/upload-artifact`. If release publishing
+is enabled, the generated publish job requires the named GitHub Actions secret
+to have release-write access to the configured `release-repo`.
 
 `package-racket` is the source of truth for generated packaging metadata. The
 Homebrew tap receives overwritten generated outputs such as `Formula/racket@9.rb`
@@ -82,6 +92,9 @@ The same rule applies to `rpm-racket`: generated `SPECS/`, `SOURCES/`,
 `scripts/`, `.github/workflows/`, and README outputs are produced from this
 repository. `rpm-racket` is a SPEC/build-script repository, not an RPM artifact
 repository.
+Generated Windows portable workflows are also produced from this repository.
+Change `windows-ci-config.rktd` and regenerate instead of editing generated
+workflow YAML by hand.
 
 ## Version Model
 
@@ -205,6 +218,12 @@ updates.
 - For `rpm-ci`: Ruby for YAML validation. GitHub Actions uses the generated
   workflow's same-repository `GITHUB_TOKEN` with `contents: write` to create or
   update release assets; no local token is read for this target.
+- For `windows-portable-ci`: an explicit `--windows-ci-config`, a configured
+  writable Git repository root, and Ruby for YAML validation. The generated
+  workflow uses Microsoft Visual Studio Build Tools on the Windows runner. By
+  default it only uploads an Actions artifact; release publishing needs
+  `publish-release` set to `#t` and the configured `token-secret` created in
+  the workflow repository.
 - For `rpm`: `rpmbuild`.
 - For `rpm-repo`: `rpm` for package metadata validation, `createrepo_c` for
   repository metadata, an explicit `--rpm-repo-config`, and an explicit
@@ -488,6 +507,23 @@ sha256 in this order:
 - otherwise download `Source0` into `.build/rpm-source/` and calculate sha256.
 
 That sha is written into the generated `.spec` as `%global source_sha256`.
+
+Generate or refresh the Windows portable CI workflow:
+
+```sh
+racket package-racket.rkt \
+  --target windows-portable-ci \
+  --windows-ci-config /Users/cutiedeng/Y2026/M06/D21/package-racket/windows-ci-config.rktd
+```
+
+`windows-ci-config.rktd` explicitly names the workflow repository root, runner,
+architecture, Visual Studio build mode, `nmake` target, artifact prefix, release
+repository, release tag, and token secret. The default config writes
+`.github/workflows/build-windows-portable.yml` in `package-racket` and keeps
+`publish-release` disabled, so every push can build and retain a downloadable
+Actions artifact without requiring a cross-repository token. To publish the zip
+to a GitHub Release, set `publish-release` to `#t`, set `release-repo` to the
+target repository, and create the configured secret in the workflow repository.
 
 Build an RPM from the generated `rpm-racket` repository:
 

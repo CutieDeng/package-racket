@@ -87,6 +87,14 @@ end
   ) ; end begin make-fake-rpm-repo!
 ) ; end define make-fake-rpm-repo!
 
+(define (make-fake-windows-repo! base)
+  (begin
+    (define repo (build-path base "package-racket"))
+    (make-directory* (build-path repo ".git"))
+    repo
+  ) ; end begin make-fake-windows-repo!
+) ; end define make-fake-windows-repo!
+
 (define (write-brew-ci-config! path)
   (write-text!
    path
@@ -196,6 +204,25 @@ end
                         (container . \"openeuler/openeuler:24.03-lts\")
                         (jobs . 2)
                         (setup-packages . (\"bash\" \"curl\" \"rpm\" \"rpm-build\" \"tar\"))))))
+"))
+
+  (define (write-windows-ci-config! path root #:publish-release? [publish-release? #t])
+    (write-text!
+     path
+     f"#hash((windows-repo-root . \"{(path-arg root)}\")
+      (runner . \"windows-2022\")
+      (arch . \"x86_64\")
+      (msvc-arch . \"x64\")
+      (nmake-target . \"install\")
+      (build-jobs . 2)
+      (portable-dir-name . \"racket9\")
+      (artifact-prefix . \"windows\")
+      (publish-release . {(if publish-release? "#t" "#f")})
+      (release-repo . \"CutieDeng/racket\")
+      (release-tag . \"v9.2.1\")
+      (release-name . \"Racket 9.2.1 Windows portable\")
+      (create-release . #f)
+      (token-secret . \"WINDOWS_RELEASE_TOKEN\"))
 "))
 
 (define (run-command! who program args #:cwd [cwd #f])
@@ -622,6 +649,68 @@ actual output:
       ) ; end lambda temp dir
     ) ; end with-temp-dir
   ) ; end test-case rpm-ci generic openeuler
+
+  (test-case "windows-portable-ci dry-run validates config and writes no workflow"
+    (with-temp-dir
+     (lambda (tmp)
+       (define windows-repo-root (make-fake-windows-repo! tmp))
+       (define ci-config-path (build-path tmp "windows-ci-config.rktd"))
+       (define work-dir (build-path tmp "work"))
+       (write-windows-ci-config! ci-config-path windows-repo-root #:publish-release? #f)
+       (define-values (out err)
+         (run-package/success
+          (list "--target" "windows-portable-ci"
+                "--work-dir" (path-arg work-dir)
+                "--windows-ci-config" (path-arg ci-config-path)
+                "--dry-run")))
+       (define text (combined-output out err))
+       (check-contains text "Targets: windows-portable-ci")
+       (check-contains text "Windows CI config:")
+       (check-contains text "Windows CI repo root:")
+       (check-contains text "Would read Windows CI config:")
+       (check-contains text "Would generate Windows portable CI workflow:")
+       (check-contains text "Would configure Windows runner: windows-2022")
+       (check-contains text "Would configure Windows portable zip: racket9-9.2.1.1-windows-x86_64.zip")
+       (check-contains text "Would publish Windows release asset: no")
+       (check-false (file-exists? (build-path windows-repo-root ".github" "workflows" "build-windows-portable.yml")))
+       (check-false (directory-exists? work-dir))
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case windows portable ci dry-run
+
+  (test-case "windows-portable-ci installs generated workflow into configured repository"
+    (with-temp-dir
+     (lambda (tmp)
+       (define windows-repo-root (make-fake-windows-repo! tmp))
+       (define ci-config-path (build-path tmp "windows-ci-config.rktd"))
+       (write-windows-ci-config! ci-config-path windows-repo-root #:publish-release? #t)
+       (define-values (out err)
+         (run-package/success
+          (list "--target" "windows-portable-ci"
+                "--windows-ci-config" (path-arg ci-config-path))))
+       (define text (combined-output out err))
+       (define workflow-path (build-path windows-repo-root ".github" "workflows" "build-windows-portable.yml"))
+       (check-contains text "Windows source archive sha256 from local artifact:")
+       (check-contains text "Generated Windows portable CI workflow:")
+       (check-true (file-exists? workflow-path))
+       (define workflow-content (file->string workflow-path))
+       (check-contains workflow-content "GENERATED WINDOWS PORTABLE PACKAGING METADATA - DO NOT EDIT.")
+       (check-contains workflow-content "name: windows portable build")
+       (check-contains workflow-content "runs-on: windows-2022")
+       (check-contains workflow-content "SOURCE_URL: 'https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz'")
+       (check-contains workflow-content "SOURCE_SHA256: '")
+       (check-contains workflow-content "ZIP_NAME: 'racket9-9.2.1.1-windows-x86_64.zip'")
+       (check-contains workflow-content "call src\\winfig.bat %MSVC_ARCH%")
+       (check-contains workflow-content "nmake /f Makefile %NMAKE_TARGET% JOBS=%BUILD_JOBS%")
+       (check-contains workflow-content "Compress-Archive")
+       (check-contains workflow-content "windows-portable-ok")
+       (check-contains workflow-content "actions/upload-artifact@v6")
+       (check-contains workflow-content "actions/download-artifact@v6")
+       (check-contains workflow-content "GH_TOKEN: ${{ secrets.WINDOWS_RELEASE_TOKEN }}")
+       (check-contains workflow-content "gh release upload \"$RELEASE_TAG\" -R \"$RELEASE_REPO\"")
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case windows portable ci workflow install
 
   (test-case "rpm plus rpm-repo dry-run uses planned rpm output and writes no repo files"
     (with-temp-dir
