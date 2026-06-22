@@ -630,13 +630,13 @@ racket package-racket.rkt \
 
 `windows-ci-config.rktd` explicitly names the workflow repository root, runner,
 architecture, Visual Studio build mode, `nmake` target, artifact prefix, release
-repository, release tag, and token secret. The default config writes README and
+repository, release tag, and token secret. The current config writes README and
 `.github/workflows/build-windows-portable.yml` in
-`/Users/cutiedeng/Y2026/M06/D23/win-racket` and keeps `publish-release`
-disabled, so every push to `win-racket` can build and retain a downloadable
-Actions artifact without requiring a cross-repository token. To publish the zip
-to a GitHub Release, set `publish-release` to `#t`, set `release-repo` to the
-target repository, and create the configured secret in the workflow repository.
+`/Users/cutiedeng/Y2026/M06/D23/win-racket` and enables `publish-release`, so
+successful pushes upload the zip to the configured `win-racket` GitHub Release.
+The configured target is the workflow repository itself, so the generated
+workflow uses the built-in `GITHUB_TOKEN` with `contents: write` instead of a
+cross-repository PAT.
 
 Build an RPM from the generated `rpm-racket` repository:
 

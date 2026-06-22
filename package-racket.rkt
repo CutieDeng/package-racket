@@ -4026,6 +4026,19 @@ jobs:
     (define runner
       (assert-windows-ci-runner (config-required-string 'windows-ci-config config 'runner)))
     (define zip-name (windows-ci-portable-zip-name c config))
+    (define release-note
+      (if (config-required-boolean 'windows-ci-config config 'publish-release)
+          (let ([release-repo
+                 (assert-windows-ci-release-repo
+                  (config-required-string 'windows-ci-config config 'release-repo))]
+                [release-tag
+                 (assert-windows-ci-release-tag
+                  (config-required-string 'windows-ci-config config 'release-tag))]
+                [token-secret
+                 (assert-windows-ci-safe-token
+                  (config-required-string 'windows-ci-config config 'token-secret))])
+            f"Release asset publishing is enabled. The workflow uploads `{zip-name}` to `{release-repo}` release `{release-tag}` using the `{token-secret}` repository secret.")
+          "Release asset publishing is disabled; successful runs retain the zip as a GitHub Actions artifact."))
     f"# win-racket
 
 {generated-windows-ci-notice-marker}
@@ -4043,8 +4056,7 @@ The generated workflow builds Racket on `{runner}` for `{arch}` and uploads
 `{zip-name}` as a GitHub Actions artifact. It runs `nmake all` before the
 configured `nmake` target so a clean CI checkout never tries to install missing
 build outputs. The portable archive copies only the installed runtime tree, not
-the source/build tree. Release asset publishing is
-disabled unless `windows-ci-config.rktd` enables `publish-release`.
+the source/build tree. {release-note}
 
 ## Regenerate
 
