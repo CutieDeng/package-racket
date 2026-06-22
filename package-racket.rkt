@@ -948,6 +948,10 @@ License: {(cfg-license c)}
 URL: {(cfg-url c)}
 Source0: {source-url}
 AutoReqProv: no
+# Racket CS stores its boot image in the .rackboot ELF section. RPM debuginfo
+# extraction removes that section on openEuler, so the package must keep debug
+# data in the main executables.
+%global debug_package %{{nil}}
 %global __brp_compress %{{nil}}
 %global package_prefix {(cfg-prefix c)}
 %global source_sha256 {source-sha256}
@@ -1035,6 +1039,8 @@ grep -Eq '^(%dir )?({(rpm-shared-directory-egrep-pattern)})$' \"$manifest\" && e
                                  "Release: %{package_release}.%{package_system}"
                                  f"Source0: {source-url}"
                                  "%global __brp_compress %{nil}"
+                                 "%global debug_package %{nil}"
+                                 ".rackboot ELF section"
                                  "%global package_prefix"
                                  "%global source_sha256"
                                  "Source0 sha256 mismatch"
@@ -6201,6 +6207,8 @@ jobs:
         (check-true (string-contains? spec-content "Source0: https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz"))
         (check-false (string-contains? spec-content "Source1:"))
         (check-true (string-contains? spec-content "%global __brp_compress %{nil}"))
+        (check-true (string-contains? spec-content "%global debug_package %{nil}"))
+        (check-true (string-contains? spec-content ".rackboot ELF section"))
         (check-true (string-contains? spec-content "%global source_sha256"))
         (check-true (string-contains? spec-content "Source0 sha256 mismatch"))
         (check-true (string-contains? spec-content "%files -f %{name}.files"))
