@@ -646,7 +646,7 @@ actual output:
        (check-contains text "DEB repo config:")
        (check-contains text "DEB repo root:")
        (check-contains text "DEB target system: ubuntu2404")
-       (check-contains text "DEB package version: 9.2.1.1-1.ubuntu2404")
+       (check-contains text "DEB package version: 9.2.1-1.ubuntu2404")
        (check-contains text "Would generate DEB scaffold in:")
        (check-false (file-exists? (build-path deb-repo-root "scripts" "build-deb.sh")))
        (check-false (directory-exists? work-dir))
@@ -694,7 +694,7 @@ actual output:
          (run-command! 'deb-spec-verify-deb-dry-run
                        (find-executable-path "bash")
                        (list (path-arg verify-script)
-                             "--deb" (path-arg (build-path tmp "artifacts" "racket9_9.2.1.1-1.ubuntu2404_amd64.deb"))
+                             "--deb" (path-arg (build-path tmp "artifacts" "racket9_9.2.1-1.ubuntu2404_amd64.deb"))
                              "--deb-system" "ubuntu2404"
                              "--deb-release" "1"
                              "--deb-arch" "amd64"
@@ -896,8 +896,11 @@ actual output:
        (check-contains workflow-content "SOURCE_URL: 'https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz'")
        (check-contains workflow-content "SOURCE_SHA256: '")
        (check-contains workflow-content "ZIP_NAME: 'racket9-9.2.1.1-windows-x86_64.zip'")
+       (check-contains workflow-content "dir src\\Makefile.nt")
+       (check-contains workflow-content "dir src\\buildmain.zuo")
        (check-contains workflow-content "call src\\winfig.bat")
-       (check-contains workflow-content "if errorlevel 1 exit /b %ERRORLEVEL%")
+       (check-contains workflow-content "if not exist Makefile")
+       (check-contains workflow-content "winfig.bat did not create Makefile")
        (check-not-contains workflow-content "call src\\winfig.bat %MSVC_ARCH%")
        (check-contains workflow-content "nmake /f Makefile %NMAKE_TARGET% JOBS=%BUILD_JOBS%")
        (check-contains workflow-content "Compress-Archive")

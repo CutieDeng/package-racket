@@ -128,17 +128,18 @@ workflow YAML by hand.
 ```
 
 `formula-version` drives the Homebrew Formula `version`, the Homebrew bottle
-version, and the Debian `.deb` package version and filename. Bump it to a
-four-level value such as `9.2.1.1` when those package managers need users to
-see an update even though the Racket runtime still reports `9.2.1`.
+version, and the direct `apt` target `.deb` package version and filename. Bump
+it to a four-level value such as `9.2.1.1` when those package managers need
+users to see an update even though the Racket runtime still reports `9.2.1`.
 
 The direct `apt` target produces filenames such as
 `racket9_9.2.1.1-1_amd64.deb`, where `1` is `--release`. The generated
-`deb-racket` scripts use Debian's package version plus revision model with an
-explicit target-system suffix, such as
-`racket9_9.2.1.1-1.ubuntu2404_amd64.deb`.
+`deb-racket` scripts use the same source-version plus release model as RPM:
+the Debian upstream version stays equal to `source-version`, while the Debian
+revision is derived from explicit `deb-release` and `deb-system` fields, such
+as `racket9_9.2.1-1.ubuntu2404_amd64.deb`.
 
-RPM intentionally uses a different model. The RPM `Version:` field stays equal
+RPM uses the same release-oriented model. The RPM `Version:` field stays equal
 to `source-version`, while the RPM `Release:` field is derived from explicit
 `--rpm-release` and `--rpm-system` fields. For example, source version `9.2.1`
 with `--rpm-release 1` and `--rpm-system el9` produces
@@ -530,7 +531,9 @@ then publishes the DEB files to the configured GitHub Release with `--clobber`.
 The default DEB repository config is `deb-repo-config.rktd`; it explicitly sets
 `deb-repo-root` to `/Users/cutiedeng/Y2026/M06/D23/deb-racket`, plus the
 default `deb-system`, `deb-release`, and `deb-arch` used for local scaffold
-validation. Supported generated DEB systems are `debian12` and `ubuntu2404`.
+validation. With `source-version` `9.2.1`, `deb-release` `1`, and `deb-system`
+`ubuntu2404`, the generated Debian package version is `9.2.1-1.ubuntu2404`.
+Supported generated DEB systems are `debian12` and `ubuntu2404`.
 Supported DEB architecture spellings are `amd64`, `x86_64`, `x64`, `arm64`,
 and `aarch64`; they normalize to Debian's `amd64` or `arm64`.
 

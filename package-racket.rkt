@@ -988,7 +988,7 @@ Description: {(cfg-summary c)}
   f"{release}.{system}")
 
 (define (deb-package-version c release system)
-  f"{(cfg-formula-version c)}-{(deb-full-release release system)}")
+  f"{(cfg-source-version c)}-{(deb-full-release release system)}")
 
 (define (deb-generated-package-name c [release (cfg-deb-release c)]
                                     [system (cfg-deb-system c)]
@@ -1099,7 +1099,7 @@ scripts/verify-deb.sh \\
 
 (define (deb-common-script-content c [source-sha256 (rpm-source-sha256/local c)])
   f"{(deb-script-header "deb-common.sh")}PACKAGE_NAME={(shell-single-quoted (cfg-package-name c))}
-PACKAGE_VERSION={(shell-single-quoted (cfg-formula-version c))}
+PACKAGE_VERSION={(shell-single-quoted (cfg-source-version c))}
 PACKAGE_SOURCE_VERSION={(shell-single-quoted (cfg-source-version c))}
 DEFAULT_DEB_SYSTEM={(shell-single-quoted (cfg-deb-system c))}
 DEFAULT_DEB_RELEASE={(shell-single-quoted (cfg-deb-release c))}
@@ -3695,7 +3695,7 @@ jobs:
           RELEASE_NAME: {(yaml-single-quote release-name)}
           CREATE_RELEASE: {(yaml-single-quote (if create-release? "true" "false"))}
           PACKAGE_NAME: {(yaml-single-quote (cfg-package-name c))}
-          PACKAGE_VERSION: {(yaml-single-quote (cfg-formula-version c))}
+          PACKAGE_VERSION: {(yaml-single-quote (cfg-source-version c))}
           EXPECTED_DEB_COUNT: {(number->string (length targets))}
         run: |
           set -euo pipefail
@@ -4256,8 +4256,15 @@ jobs:
           if exist Makefile (
             nmake /f Makefile %NMAKE_TARGET% JOBS=%BUILD_JOBS%
           ) else if exist src\\winfig.bat (
+            dir src\\winfig.bat
+            dir src\\Makefile.nt
+            dir src\\buildmain.zuo
             call src\\winfig.bat
-            if errorlevel 1 exit /b %ERRORLEVEL%
+            if not exist Makefile (
+              echo winfig.bat did not create Makefile in %CD%
+              dir
+              exit /b 1
+            )
             nmake /f Makefile %NMAKE_TARGET% JOBS=%BUILD_JOBS%
           ) else (
             dir
@@ -8079,11 +8086,13 @@ jobs:
     ) ; end dynamic-wind deb md5sums
   ) ; end test-case deb md5sums
 
-  (test-case "formula-version drives brew and apt while rpm keeps version plus release"
+  (test-case "formula-version drives brew and apt while rpm and deb-racket keep version plus release"
     (define c (test-cfg #:source-version "9.2.1"
                         #:formula-version "9.2.1.1"))
     (check-equal? (brew-source-tgz-name c) "racket-minimal-9.2.1-src.tgz")
     (check-equal? (apt-deb-name c) "racket9_9.2.1.1-1_amd64.deb")
+    (check-equal? (deb-generated-package-name c "1" "ubuntu2404" "amd64")
+                  "racket9_9.2.1-1.ubuntu2404_amd64.deb")
     (check-equal? (rpm-package-name c) "racket9-9.2.1-1.el9.x86_64.rpm")
     (check-equal? (brew-tgz-member-path c "src/README.txt")
                   "racket-9.2.1/src/README.txt")
