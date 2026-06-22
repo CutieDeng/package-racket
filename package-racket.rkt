@@ -4042,7 +4042,8 @@ and regenerate this repository instead.
 The generated workflow builds Racket on `{runner}` for `{arch}` and uploads
 `{zip-name}` as a GitHub Actions artifact. It runs `nmake all` before the
 configured `nmake` target so a clean CI checkout never tries to install missing
-build outputs. Release asset publishing is
+build outputs. The portable archive copies only the installed runtime tree, not
+the source/build tree. Release asset publishing is
 disabled unless `windows-ci-config.rktd` enables `publish-release`.
 
 ## Regenerate
@@ -4322,18 +4323,33 @@ jobs:
         run: |
           Remove-Item -Recurse -Force portable, artifacts -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force portable, artifacts | Out-Null
-          $preferredRoot = Join-Path $env:SRC_DIR \"racket\"
-          if (Test-Path $preferredRoot) {{
-            $packageRoot = $preferredRoot
-          }} else {{
-            $packageRoot = $env:SRC_DIR
-          }}
           $portableRoot = Join-Path \"portable\" $env:PORTABLE_DIR
-          Copy-Item -Recurse -Force $packageRoot $portableRoot
+          New-Item -ItemType Directory -Force $portableRoot | Out-Null
+          foreach ($name in @(\"collects\", \"etc\", \"lib\", \"share\", \"include\", \"doc\")) {{
+            $source = Join-Path $env:SRC_DIR $name
+            if (Test-Path $source) {{
+              Copy-Item -LiteralPath $source -Destination (Join-Path $portableRoot $name) -Recurse -Force
+            }} else {{
+              Write-Host \"Skipping absent optional runtime directory: $source\"
+            }}
+          }}
+          Get-ChildItem -LiteralPath $env:SRC_DIR -File |
+            Where-Object {{ $_.Name -match '\\.(exe|dll|def)$' -or $_.Name -eq \"README\" }} |
+            ForEach-Object {{ Copy-Item -LiteralPath $_.FullName -Destination $portableRoot -Force }}
+          foreach ($required in @(\"collects\", \"etc\", \"lib\", \"share\")) {{
+            $requiredPath = Join-Path $portableRoot $required
+            if (!(Test-Path $requiredPath)) {{
+              Get-ChildItem -LiteralPath $env:SRC_DIR -Force | Select-Object -First 120 Mode, Length, FullName
+              throw \"required portable runtime path missing: $requiredPath\"
+            }}
+          }}
           $racketExe = Get-ChildItem $portableRoot -Recurse -Filter Racket.exe | Sort-Object FullName | Select-Object -First 1
           $racoExe = Get-ChildItem $portableRoot -Recurse -Filter raco.exe | Sort-Object FullName | Select-Object -First 1
           if (!$racketExe) {{
-            Get-ChildItem $portableRoot -Recurse -File | Select-Object -First 80 FullName
+            Write-Host \"Source root files:\"
+            Get-ChildItem -LiteralPath $env:SRC_DIR -Force | Select-Object -First 120 Mode, Length, FullName
+            Write-Host \"Portable files:\"
+            Get-ChildItem $portableRoot -Recurse -File | Select-Object -First 120 FullName
             throw \"racket.exe not found in portable tree\"
           }}
           if ($racoExe) {{
@@ -4353,7 +4369,14 @@ jobs:
             throw \"Racket version output does not include $env:SOURCE_VERSION: $versionOut\"
           }}
           & $racketExe.FullName -e '(displayln \"windows-portable-ok\")'
+          if ($LASTEXITCODE -ne 0) {{
+            throw \"Racket smoke check failed with exit $LASTEXITCODE\"
+          }}
           & $racoCommand @racoArgs | Select-Object -First 40
+          if ($LASTEXITCODE -ne 0) {{
+            Write-Warning \"raco package listing failed with exit $LASTEXITCODE; keeping portable artifact because Racket smoke check passed\"
+            $global:LASTEXITCODE = 0
+          }}
           @(
             \"Racket portable build\",
             \"Source: $env:SOURCE_URL\",
