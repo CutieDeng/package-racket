@@ -97,7 +97,7 @@ end
 
 (define (make-fake-windows-repo! base)
   (begin
-    (define repo (build-path base "package-racket"))
+    (define repo (build-path base "win-racket"))
     (make-directory* (build-path repo ".git"))
     repo
   ) ; end begin make-fake-windows-repo!
@@ -856,10 +856,12 @@ actual output:
        (check-contains text "Windows CI config:")
        (check-contains text "Windows CI repo root:")
        (check-contains text "Would read Windows CI config:")
+       (check-contains text "Would generate Windows portable README:")
        (check-contains text "Would generate Windows portable CI workflow:")
        (check-contains text "Would configure Windows runner: windows-2022")
        (check-contains text "Would configure Windows portable zip: racket9-9.2.1.1-windows-x86_64.zip")
        (check-contains text "Would publish Windows release asset: no")
+       (check-false (file-exists? (build-path windows-repo-root "README.md")))
        (check-false (file-exists? (build-path windows-repo-root ".github" "workflows" "build-windows-portable.yml")))
        (check-false (directory-exists? work-dir))
       ) ; end lambda temp dir
@@ -877,10 +879,16 @@ actual output:
           (list "--target" "windows-portable-ci"
                 "--windows-ci-config" (path-arg ci-config-path))))
        (define text (combined-output out err))
+       (define readme-file (build-path windows-repo-root "README.md"))
        (define workflow-path (build-path windows-repo-root ".github" "workflows" "build-windows-portable.yml"))
        (check-contains text "Windows source archive sha256 from local artifact:")
+       (check-contains text "Generated Windows portable README:")
        (check-contains text "Generated Windows portable CI workflow:")
+       (check-true (file-exists? readme-file))
        (check-true (file-exists? workflow-path))
+       (check-contains (file->string readme-file) "GENERATED WINDOWS PORTABLE PACKAGING METADATA - DO NOT EDIT.")
+       (check-contains (file->string readme-file) "build-windows-portable.yml")
+       (check-contains (file->string readme-file) "racket9-9.2.1.1-windows-x86_64.zip")
        (define workflow-content (file->string workflow-path))
        (check-contains workflow-content "GENERATED WINDOWS PORTABLE PACKAGING METADATA - DO NOT EDIT.")
        (check-contains workflow-content "name: windows portable build")
