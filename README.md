@@ -65,12 +65,13 @@ required directories and tools, validates non-empty staged install roots,
 checks package metadata files, verifies `.deb` archive members, verifies RPM
 metadata with `rpm -qip`, and compares the generated Homebrew formula sha256
 against the generated source `.tgz`. The `brew` flow also verifies that the
-source `.tgz` contains this fork's custom core sandbox profile:
-`sandbox-lib`, `errortrace-lib`, and `source-syntax`, including the collection
-links needed for `racket/sandbox` and `syntax/source-syntax`. The `brew-ci`
-flow also validates generated workflow YAML and required workflow content before
-replacing files in the tap. The publish workflow updates release assets and the
-Formula only after every bottle runner succeeds.
+source `.tgz` contains this fork's custom core language profile:
+`at-exp-lib` with its `base` dependency, plus `sandbox-lib`, `errortrace-lib`,
+and `source-syntax`, including the collection links needed for `#lang at-exp`,
+`racket/sandbox`, and `syntax/source-syntax`. The `brew-ci` flow also validates
+generated workflow YAML and required workflow content before replacing files in
+the tap. The publish workflow updates release assets and the Formula only after
+every bottle runner succeeds.
 The `rpm-spec` flow checks that the target root is a writable Git repository,
 generates only the SPEC/SOURCES/scripts scaffold, validates the generated spec
 and script contents, resolves the source archive sha256 before writing `.spec`,
@@ -442,9 +443,10 @@ version. In incremental mode, the Formula bottle `root_url` is taken from
 and bottle publishing. The Formula source URL uses the source release tag from
 `source-release-config.rktd`, and the bottle publish workflow uses the release
 tag embedded in `--bottle-root-url`.
-For this fork, the brew source archive intentionally includes `sandbox-lib` and
-its transitive runtime packages so `racket/sandbox` is available as part of the
-custom minimal profile.
+For this fork, the brew source archive intentionally includes `at-exp-lib`
+and its `base` dependency so `#lang at-exp` and `@`-expression readers are
+available as part of the custom minimal profile. It also includes `sandbox-lib`
+and its transitive runtime packages so `racket/sandbox` is available.
 By default, the brew source archive does not include the `raco docs` command
 or its documentation runtime package group. Pass `--within-docs` to include
 `racket-index`, `scribble-lib`, `net-lib`, `draw-lib`, and their required

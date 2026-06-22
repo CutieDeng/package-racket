@@ -4727,7 +4727,10 @@ jobs:
   '("share/pkgs/sandbox-lib/racket/sandbox.rkt"
     "share/pkgs/sandbox-lib/scheme/sandbox.rkt"
     "share/pkgs/errortrace-lib/errortrace/stacktrace.rkt"
-    "share/pkgs/source-syntax/source-syntax.rkt"))
+    "share/pkgs/source-syntax/source-syntax.rkt"
+    "share/pkgs/at-exp-lib/at-exp/lang/reader.rkt"
+    "share/pkgs/at-exp-lib/scribble/reader.rkt"
+    "share/pkgs/at-exp-lib/scribble/base/reader.rkt"))
 
 (define brew-doc-required-package-files
   '("share/pkgs/racket-index/help/info.rkt"
@@ -4741,7 +4744,8 @@ jobs:
 (define brew-core-required-link-needles
   '("root (#\"pkgs\" #\"sandbox-lib\")"
     "root (#\"pkgs\" #\"errortrace-lib\")"
-    "\"syntax\" (#\"pkgs\" #\"source-syntax\")"))
+    "\"syntax\" (#\"pkgs\" #\"source-syntax\")"
+    "root (#\"pkgs\" #\"at-exp-lib\")"))
 
 (define brew-doc-required-link-needles
   '("root (#\"pkgs\" #\"racket-index\")"
@@ -4753,7 +4757,8 @@ jobs:
 (define brew-core-required-pkgs-db-needles
   '("\"sandbox-lib\""
     "\"errortrace-lib\""
-    "\"source-syntax\""))
+    "\"source-syntax\""
+    "\"at-exp-lib\""))
 
 (define brew-doc-required-pkgs-db-needles
   '("\"racket-index\""
@@ -8070,6 +8075,20 @@ jobs:
     (check-true (and (member "sandbox-lib" packages string=?) #t))
     (check-true (and (member "errortrace-lib" packages string=?) #t))
     (check-true (and (member "source-syntax" packages string=?) #t))
+    (check-true (and (member "at-exp-lib" packages string=?) #t))
+    (check-equal? (brew-package-link-name "at-exp-lib") 'root)
+    (check-true (and (member "share/pkgs/at-exp-lib/at-exp/lang/reader.rkt"
+                             (brew-required-package-files c)
+                             string=?)
+                     #t))
+    (check-true (and (member "root (#\"pkgs\" #\"at-exp-lib\")"
+                             (brew-required-link-needles c)
+                             string=?)
+                     #t))
+    (check-true (and (member "\"at-exp-lib\""
+                             (brew-required-pkgs-db-needles c)
+                             string=?)
+                     #t))
     (check-true (and (member "custom-extra" packages string=?) #t))
     (check-equal? (count (lambda (name) (string=? name "sandbox-lib")) packages) 1)
     (check-false (member "racket-aarch64-macosx-4" packages string=?))
