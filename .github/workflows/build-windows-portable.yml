@@ -80,7 +80,8 @@ jobs:
           if exist Makefile (
             nmake /f Makefile %NMAKE_TARGET% JOBS=%BUILD_JOBS%
           ) else if exist src\winfig.bat (
-            call src\winfig.bat %MSVC_ARCH%
+            call src\winfig.bat
+            if errorlevel 1 exit /b %ERRORLEVEL%
             nmake /f Makefile %NMAKE_TARGET% JOBS=%BUILD_JOBS%
           ) else (
             dir
