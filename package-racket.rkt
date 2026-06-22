@@ -948,6 +948,7 @@ License: {(cfg-license c)}
 URL: {(cfg-url c)}
 Source0: {source-url}
 AutoReqProv: no
+Requires: libedit
 # Racket CS stores its boot image in the .rackboot ELF section. RPM debuginfo
 # extraction removes that section on openEuler, so the package must keep debug
 # data in the main executables.
@@ -1038,6 +1039,7 @@ grep -Eq '^(%dir )?({(rpm-shared-directory-egrep-pattern)})$' \"$manifest\" && e
                                  (rpm-spec-default-macro "package_release" (cfg-rpm-release c))
                                  "Release: %{package_release}.%{package_system}"
                                  f"Source0: {source-url}"
+                                 "Requires: libedit"
                                  "%global __brp_compress %{nil}"
                                  "%global debug_package %{nil}"
                                  ".rackboot ELF section"
@@ -2451,9 +2453,19 @@ jobs:
             printf '  %s\\n' {rpm-files-array}
             exit 1
           fi
-          rpm -Uvh \"${{rpm_files[0]}}\"
+          if command -v dnf >/dev/null 2>&1; then
+            pm=dnf
+          elif command -v yum >/dev/null 2>&1; then
+            pm=yum
+          else
+            echo 'dnf or yum is required for RPM install smoke test'
+            exit 1
+          fi
+          $pm -y install \"${{rpm_files[0]}}\"
+          rpm -q libedit >/dev/null
           racket -e '(displayln (version))' | grep -F \"$PACKAGE_VERSION\"
           racket -e '(displayln f\"rpm-ci-ok\")' | grep -F 'rpm-ci-ok'
+          racket -e '(require readline/readline) (displayln f\"rpm-readline-ok\")' | grep -F 'rpm-readline-ok'
           raco pkg show --all >/tmp/raco-pkgs.txt
           rpm -e \"$PACKAGE_NAME\"
           if rpm -q \"$PACKAGE_NAME\" >/dev/null 2>&1; then
@@ -2554,7 +2566,10 @@ jobs:
                                  "actions/download-artifact@v6"
                                  "gh release upload"
                                  "contents: write"
+                                 "$pm -y install \"${rpm_files[0]}\""
+                                 "rpm -q libedit >/dev/null"
                                  "racket -e '(displayln f\"rpm-ci-ok\")'"
+                                 "racket -e '(require readline/readline) (displayln f\"rpm-readline-ok\")'"
                                  "EXPECTED_RPM_COUNT:"))])
       (unless (string-contains? content needle)
         (raise-user-error 'validate-rpm-ci-workflow! f"RPM CI workflow missing: {needle}")
@@ -6205,6 +6220,7 @@ jobs:
         (check-true (string-contains? spec-content "%{!?package_release:%global package_release 1}"))
         (check-true (string-contains? spec-content "Release: %{package_release}.%{package_system}"))
         (check-true (string-contains? spec-content "Source0: https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz"))
+        (check-true (string-contains? spec-content "Requires: libedit"))
         (check-false (string-contains? spec-content "Source1:"))
         (check-true (string-contains? spec-content "%global __brp_compress %{nil}"))
         (check-true (string-contains? spec-content "%global debug_package %{nil}"))
