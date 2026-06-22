@@ -922,6 +922,12 @@ Description: {(cfg-summary c)}
 (define (rpm-spec-default-macro name value)
   (string-append "%{!?" name ":%global " name " " value "}"))
 
+(define (rpm-shared-directory-shell-pattern)
+  (string-join rpm-shared-directories "|"))
+
+(define (rpm-shared-directory-egrep-pattern)
+  (string-join rpm-shared-directories "|"))
+
 (define (rpm-source-sha256/local c)
   (let ([source-path (brew-output-tgz c)])
     (if (file-exists? source-path)
@@ -993,10 +999,10 @@ while IFS= read -r path; do
   rel=${{path#\"%{{buildroot}}\"}}
   [ -n \"$rel\" ] || continue
   case \"$rel\" in
-    /usr|/usr/bin|/usr/lib|/usr/lib64|/usr/share) continue ;;
+    {(rpm-shared-directory-shell-pattern)}) continue ;;
   esac
   if [ -d \"$path\" ] && [ ! -L \"$path\" ]; then
-    printf '%%dir %s\\n' \"$rel\" >> \"$manifest\"
+    printf '%s %s\\n' '%%dir' \"$rel\" >> \"$manifest\"
   elif [ -f \"$path\" ] || [ -L \"$path\" ]; then
     printf '%s\\n' \"$rel\" >> \"$manifest\"
   else
@@ -1004,8 +1010,7 @@ while IFS= read -r path; do
     exit 1
   fi
 done < \"$paths\"
-grep -Eq '^(%dir )?/usr$' \"$manifest\" && exit 1
-grep -Eq '^(%dir )?/usr/(bin|lib|lib64|share)$' \"$manifest\" && exit 1
+grep -Eq '^(%dir )?({(rpm-shared-directory-egrep-pattern)})$' \"$manifest\" && exit 1
 
 %files -f %{{name}}.files
 %defattr(-,root,root,-)
@@ -1036,12 +1041,17 @@ grep -Eq '^(%dir )?/usr/(bin|lib|lib64|share)$' \"$manifest\" && exit 1
                                  "%setup -q -n racket-"
                                  "./configure"
                                  "make install DESTDIR=%{buildroot}"
+                                 "printf '%s %s\\n' '%%dir' \"$rel\" >> \"$manifest\""
                                  "%files -f %{name}.files"))])
       (unless (string-contains? content needle)
         (raise-user-error 'validate-rpm-spec!
                           f"generated RPM spec is missing: {needle}")
       ) ; end unless needle present
     ) ; end for needle
+    (when (string-contains? content "printf '%%dir %s\\n'")
+      (raise-user-error 'validate-rpm-spec!
+                        "generated RPM spec must not put %dir in the printf format string")
+    ) ; end when unsafe printf format
     (when (regexp-match? #px"(?m:^/usr$|^%dir /usr$)" content)
       (raise-user-error 'validate-rpm-spec!
                         "generated RPM spec must not claim the shared /usr directory")
@@ -6194,6 +6204,14 @@ jobs:
         (check-true (string-contains? spec-content "%global source_sha256"))
         (check-true (string-contains? spec-content "Source0 sha256 mismatch"))
         (check-true (string-contains? spec-content "%files -f %{name}.files"))
+        (check-true
+         (string-contains? spec-content
+                           "printf '%s %s\\n' '%%dir' \"$rel\" >> \"$manifest\""))
+        (check-false (string-contains? spec-content "printf '%%dir %s\\n'"))
+        (check-true (string-contains? spec-content "/etc"))
+        (check-true
+         (string-contains? spec-content
+                           "grep -Eq '^(%dir )?(/bin|/boot|/dev|/etc"))
         (check-false (string-contains? spec-content "/usr/bin/racket"))
         (check-true (and (member "/usr/bin/racket" file-list string=?) #t))
         (check-true (and (member "%dir /usr/lib/racket" file-list string=?) #t))
