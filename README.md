@@ -67,8 +67,10 @@ metadata with `rpm -qip`, and compares the generated Homebrew formula sha256
 against the generated source `.tgz`. The `brew` flow also verifies that the
 source `.tgz` contains this fork's custom core language profile:
 `at-exp-lib` with its `base` dependency, plus `sandbox-lib`, `errortrace-lib`,
-and `source-syntax`, including the collection links needed for `#lang at-exp`,
-`racket/sandbox`, and `syntax/source-syntax`. The `brew-ci` flow also validates
+`source-syntax`, and a trimmed Rhombus v1.0 runtime profile. The Rhombus
+profile includes `rhombus-lib`, `rhombus-exe`, `shrubbery-lib`,
+`enforest-lib`, and `pretty-expressive-lib`, including the collection links
+needed for `#lang rhombus` and the `rhombus` launcher. The `brew-ci` flow also validates
 generated workflow YAML and required workflow content before replacing files in
 the tap. The publish workflow updates release assets and the Formula only after
 every bottle runner succeeds.
@@ -446,7 +448,10 @@ tag embedded in `--bottle-root-url`.
 For this fork, the brew source archive intentionally includes `at-exp-lib`
 and its `base` dependency so `#lang at-exp` and `@`-expression readers are
 available as part of the custom minimal profile. It also includes `sandbox-lib`
-and its transitive runtime packages so `racket/sandbox` is available.
+and its transitive runtime packages so `racket/sandbox` is available. Rhombus
+is included as a trimmed runtime language profile, not as the full
+`rhombus-main-distribution`; GUI, draw, pict, HTML, XML, JSON, HTTP, Scribble,
+and documentation-oriented Rhombus packages stay outside the default core set.
 By default, the brew source archive does not include the `raco docs` command
 or its documentation runtime package group. Pass `--within-docs` to include
 `racket-index`, `scribble-lib`, `net-lib`, `draw-lib`, and their required

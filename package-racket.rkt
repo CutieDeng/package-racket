@@ -4685,6 +4685,11 @@ jobs:
     "option-contract-lib"
     "scheme-lib"
     "at-exp-lib"
+    "pretty-expressive-lib"
+    "shrubbery-lib"
+    "enforest-lib"
+    "rhombus-lib"
+    "rhombus-exe"
     "rackunit-lib"
     "testing-util-lib"
     "sandbox-lib"
@@ -4707,6 +4712,11 @@ jobs:
     ("option-contract-lib" . root)
     ("scheme-lib" . root)
     ("at-exp-lib" . root)
+    ("pretty-expressive-lib" . "pretty-expressive")
+    ("shrubbery-lib" . root)
+    ("enforest-lib" . root)
+    ("rhombus-lib" . root)
+    ("rhombus-exe" . root)
     ("rackunit-lib" . root)
     ("testing-util-lib" . root)
     ("sandbox-lib" . root)
@@ -4730,7 +4740,14 @@ jobs:
     "share/pkgs/source-syntax/source-syntax.rkt"
     "share/pkgs/at-exp-lib/at-exp/lang/reader.rkt"
     "share/pkgs/at-exp-lib/scribble/reader.rkt"
-    "share/pkgs/at-exp-lib/scribble/base/reader.rkt"))
+    "share/pkgs/at-exp-lib/scribble/base/reader.rkt"
+    "share/pkgs/pretty-expressive-lib/main.rkt"
+    "share/pkgs/shrubbery-lib/shrubbery/main.rkt"
+    "share/pkgs/enforest-lib/enforest/main.rkt"
+    "share/pkgs/rhombus-lib/rhombus/reader.rkt"
+    "share/pkgs/rhombus-lib/rhombus/main.rkt"
+    "share/pkgs/rhombus-lib/rhombus/private/amalgam/srcloc.rkt"
+    "share/pkgs/rhombus-exe/rhombus/run.rhm"))
 
 (define brew-doc-required-package-files
   '("share/pkgs/racket-index/help/info.rkt"
@@ -4745,7 +4762,12 @@ jobs:
   '("root (#\"pkgs\" #\"sandbox-lib\")"
     "root (#\"pkgs\" #\"errortrace-lib\")"
     "\"syntax\" (#\"pkgs\" #\"source-syntax\")"
-    "root (#\"pkgs\" #\"at-exp-lib\")"))
+    "root (#\"pkgs\" #\"at-exp-lib\")"
+    "\"pretty-expressive\" (#\"pkgs\" #\"pretty-expressive-lib\")"
+    "root (#\"pkgs\" #\"shrubbery-lib\")"
+    "root (#\"pkgs\" #\"enforest-lib\")"
+    "root (#\"pkgs\" #\"rhombus-lib\")"
+    "root (#\"pkgs\" #\"rhombus-exe\")"))
 
 (define brew-doc-required-link-needles
   '("root (#\"pkgs\" #\"racket-index\")"
@@ -4758,7 +4780,12 @@ jobs:
   '("\"sandbox-lib\""
     "\"errortrace-lib\""
     "\"source-syntax\""
-    "\"at-exp-lib\""))
+    "\"at-exp-lib\""
+    "\"pretty-expressive-lib\""
+    "\"shrubbery-lib\""
+    "\"enforest-lib\""
+    "\"rhombus-lib\""
+    "\"rhombus-exe\""))
 
 (define brew-doc-required-pkgs-db-needles
   '("\"racket-index\""
@@ -5542,15 +5569,12 @@ information.
     (define rb-prefix (ruby-interpolate "prefix"))
     (define rb-man (ruby-interpolate "man"))
     (define rb-etc (ruby-interpolate "etc"))
-    (define rb-openssl-rpath (ruby-interpolate "Formula[\"openssl@3\"].opt_lib"))
-    (define rb-openssl-libssl (ruby-interpolate "Formula[\"openssl@3\"].opt_lib/shared_library(\"libssl\")"))
+    (define rb-openssl-rpath (ruby-interpolate "formula_opt_lib(\"openssl@3\")"))
+    (define rb-openssl-libssl (ruby-interpolate "formula_opt_lib(\"openssl@3\")/shared_library(\"libssl\")"))
     (define rb-bin (ruby-interpolate "bin"))
+    (define rb-lib (ruby-interpolate "lib"))
     (define rb-test-script (ruby-interpolate "testpath/\"interactive-packages.rkt\""))
-    (define rb-racket-config (ruby-interpolate "racket_config"))
-    (define rb-cellar-regexp
-      (string-append "%r{"
-                     (ruby-interpolate "Regexp.escape(HOMEBREW_CELLAR)")
-                     "/racket@9/[^/]+}o"))
+    (define rb-rhombus-script (ruby-interpolate "testpath/\"rhombus-smoke.rhm\""))
     (define macos-openssl-rx "%r{.*openssl@3/.*/libssl.*\\.dylib}")
     f"{(generated-code-notice "#")}class RacketAT9 < Formula
   desc \"Modern programming language in the Lisp/Scheme family\"
@@ -5609,7 +5633,7 @@ information.
       system \"make\", \"install\"
 
       if OS.mac?
-        openssl = Formula[\"openssl@3\"]
+        openssl_opt_lib = formula_opt_lib(\"openssl@3\")
         racket_libdir = lib/\"racket\"
 
         %w[libssl.3.dylib libcrypto.3.dylib].each do |dylib|
@@ -5617,21 +5641,25 @@ information.
           path.unlink if path.exist?
         end
 
-        ln_s openssl.opt_lib/\"libssl.3.dylib\",    racket_libdir/\"libssl.3.dylib\"
-        ln_s openssl.opt_lib/\"libcrypto.3.dylib\", racket_libdir/\"libcrypto.3.dylib\"
+        ln_s openssl_opt_lib/\"libssl.3.dylib\",    racket_libdir/\"libssl.3.dylib\"
+        ln_s openssl_opt_lib/\"libcrypto.3.dylib\", racket_libdir/\"libcrypto.3.dylib\"
       end
     end
 
-    inreplace racket_config, prefix, opt_prefix
+    inreplace racket_config,
+              /\\(compiled-file-roots \\. \\(same (\"[^\"]+\")\\)\\)/,
+              '(compiled-file-roots . (\\1))'
+    system bin/\"raco\", \"setup\", \"--no-user\"
+    prune_build_compile_cache
   end
 
   def post_install
-    system bin/\"raco\", \"setup\"
+    system bin/\"raco\", \"setup\", \"--no-user\"
+    prune_build_compile_cache
+  end
 
-    return unless racket_config.read.include?(HOMEBREW_CELLAR)
-
-    ohai \"Fixing up Cellar references in {rb-racket-config}...\"
-    inreplace racket_config, {rb-cellar-regexp}, opt_prefix
+  def prune_build_compile_cache
+    rm_r Dir[\"{rb-lib}/racket/compiled/**/ephemeral\"]
   end
 
   def caveats
@@ -5650,9 +5678,7 @@ information.
     require \"pty\"
     require \"timeout\"
 
-    assert_match \"{version}\", shell_output(\"{rb-bin}/racket -e '(displayln (version))'\")
-{(if (cfg-with-docs? c) (formula-docs-test-content rb-bin) "")}
-
+    assert_match \"{version}\", shell_output(\"{rb-bin}/racket -e '(displayln (version))'\"){(if (cfg-with-docs? c) (formula-docs-test-content rb-bin) "")}
     output = shell_output(\"{rb-bin}/racket -e '(require racket/pvector) (displayln (pvector->list (pvector 1 2 3)))'\")
     assert_match \"(1 2 3)\", output
 
@@ -5667,6 +5693,19 @@ information.
     RACKET
     output = shell_output(\"{rb-bin}/racket {rb-test-script}\")
     assert_match \"interactive-packages-ok\", output
+
+    (testpath/\"rhombus-smoke.rhm\").write <<~RHOMBUS
+      #lang rhombus
+      println(\"rhombus-lang-ok\")
+    RHOMBUS
+    output = shell_output(\"{rb-bin}/racket {rb-rhombus-script}\")
+    assert_match \"rhombus-lang-ok\", output
+
+    output = shell_output(\"{rb-bin}/rhombus --version\")
+    assert_match \"Welcome to Rhombus v1.0\", output
+
+    output = shell_output(\"{rb-bin}/rhombus -e '1 + 2'\")
+    assert_match \"3\", output
 
     output = shell_output(\"printf '1\\\\n' | {rb-bin}/racket\")
     assert_match \"Welcome to Racket v{version} [cs].\", output
@@ -8076,8 +8115,26 @@ jobs:
     (check-true (and (member "errortrace-lib" packages string=?) #t))
     (check-true (and (member "source-syntax" packages string=?) #t))
     (check-true (and (member "at-exp-lib" packages string=?) #t))
+    (for ([name (in-list '("pretty-expressive-lib"
+                           "shrubbery-lib"
+                           "enforest-lib"
+                           "rhombus-lib"
+                           "rhombus-exe"))])
+      (check-true (and (member name packages string=?) #t) name)
+    ) ; end for rhombus core packages
     (check-equal? (brew-package-link-name "at-exp-lib") 'root)
+    (check-equal? (brew-package-link-name "pretty-expressive-lib") "pretty-expressive")
+    (check-equal? (brew-package-link-name "rhombus-lib") 'root)
+    (check-equal? (brew-package-link-name "rhombus-exe") 'root)
     (check-true (and (member "share/pkgs/at-exp-lib/at-exp/lang/reader.rkt"
+                             (brew-required-package-files c)
+                             string=?)
+                     #t))
+    (check-true (and (member "share/pkgs/rhombus-lib/rhombus/reader.rkt"
+                             (brew-required-package-files c)
+                             string=?)
+                     #t))
+    (check-true (and (member "share/pkgs/rhombus-exe/rhombus/run.rhm"
                              (brew-required-package-files c)
                              string=?)
                      #t))
@@ -8085,7 +8142,19 @@ jobs:
                              (brew-required-link-needles c)
                              string=?)
                      #t))
+    (check-true (and (member "\"pretty-expressive\" (#\"pkgs\" #\"pretty-expressive-lib\")"
+                             (brew-required-link-needles c)
+                             string=?)
+                     #t))
+    (check-true (and (member "root (#\"pkgs\" #\"rhombus-lib\")"
+                             (brew-required-link-needles c)
+                             string=?)
+                     #t))
     (check-true (and (member "\"at-exp-lib\""
+                             (brew-required-pkgs-db-needles c)
+                             string=?)
+                     #t))
+    (check-true (and (member "\"rhombus-lib\""
                              (brew-required-pkgs-db-needles c)
                              string=?)
                      #t))
@@ -8307,11 +8376,19 @@ end
                                  f"sha256 \"{test-sha256}\""
                                  "version \"9.2.1\""
                                  "depends_on \"openssl@3\""
+                                 "formula_opt_lib(\"openssl@3\")"
                                  "depends_on \"ncurses\""
                                  "depends_on \"zlib-ng-compat\""
                                  "require \"pty\""
                                  "require racket/pvector"
                                  "interactive-packages-ok"
+                                 "rhombus-lang-ok"
+                                 "rhombus --version"
+                                 "rhombus -e '1 + 2'"
+                                 "compiled-file-roots"
+                                 "system bin/\"raco\", \"setup\", \"--no-user\""
+                                 "prune_build_compile_cache"
+                                 "racket/compiled/**/ephemeral"
                                  "printf 'f\\\"hi\\\""
                                  "refute_match(/no readline support/"
                                  "LD_DEBUG=libs"
@@ -8319,8 +8396,10 @@ end
       (check-true (string-contains? content needle) needle)
     ) ; end for formula needle
     (check-true (formula-version-before-sha? content))
+    (check-false (string-contains? content "inreplace racket_config, prefix, opt_prefix"))
+    (check-false (string-contains? content "Fixing up Cellar references"))
+    (check-false (string-contains? content "Formula[\"openssl@3\"].opt_lib"))
     (check-false (string-contains? content "assert_match(/\\e\\["))
-    (check-false (string-contains? content "raco docs --help"))
   ) ; end test-case full Formula template
 
   (test-case "within-docs Formula template checks raco docs command"
