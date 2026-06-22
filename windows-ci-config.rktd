@@ -2,7 +2,7 @@
       (runner . "windows-2022")
       (arch . "x86_64")
       (msvc-arch . "x64")
-      (nmake-target . "install")
+      (nmake-target . "plain-install")
       (build-jobs . 2)
       (portable-dir-name . "racket9")
       (artifact-prefix . "windows")

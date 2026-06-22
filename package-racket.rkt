@@ -4330,28 +4330,36 @@ jobs:
           }}
           $portableRoot = Join-Path \"portable\" $env:PORTABLE_DIR
           Copy-Item -Recurse -Force $packageRoot $portableRoot
-          $racketExe = @(Get-ChildItem $portableRoot -Recurse -Filter racket.exe | Sort-Object FullName | Select-Object -First 1)
-          $racoExe = @(Get-ChildItem $portableRoot -Recurse -Filter raco.exe | Sort-Object FullName | Select-Object -First 1)
+          $racketExe = Get-ChildItem $portableRoot -Recurse -Filter Racket.exe | Sort-Object FullName | Select-Object -First 1
+          $racoExe = Get-ChildItem $portableRoot -Recurse -Filter raco.exe | Sort-Object FullName | Select-Object -First 1
           if (!$racketExe) {{
             Get-ChildItem $portableRoot -Recurse -File | Select-Object -First 80 FullName
             throw \"racket.exe not found in portable tree\"
           }}
-          if (!$racoExe) {{
-            Get-ChildItem $portableRoot -Recurse -File | Select-Object -First 80 FullName
-            throw \"raco.exe not found in portable tree\"
+          if ($racoExe) {{
+            $racoCommand = $racoExe.FullName
+            $racoArgs = @(\"pkg\", \"show\", \"--all\")
+          }} else {{
+            $racoCmd = Join-Path $racketExe.DirectoryName \"raco.cmd\"
+            @(
+              \"@echo off\",
+              \"`\"%~dp0$($racketExe.Name)`\" -N raco -l- raco %*\"
+            ) | Set-Content -Path $racoCmd -Encoding ASCII
+            $racoCommand = $racketExe.FullName
+            $racoArgs = @(\"-N\", \"raco\", \"-l-\", \"raco\", \"pkg\", \"show\", \"--all\")
           }}
           & $racketExe.FullName -e '(displayln (version))' | Tee-Object -Variable versionOut
           if ($versionOut -notmatch [regex]::Escape($env:SOURCE_VERSION)) {{
             throw \"Racket version output does not include $env:SOURCE_VERSION: $versionOut\"
           }}
           & $racketExe.FullName -e '(displayln \"windows-portable-ok\")'
-          & $racoExe.FullName pkg show --all | Select-Object -First 40
+          & $racoCommand @racoArgs | Select-Object -First 40
           @(
             \"Racket portable build\",
             \"Source: $env:SOURCE_URL\",
             \"Version: $env:SOURCE_VERSION\",
             \"Package version: $env:FORMULA_VERSION\",
-            \"Find racket.exe and raco.exe inside this directory; paths are preserved from the Racket build tree.\"
+            \"Find Racket.exe inside this directory. If raco.exe is absent, use raco.cmd next to Racket.exe.\"
           ) | Set-Content -Path (Join-Path $portableRoot \"README-portable.txt\") -Encoding UTF8
           $artifactPath = Join-Path \"artifacts\" $env:ZIP_NAME
           Compress-Archive -Path $portableRoot -DestinationPath $artifactPath -Force
