@@ -75,9 +75,14 @@
    apt-release-tag
    apt-release-asset
    apt-release-token-file
+   deb-repo-config
+   deb-ci-config
    rpm-repo-config
    rpm-ci-config
    windows-ci-config
+   deb-repo-root
+   deb-system
+   deb-release
    rpm-repo-root
    windows-repo-root
    rpm-repo-id
@@ -360,14 +365,14 @@
       ) ; end for*/list pieces
     ) ; end define pieces
     (when (null? pieces)
-      (raise-user-error 'main "missing --target; use brew, brew-ci, source-release, apt, apt-release, rpm, rpm-spec, rpm-ci, rpm-repo, windows-portable-ci, or all")
+      (raise-user-error 'main "missing --target; use brew, brew-ci, source-release, apt, apt-release, deb-spec, deb-ci, rpm, rpm-spec, rpm-ci, rpm-repo, windows-portable-ci, or all")
     ) ; end when missing target
     (define expanded
       (append-map
        (lambda (target)
          (match target
            ["all" '("brew" "apt" "rpm")]
-           [(or "brew" "apt" "apt-release" "rpm" "rpm-spec" "rpm-ci" "rpm-repo" "brew-ci" "source-release" "windows-portable-ci") (list target)]
+           [(or "brew" "apt" "apt-release" "deb-spec" "deb-ci" "rpm" "rpm-spec" "rpm-ci" "rpm-repo" "brew-ci" "source-release" "windows-portable-ci") (list target)]
            [_ (raise-user-error 'main f"unknown --target: {target}")]
          ) ; end match target
        ) ; end lambda target
@@ -375,13 +380,15 @@
       ) ; end append-map
     ) ; end define expanded
     (filter (lambda (target) (member target expanded string=?))
-            '("brew-ci" "brew" "source-release" "apt" "apt-release" "rpm-spec" "rpm-ci" "rpm" "rpm-repo" "windows-portable-ci"))
+            '("brew-ci" "brew" "source-release" "apt" "apt-release" "deb-spec" "deb-ci" "rpm-spec" "rpm-ci" "rpm" "rpm-repo" "windows-portable-ci"))
   ) ; end begin normalize-targets
 ) ; end define normalize-targets
 
 (define (racket-root-free-target? target)
   (or (string=? target "source-release")
       (string=? target "apt-release")
+      (string=? target "deb-spec")
+      (string=? target "deb-ci")
       (string=? target "rpm")
       (string=? target "rpm-spec")
       (string=? target "rpm-ci")
@@ -406,6 +413,13 @@
   (or (member "rpm-spec" targets string=?)
       (member "rpm-ci" targets string=?)
       (member "rpm-repo" targets string=?)))
+
+(define (needs-deb-repo-config? targets)
+  (or (member "deb-spec" targets string=?)
+      (member "deb-ci" targets string=?)))
+
+(define (needs-deb-ci-config? targets)
+  (member "deb-ci" targets string=?))
 
 (define (needs-rpm-ci-config? targets)
   (member "rpm-ci" targets string=?))
@@ -606,6 +620,43 @@
     ) ; end match normalized arch
   ) ; end begin normalize-rpm-arch
 ) ; end define normalize-rpm-arch
+
+(define (normalize-deb-arch arch)
+  (begin
+    (define normalized (string-downcase (string-trim arch)))
+    (match normalized
+      [(or "amd64" "x86_64" "x64") "amd64"]
+      [(or "arm64" "aarch64") "arm64"]
+      [_ (raise-user-error 'main
+                           f"--deb-arch must be amd64, x86_64, x64, arm64, or aarch64: {arch}")]
+    ) ; end match normalized deb arch
+  ) ; end begin normalize-deb-arch
+) ; end define normalize-deb-arch
+
+(define deb-supported-systems
+  '("debian12" "ubuntu2404"))
+
+(define (assert-deb-system system)
+  (begin
+    (unless (and (string? system)
+                 (member system deb-supported-systems string=?))
+      (raise-user-error 'main
+                        f"--deb-system must be one of {(string-join deb-supported-systems ", ")}: {system}")
+    ) ; end unless supported deb system
+    system
+  ) ; end begin assert-deb-system
+) ; end define assert-deb-system
+
+(define (assert-deb-release release)
+  (begin
+    (unless (and (string? release)
+                 (regexp-match? #px"^[0-9][A-Za-z0-9+~_-]*$" release))
+      (raise-user-error 'main
+                        f"--deb-release must start with a digit and contain only letters, digits, _, +, ~, or -: {release}")
+    ) ; end unless valid deb release
+    release
+  ) ; end begin assert-deb-release
+) ; end define assert-deb-release
 
 (define rpm-supported-systems
   '("el9" "fc40" "openeuler2203" "openeuler2403"))
@@ -908,6 +959,679 @@ Description: {(cfg-summary c)}
           #:dry-run? (cfg-dry-run? c))
   ) ; end begin build-deb-with-ar!
 ) ; end define build-deb-with-ar!
+
+(define generated-deb-repo-notice-marker
+  "GENERATED DEB PACKAGING METADATA - DO NOT EDIT IN deb-racket.")
+
+(define (deb-repo-readme-path c)
+  (build-path (cfg-deb-repo-root c) "README.md"))
+
+(define (deb-repo-gitignore-path c)
+  (build-path (cfg-deb-repo-root c) ".gitignore"))
+
+(define (deb-sources-dir c)
+  (build-path (cfg-deb-repo-root c) "SOURCES"))
+
+(define (deb-scripts-dir c)
+  (build-path (cfg-deb-repo-root c) "scripts"))
+
+(define (deb-definition-source-keep-path c)
+  (build-path (deb-sources-dir c) ".gitkeep"))
+
+(define (deb-script-path c name)
+  (build-path (deb-scripts-dir c) name))
+
+(define (deb-source-archive-name c)
+  (brew-source-tgz-name c))
+
+(define (deb-full-release release system)
+  f"{release}.{system}")
+
+(define (deb-package-version c release system)
+  f"{(cfg-formula-version c)}-{(deb-full-release release system)}")
+
+(define (deb-generated-package-name c [release (cfg-deb-release c)]
+                                    [system (cfg-deb-system c)]
+                                    [arch (cfg-deb-arch c)])
+  f"{(cfg-package-name c)}_{(deb-package-version c release system)}_{arch}.deb")
+
+(define (deb-script-header name)
+  f"#!/usr/bin/env bash
+set -euo pipefail
+
+# {generated-deb-repo-notice-marker}
+# Generated entrypoint: {name}
+
+")
+
+(define (deb-repo-gitignore-content)
+  ".DS_Store
+*.tmp
+*.swp
+.*.swp
+.commit
+.build/
+artifacts/
+*.deb
+")
+
+(define (deb-readme-content c)
+  f"# deb-racket
+
+{generated-deb-repo-notice-marker}
+
+This repository is the Debian package build-script repository generated by
+`package-racket`. It is not an apt repository. Treat `SOURCES/`, `scripts/`,
+`.github/workflows/`, `.gitignore`, and `README.md` as generated outputs.
+Change `package-racket` and regenerate instead of hand-editing production
+packaging files here.
+
+## Layout
+
+- `SOURCES/.gitkeep`: source placeholder; build scripts copy or download the
+  stable source archive into their explicit work directory.
+- `scripts/deb-common.sh`: shared safety checks and staging helpers.
+- `scripts/build-deb.sh`: builds a binary `.deb` from the stable source archive.
+- `scripts/verify-deb.sh`: validates `.deb` filename and metadata.
+- `.github/workflows/build-deb.yml`: builds configured Debian targets with
+  GitHub Actions and uploads release assets after every target succeeds.
+
+## Regenerate
+
+Run from `package-racket` to overwrite generated scripts:
+
+```sh
+racket package-racket.rkt \\
+  --target deb-spec \\
+  --deb-repo-config {(clean-path-string (cfg-deb-repo-config c))}
+```
+
+Run from `package-racket` to overwrite generated CI:
+
+```sh
+racket package-racket.rkt \\
+  --target deb-ci \\
+  --deb-repo-config {(clean-path-string (cfg-deb-repo-config c))} \\
+  --deb-ci-config {(clean-path-string (cfg-deb-ci-config c))}
+```
+
+## Build
+
+Build a `.deb` from the generated GitHub Release source URL:
+
+```sh
+scripts/build-deb.sh \\
+  --artifact-dir /path/to/artifacts \\
+  --work-dir /path/to/work \\
+  --deb-system {(cfg-deb-system c)} \\
+  --deb-release {(cfg-deb-release c)} \\
+  --deb-arch {(cfg-deb-arch c)} \\
+  --prefix /usr
+```
+
+Use a local source archive for offline or pinned local builds:
+
+```sh
+scripts/build-deb.sh \\
+  --source-archive /path/to/{(deb-source-archive-name c)} \\
+  --artifact-dir /path/to/artifacts \\
+  --work-dir /path/to/work \\
+  --deb-system {(cfg-deb-system c)} \\
+  --deb-release {(cfg-deb-release c)} \\
+  --deb-arch {(cfg-deb-arch c)} \\
+  --prefix /usr
+```
+
+Supported Debian-family systems are `debian12` and `ubuntu2404`. The package
+revision is generated as `deb-release.deb-system`, so `{(cfg-deb-release c)}`
+and `{(cfg-deb-system c)}` produce version `{(deb-package-version c (cfg-deb-release c) (cfg-deb-system c))}`.
+
+Validate an existing `.deb`:
+
+```sh
+scripts/verify-deb.sh \\
+  --deb /path/to/artifacts/{(deb-generated-package-name c)} \\
+  --deb-system {(cfg-deb-system c)} \\
+  --deb-release {(cfg-deb-release c)} \\
+  --deb-arch {(cfg-deb-arch c)}
+```
+")
+
+(define (deb-common-script-content c [source-sha256 (rpm-source-sha256/local c)])
+  f"{(deb-script-header "deb-common.sh")}PACKAGE_NAME={(shell-single-quoted (cfg-package-name c))}
+PACKAGE_VERSION={(shell-single-quoted (cfg-formula-version c))}
+PACKAGE_SOURCE_VERSION={(shell-single-quoted (cfg-source-version c))}
+DEFAULT_DEB_SYSTEM={(shell-single-quoted (cfg-deb-system c))}
+DEFAULT_DEB_RELEASE={(shell-single-quoted (cfg-deb-release c))}
+DEFAULT_DEB_ARCH={(shell-single-quoted (cfg-deb-arch c))}
+DEFAULT_PREFIX={(shell-single-quoted (cfg-prefix c))}
+SOURCE_ARCHIVE_NAME={(shell-single-quoted (deb-source-archive-name c))}
+DEFAULT_SOURCE_URL={(shell-single-quoted (formula-source-url c))}
+SOURCE_SHA256={(shell-single-quoted source-sha256)}
+PACKAGE_SUMMARY={(shell-single-quoted (cfg-summary c))}
+PACKAGE_MAINTAINER={(shell-single-quoted (cfg-maintainer c))}
+PACKAGE_HOMEPAGE={(shell-single-quoted (cfg-url c))}
+
+die() {{
+  printf 'ERROR: %s\\n' \"$*\" >&2
+  exit 1
+}}
+
+usage_error() {{
+  die \"$1. Run with --help for usage.\"
+}}
+
+repo_root_from_script() {{
+  local script_dir
+  script_dir=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)
+  CDPATH= cd -- \"$script_dir/..\" && pwd
+}}
+
+require_repo_root() {{
+  local root=\"$1\"
+  [ -d \"$root\" ] || die \"repository root does not exist: $root\"
+  [ -f \"$root/scripts/deb-common.sh\" ] || die \"missing common script: $root/scripts/deb-common.sh\"
+  [ -f \"$root/SOURCES/.gitkeep\" ] || die \"missing source placeholder: $root/SOURCES/.gitkeep\"
+}}
+
+require_file() {{
+  [ -f \"$1\" ] || die \"file does not exist: $1\"
+}}
+
+require_nonempty_file() {{
+  require_file \"$1\"
+  [ -s \"$1\" ] || die \"file is empty: $1\"
+}}
+
+require_dir() {{
+  [ -d \"$1\" ] || die \"directory does not exist: $1\"
+}}
+
+require_absolute_path() {{
+  case \"$1\" in
+    /*) ;;
+    *) die \"$2 must be an absolute path: $1\" ;;
+  esac
+}}
+
+require_exe() {{
+  command -v \"$1\" >/dev/null 2>&1 || die \"executable not found in PATH: $1\"
+}}
+
+maybe_require_exe() {{
+  local dry_run=\"$1\"
+  local exe=\"$2\"
+  if [ \"$dry_run\" = 1 ]; then
+    printf 'Would require executable: %s\\n' \"$exe\"
+  else
+    require_exe \"$exe\"
+  fi
+}}
+
+run_cmd() {{
+  local dry_run=\"$1\"
+  shift
+  printf '$'
+  printf ' %q' \"$@\"
+  printf '\\n'
+  if [ \"$dry_run\" = 0 ]; then
+    \"$@\"
+  fi
+}}
+
+normalize_arch() {{
+  case \"$1\" in
+    amd64|x86_64|x64) printf 'amd64\\n' ;;
+    arm64|aarch64) printf 'arm64\\n' ;;
+    *) die \"deb arch must be amd64, x86_64, x64, arm64, or aarch64: $1\" ;;
+  esac
+}}
+
+validate_deb_system() {{
+  case \"$1\" in
+    debian12|ubuntu2404) ;;
+    *) die \"deb system must be debian12 or ubuntu2404: $1\" ;;
+  esac
+}}
+
+validate_deb_release() {{
+  local release=\"$1\"
+  [ -n \"$release\" ] || die \"deb release is required\"
+  case \"$release\" in
+    *.*) die \"deb release must not contain . because system is appended separately: $release\" ;;
+    [0-9]*) ;;
+    *) die \"deb release must start with a digit: $release\" ;;
+  esac
+  case \"$release\" in
+    *[!A-Za-z0-9_+~-]*) die \"deb release contains unsupported characters: $release\" ;;
+  esac
+}}
+
+deb_full_release() {{
+  local release=\"$1\"
+  local system=\"$2\"
+  printf '%s.%s\\n' \"$release\" \"$system\"
+}}
+
+deb_package_version() {{
+  local release=\"$1\"
+  local system=\"$2\"
+  printf '%s-%s\\n' \"$PACKAGE_VERSION\" \"$(deb_full_release \"$release\" \"$system\")\"
+}}
+
+deb_name_for_arch() {{
+  local arch=\"$1\"
+  local release=\"$2\"
+  local system=\"$3\"
+  printf '%s_%s_%s.deb\\n' \"$PACKAGE_NAME\" \"$(deb_package_version \"$release\" \"$system\")\" \"$arch\"
+}}
+
+reset_output_dir() {{
+  local dry_run=\"$1\"
+  local path=\"$2\"
+  require_absolute_path \"$path\" \"output directory\"
+  if [ \"$path\" = / ]; then
+    die \"refusing to reset / as output directory\"
+  fi
+  if [ \"$dry_run\" = 1 ]; then
+    printf 'Would reset output directory: %s\\n' \"$path\"
+  else
+    rm -rf \"$path\"
+    mkdir -p \"$path\"
+  fi
+}}
+
+validate_source_archive() {{
+  local dry_run=\"$1\"
+  local archive=\"$2\"
+  local expected_root=\"racket-$PACKAGE_SOURCE_VERSION\"
+  if [ \"$dry_run\" = 1 ]; then
+    printf 'Would validate source archive: %s\\n' \"$archive\"
+    return
+  fi
+  require_nonempty_file \"$archive\"
+  tar -tzf \"$archive\" \"$expected_root/src/configure\" >/dev/null \\
+    || die \"source archive missing $expected_root/src/configure: $archive\"
+  tar -tzf \"$archive\" \"$expected_root/collects/racket/main.rkt\" >/dev/null \\
+    || die \"source archive missing $expected_root/collects/racket/main.rkt: $archive\"
+}}
+
+verify_source_sha256() {{
+  local dry_run=\"$1\"
+  local archive=\"$2\"
+  if [ -z \"$SOURCE_SHA256\" ]; then
+    printf 'No generated source sha256 is pinned; skipping source sha256 check.\\n'
+    return
+  fi
+  if [ \"$dry_run\" = 1 ]; then
+    printf 'Would verify source sha256: %s\\n' \"$SOURCE_SHA256\"
+    return
+  fi
+  local actual
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum \"$archive\" | cut -d ' ' -f 1)
+  elif command -v shasum >/dev/null 2>&1; then
+    actual=$(shasum -a 256 \"$archive\" | cut -d ' ' -f 1)
+  else
+    die \"executable not found in PATH: sha256sum or shasum\"
+  fi
+  [ \"$actual\" = \"$SOURCE_SHA256\" ] \\
+    || die \"source sha256 mismatch: expected $SOURCE_SHA256 but got $actual\"
+}}
+
+prepare_source_archive() {{
+  local dry_run=\"$1\"
+  local source_archive=\"$2\"
+  local source_url=\"$3\"
+  local dest=\"$4\"
+  require_absolute_path \"$dest\" \"source archive destination\"
+  if [ \"$dry_run\" = 0 ]; then
+    mkdir -p \"$(dirname \"$dest\")\"
+  fi
+  if [ -n \"$source_archive\" ]; then
+    require_nonempty_file \"$source_archive\"
+    run_cmd \"$dry_run\" cp \"$source_archive\" \"$dest\"
+  else
+    [ -n \"$source_url\" ] || die \"source URL is empty\"
+    maybe_require_exe \"$dry_run\" curl
+    run_cmd \"$dry_run\" curl -fL --retry 3 --output \"$dest\" \"$source_url\"
+  fi
+  validate_source_archive \"$dry_run\" \"$dest\"
+  verify_source_sha256 \"$dry_run\" \"$dest\"
+}}
+")
+
+(define (deb-build-script-content c)
+  f"{(deb-script-header "build-deb.sh")}SCRIPT_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)
+source \"$SCRIPT_DIR/deb-common.sh\"
+
+usage() {{
+  cat <<'USAGE'
+Usage: scripts/build-deb.sh --artifact-dir PATH --work-dir PATH --deb-system SYSTEM --deb-release RELEASE --deb-arch ARCH [options]
+
+Build a binary .deb from a stable source archive. All mutable paths are named.
+
+Options:
+  --source-archive PATH  Local source archive to copy into the build work dir.
+  --source-url URL       Source archive URL. Defaults to the generated release URL.
+  --artifact-dir PATH    Directory that receives the final .deb.
+  --work-dir PATH        Build work directory.
+  --deb-system SYSTEM    debian12 or ubuntu2404.
+  --deb-release RELEASE  Package revision base, for example 1. The system suffix is appended separately.
+  --prefix PATH          Install prefix inside the package. Defaults to generated /usr.
+  --deb-arch ARCH        amd64, x86_64, x64, arm64, or aarch64.
+  --jobs N               Parallel jobs passed to make.
+  --dry-run              Print checks and commands without writing outputs.
+USAGE
+}}
+
+DRY_RUN=0
+SOURCE_ARCHIVE=
+SOURCE_URL=\"$DEFAULT_SOURCE_URL\"
+SOURCE_URL_EXPLICIT=0
+ARTIFACT_DIR=
+WORK_DIR=
+DEB_SYSTEM=
+DEB_RELEASE=
+DEB_ARCH=
+JOBS=1
+PREFIX=\"$DEFAULT_PREFIX\"
+
+while [ $# -gt 0 ]; do
+  case \"$1\" in
+    --source-archive) [ $# -ge 2 ] || usage_error \"missing value for --source-archive\"; SOURCE_ARCHIVE=\"$2\"; shift 2 ;;
+    --source-url) [ $# -ge 2 ] || usage_error \"missing value for --source-url\"; SOURCE_URL=\"$2\"; SOURCE_URL_EXPLICIT=1; shift 2 ;;
+    --artifact-dir) [ $# -ge 2 ] || usage_error \"missing value for --artifact-dir\"; ARTIFACT_DIR=\"$2\"; shift 2 ;;
+    --work-dir) [ $# -ge 2 ] || usage_error \"missing value for --work-dir\"; WORK_DIR=\"$2\"; shift 2 ;;
+    --deb-system) [ $# -ge 2 ] || usage_error \"missing value for --deb-system\"; DEB_SYSTEM=\"$2\"; shift 2 ;;
+    --deb-release) [ $# -ge 2 ] || usage_error \"missing value for --deb-release\"; DEB_RELEASE=\"$2\"; shift 2 ;;
+    --prefix) [ $# -ge 2 ] || usage_error \"missing value for --prefix\"; PREFIX=\"$2\"; shift 2 ;;
+    --deb-arch) [ $# -ge 2 ] || usage_error \"missing value for --deb-arch\"; DEB_ARCH=\"$2\"; shift 2 ;;
+    --jobs) [ $# -ge 2 ] || usage_error \"missing value for --jobs\"; JOBS=\"$2\"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --help) usage; exit 0 ;;
+    *) usage_error \"unknown option: $1\" ;;
+  esac
+done
+
+REPO_ROOT=$(repo_root_from_script)
+require_repo_root \"$REPO_ROOT\"
+[ -n \"$ARTIFACT_DIR\" ] || usage_error \"--artifact-dir is required\"
+[ -n \"$WORK_DIR\" ] || usage_error \"--work-dir is required\"
+[ -n \"$DEB_SYSTEM\" ] || usage_error \"--deb-system is required\"
+[ -n \"$DEB_RELEASE\" ] || usage_error \"--deb-release is required\"
+[ -n \"$DEB_ARCH\" ] || usage_error \"--deb-arch is required\"
+validate_deb_system \"$DEB_SYSTEM\"
+validate_deb_release \"$DEB_RELEASE\"
+NORMALIZED_ARCH=$(normalize_arch \"$DEB_ARCH\")
+if [ -n \"$SOURCE_ARCHIVE\" ] && [ \"$SOURCE_URL_EXPLICIT\" = 1 ]; then
+  usage_error \"use either --source-archive or --source-url, not both\"
+fi
+
+maybe_require_exe \"$DRY_RUN\" tar
+maybe_require_exe \"$DRY_RUN\" make
+maybe_require_exe \"$DRY_RUN\" dpkg-deb
+
+SOURCE_WORK=\"$WORK_DIR/source\"
+SOURCE_PATH=\"$SOURCE_WORK/$SOURCE_ARCHIVE_NAME\"
+EXTRACT_ROOT=\"$WORK_DIR/source-tree\"
+STAGE_ROOT=\"$WORK_DIR/deb-root\"
+DEBIAN_DIR=\"$STAGE_ROOT/DEBIAN\"
+DEB_NAME=$(deb_name_for_arch \"$NORMALIZED_ARCH\" \"$DEB_RELEASE\" \"$DEB_SYSTEM\")
+DEB_VERSION=$(deb_package_version \"$DEB_RELEASE\" \"$DEB_SYSTEM\")
+
+printf 'Repository root: %s\\n' \"$REPO_ROOT\"
+printf 'DEB system: %s\\n' \"$DEB_SYSTEM\"
+printf 'DEB release: %s\\n' \"$DEB_RELEASE\"
+printf 'DEB version: %s\\n' \"$DEB_VERSION\"
+printf 'Source archive: %s\\n' \"${{SOURCE_ARCHIVE:-$SOURCE_URL}}\"
+printf 'DEB output: %s\\n' \"$ARTIFACT_DIR/$DEB_NAME\"
+
+if [ \"$DRY_RUN\" = 0 ]; then
+  reset_output_dir 0 \"$SOURCE_WORK\"
+  reset_output_dir 0 \"$EXTRACT_ROOT\"
+  reset_output_dir 0 \"$STAGE_ROOT\"
+fi
+prepare_source_archive \"$DRY_RUN\" \"$SOURCE_ARCHIVE\" \"$SOURCE_URL\" \"$SOURCE_PATH\"
+
+if [ \"$DRY_RUN\" = 1 ]; then
+  printf 'Would extract source archive into: %s\\n' \"$EXTRACT_ROOT\"
+  printf 'Would build install root: %s\\n' \"$STAGE_ROOT\"
+  printf 'Would write Debian control metadata: %s\\n' \"$DEBIAN_DIR/control\"
+  printf 'Would build DEB artifact: %s\\n' \"$ARTIFACT_DIR/$DEB_NAME\"
+  exit 0
+fi
+
+tar -xzf \"$SOURCE_PATH\" -C \"$EXTRACT_ROOT\"
+mapfile -t source_dirs < <(find \"$EXTRACT_ROOT\" -mindepth 1 -maxdepth 1 -type d | sort)
+if [ \"${{#source_dirs[@]}}\" -ne 1 ]; then
+  printf 'Expected exactly one extracted source directory, got %s\\n' \"${{#source_dirs[@]}}\" >&2
+  printf '  %s\\n' \"${{source_dirs[@]}}\" >&2
+  exit 1
+fi
+SOURCE_DIR=\"${{source_dirs[0]}}\"
+
+sed -i 's/))$/) (default-scope . \"installation\"))/' \"$SOURCE_DIR/etc/config.rktd\"
+sed -i 's/\"1[.]1\"/\"3\"/g' \"$SOURCE_DIR/collects/openssl/libssl.rkt\" \"$SOURCE_DIR/collects/openssl/libcrypto.rkt\"
+cd \"$SOURCE_DIR/src\"
+./configure \\
+  --disable-debug \\
+  --disable-dependency-tracking \\
+  --enable-origtree=no \\
+  --prefix=\"$PREFIX\" \\
+  --sysconfdir=/etc \\
+  --enable-useprefix
+make -j\"$JOBS\"
+make install DESTDIR=\"$STAGE_ROOT\"
+cd \"$REPO_ROOT\"
+
+if ! find \"$STAGE_ROOT\" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+  die \"staged package root is empty: $STAGE_ROOT\"
+fi
+mkdir -p \"$DEBIAN_DIR\"
+cat > \"$DEBIAN_DIR/control\" <<CONTROL
+Package: $PACKAGE_NAME
+Version: $DEB_VERSION
+Section: devel
+Priority: optional
+Architecture: $NORMALIZED_ARCH
+Maintainer: $PACKAGE_MAINTAINER
+Homepage: $PACKAGE_HOMEPAGE
+Depends: libc6, libedit2, libffi8, libssl3, libsqlite3-0, zlib1g
+Description: $PACKAGE_SUMMARY
+ Racket packaged from a stable source release archive.
+CONTROL
+
+(cd \"$STAGE_ROOT\" && find . -type f ! -path './DEBIAN/*' -print0 | sort -z | xargs -0 md5sum > DEBIAN/md5sums)
+require_nonempty_file \"$DEBIAN_DIR/control\"
+require_nonempty_file \"$DEBIAN_DIR/md5sums\"
+mkdir -p \"$ARTIFACT_DIR\"
+dpkg-deb --root-owner-group --build \"$STAGE_ROOT\" \"$ARTIFACT_DIR/$DEB_NAME\"
+\"$REPO_ROOT/scripts/verify-deb.sh\" --deb \"$ARTIFACT_DIR/$DEB_NAME\" --deb-system \"$DEB_SYSTEM\" --deb-release \"$DEB_RELEASE\" --deb-arch \"$NORMALIZED_ARCH\"
+printf 'DEB package: %s\\n' \"$ARTIFACT_DIR/$DEB_NAME\"
+")
+
+(define (deb-verify-script-content c)
+  f"{(deb-script-header "verify-deb.sh")}SCRIPT_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)
+source \"$SCRIPT_DIR/deb-common.sh\"
+
+usage() {{
+  cat <<'USAGE'
+Usage: scripts/verify-deb.sh --deb PATH --deb-system SYSTEM --deb-release RELEASE --deb-arch ARCH [--dry-run]
+
+Validate .deb filename and metadata.
+USAGE
+}}
+
+DRY_RUN=0
+DEB_PATH=
+DEB_SYSTEM=
+DEB_RELEASE=
+DEB_ARCH=
+
+while [ $# -gt 0 ]; do
+  case \"$1\" in
+    --deb) [ $# -ge 2 ] || usage_error \"missing value for --deb\"; DEB_PATH=\"$2\"; shift 2 ;;
+    --deb-system) [ $# -ge 2 ] || usage_error \"missing value for --deb-system\"; DEB_SYSTEM=\"$2\"; shift 2 ;;
+    --deb-release) [ $# -ge 2 ] || usage_error \"missing value for --deb-release\"; DEB_RELEASE=\"$2\"; shift 2 ;;
+    --deb-arch) [ $# -ge 2 ] || usage_error \"missing value for --deb-arch\"; DEB_ARCH=\"$2\"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --help) usage; exit 0 ;;
+    *) usage_error \"unknown option: $1\" ;;
+  esac
+done
+
+REPO_ROOT=$(repo_root_from_script)
+require_repo_root \"$REPO_ROOT\"
+[ -n \"$DEB_PATH\" ] || usage_error \"--deb is required\"
+[ -n \"$DEB_SYSTEM\" ] || usage_error \"--deb-system is required\"
+[ -n \"$DEB_RELEASE\" ] || usage_error \"--deb-release is required\"
+[ -n \"$DEB_ARCH\" ] || usage_error \"--deb-arch is required\"
+validate_deb_system \"$DEB_SYSTEM\"
+validate_deb_release \"$DEB_RELEASE\"
+NORMALIZED_ARCH=$(normalize_arch \"$DEB_ARCH\")
+DEB_VERSION=$(deb_package_version \"$DEB_RELEASE\" \"$DEB_SYSTEM\")
+EXPECTED_DEB=$(deb_name_for_arch \"$NORMALIZED_ARCH\" \"$DEB_RELEASE\" \"$DEB_SYSTEM\")
+
+if [ \"$DRY_RUN\" = 1 ]; then
+  printf 'Would verify DEB: %s\\n' \"$DEB_PATH\"
+  printf 'Would expect DEB basename: %s\\n' \"$EXPECTED_DEB\"
+  printf 'Would expect DEB version: %s\\n' \"$DEB_VERSION\"
+  exit 0
+fi
+
+require_exe dpkg-deb
+require_nonempty_file \"$DEB_PATH\"
+[ \"$(basename \"$DEB_PATH\")\" = \"$EXPECTED_DEB\" ] || die \"DEB basename does not match expected $EXPECTED_DEB: $DEB_PATH\"
+
+package=$(dpkg-deb --field \"$DEB_PATH\" Package)
+version=$(dpkg-deb --field \"$DEB_PATH\" Version)
+arch=$(dpkg-deb --field \"$DEB_PATH\" Architecture)
+[ \"$package\" = \"$PACKAGE_NAME\" ] || die \"DEB Package field mismatch: expected $PACKAGE_NAME got $package\"
+[ \"$version\" = \"$DEB_VERSION\" ] || die \"DEB Version field mismatch: expected $DEB_VERSION got $version\"
+[ \"$arch\" = \"$NORMALIZED_ARCH\" ] || die \"DEB Architecture field mismatch: expected $NORMALIZED_ARCH got $arch\"
+dpkg-deb --contents \"$DEB_PATH\" >/dev/null
+printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
+")
+
+(define (assert-deb-repo-root! c #:write? [write? #t])
+  (begin
+    (define root (cfg-deb-repo-root c))
+    (assert-directory 'deb-repo root)
+    (assert-directory 'deb-repo (build-path root ".git"))
+    (when write?
+      (assert-writable-directory 'deb-repo root)
+    ) ; end when write check requested
+  ) ; end begin assert-deb-repo-root!
+) ; end define assert-deb-repo-root!
+
+(define (validate-generated-deb-script! c name required-needles)
+  (begin
+    (define path (deb-script-path c name))
+    (assert-nonempty-file 'validate-deb-spec-scaffold! path)
+    (define content (file->string path))
+    (define bits (file-or-directory-permissions path 'bits))
+    (unless (not (zero? (bitwise-and bits #o111)))
+      (raise-user-error 'validate-deb-spec-scaffold!
+                        f"generated script is not executable: {(clean-path-string path)}")
+    ) ; end unless executable bit present
+    (for ([needle (in-list (cons "set -euo pipefail" required-needles))])
+      (unless (string-contains? content needle)
+        (raise-user-error 'validate-deb-spec-scaffold!
+                          f"generated script {name} is missing: {needle}")
+      ) ; end unless script content contains needle
+    ) ; end for script needle
+  ) ; end begin validate-generated-deb-script!
+) ; end define validate-generated-deb-script!
+
+(define (deb-spec-output-paths c)
+  (list (deb-repo-gitignore-path c)
+        (deb-definition-source-keep-path c)
+        (deb-script-path c "deb-common.sh")
+        (deb-script-path c "build-deb.sh")
+        (deb-script-path c "verify-deb.sh")
+        (deb-repo-readme-path c)))
+
+(define (validate-deb-spec-scaffold! c)
+  (begin
+    (assert-nonempty-file 'validate-deb-spec-scaffold! (deb-repo-readme-path c))
+    (assert-nonempty-file 'validate-deb-spec-scaffold! (deb-repo-gitignore-path c))
+    (assert-file 'validate-deb-spec-scaffold! (deb-definition-source-keep-path c))
+    (define readme-content (file->string (deb-repo-readme-path c)))
+    (for ([needle (in-list (list "Debian package build-script repository"
+                                 "not an apt repository"
+                                 "scripts/build-deb.sh"
+                                 "scripts/verify-deb.sh"))])
+      (unless (string-contains? readme-content needle)
+        (raise-user-error 'validate-deb-spec-scaffold!
+                          f"generated README is missing: {needle}")
+      ) ; end unless readme content contains needle
+    ) ; end for readme needle
+    (validate-generated-deb-script! c
+                                    "deb-common.sh"
+                                    '("prepare_source_archive"
+                                      "validate_source_archive"
+                                      "require_repo_root"
+                                      "deb_name_for_arch"))
+    (validate-generated-deb-script! c
+                                    "build-deb.sh"
+                                    '("Usage: scripts/build-deb.sh"
+                                      "dpkg-deb --root-owner-group --build"
+                                      "Depends: libc6, libedit2"
+                                      "--dry-run"))
+    (validate-generated-deb-script! c
+                                    "verify-deb.sh"
+                                    '("dpkg-deb --field"
+                                      "dpkg-deb --contents"
+                                      "--dry-run"))
+  ) ; end begin validate-deb-spec-scaffold!
+) ; end define validate-deb-spec-scaffold!
+
+(define (write-deb-spec-scaffold! c)
+  (begin
+    (assert-deb-repo-root! c #:write? #t)
+    (make-directory* (deb-sources-dir c))
+    (make-directory* (deb-scripts-dir c))
+    (define source-url (formula-source-url c))
+    (define source-sha256
+      (resolve-source-archive-sha256! 'write-deb-spec-scaffold!
+                                      c
+                                      source-url
+                                      "DEB source archive"))
+    (write-text-file! (deb-repo-gitignore-path c) (deb-repo-gitignore-content))
+    (write-text-file! (deb-definition-source-keep-path c) "")
+    (write-executable-text-file! (deb-script-path c "deb-common.sh")
+                                 (deb-common-script-content c source-sha256))
+    (write-executable-text-file! (deb-script-path c "build-deb.sh")
+                                 (deb-build-script-content c))
+    (write-executable-text-file! (deb-script-path c "verify-deb.sh")
+                                 (deb-verify-script-content c))
+    (write-text-file! (deb-repo-readme-path c) (deb-readme-content c))
+    (validate-deb-spec-scaffold! c)
+    (println/flush f"Generated DEB scaffold: {(clean-path-string (cfg-deb-repo-root c))}")
+  ) ; end begin write-deb-spec-scaffold!
+) ; end define write-deb-spec-scaffold!
+
+(define (print-deb-spec-scaffold-dry-run! c)
+  (begin
+    (assert-deb-repo-root! c #:write? #f)
+    (println/flush f"Would generate DEB scaffold in: {(clean-path-string (cfg-deb-repo-root c))}")
+    (for ([path (in-list (deb-spec-output-paths c))])
+      (println/flush f"Would generate DEB file: {(clean-path-string path)}")
+    ) ; end for deb spec output path
+  ) ; end begin print-deb-spec-scaffold-dry-run!
+) ; end define print-deb-spec-scaffold-dry-run!
+
+(define (build-deb-spec! c)
+  (begin
+    (println/flush f"DEB config: {(clean-path-string (cfg-deb-repo-config c))}")
+    (println/flush f"DEB root: {(clean-path-string (cfg-deb-repo-root c))}")
+    (println/flush f"DEB package: {(cfg-package-name c)}")
+    (if (cfg-dry-run? c)
+        (print-deb-spec-scaffold-dry-run! c)
+        (write-deb-spec-scaffold! c))
+  ) ; end begin build-deb-spec!
+) ; end define build-deb-spec!
 
 (define (rpm-source-archive-name c)
   (brew-source-tgz-name c))
@@ -2645,6 +3369,449 @@ jobs:
         (write-rpm-ci-workflow! c config))
   ) ; end begin build-rpm-ci!
 ) ; end define build-rpm-ci!
+
+(define (deb-workflows-dir c)
+  (build-path (cfg-deb-repo-root c) ".github" "workflows"))
+
+(define (deb-ci-workflow-path c)
+  (build-path (deb-workflows-dir c) "build-deb.yml"))
+
+(define (generated-deb-code-notice comment-prefix)
+  f"{comment-prefix} {generated-deb-repo-notice-marker}
+{comment-prefix} Source of truth: {(generated-source-root)}
+{comment-prefix} Humans and LLM agents must change package-racket and regenerate; manual deb-racket edits are not production-safe.
+
+")
+
+(define (assert-deb-ci-id value)
+  (begin
+    (assert-single-line-string 'deb-ci-config 'id value)
+    (unless (regexp-match? #px"^[A-Za-z0-9_.+-]+$" value)
+      (raise-user-error 'deb-ci-config
+                        f"target id must contain only letters, digits, _, ., +, or -: {value}")
+    ) ; end unless safe target id
+    value
+  ) ; end begin assert-deb-ci-id
+) ; end define assert-deb-ci-id
+
+(define (assert-deb-ci-runner value)
+  (begin
+    (assert-single-line-string 'deb-ci-config 'runner value)
+    (unless (regexp-match? #px"^[A-Za-z0-9_.:-]+$" value)
+      (raise-user-error 'deb-ci-config
+                        f"runner must contain only letters, digits, _, ., :, or -: {value}")
+    ) ; end unless safe runner
+    value
+  ) ; end begin assert-deb-ci-runner
+) ; end define assert-deb-ci-runner
+
+(define (assert-deb-ci-container value)
+  (begin
+    (assert-single-line-string 'deb-ci-config 'container value)
+    (unless (regexp-match? #px"^[A-Za-z0-9._/:@-]+$" value)
+      (raise-user-error 'deb-ci-config
+                        f"container must contain only image-reference characters: {value}")
+    ) ; end unless safe container
+    value
+  ) ; end begin assert-deb-ci-container
+) ; end define assert-deb-ci-container
+
+(define (assert-deb-ci-package value)
+  (begin
+    (assert-single-line-string 'deb-ci-config 'setup-packages value)
+    (unless (regexp-match? #px"^[A-Za-z0-9._+:@/-]+$" value)
+      (raise-user-error 'deb-ci-config
+                        f"setup package contains unsupported characters: {value}")
+    ) ; end unless safe package
+    value
+  ) ; end begin assert-deb-ci-package
+) ; end define assert-deb-ci-package
+
+(define (assert-deb-ci-artifact-prefix value)
+  (begin
+    (assert-single-line-string 'deb-ci-config 'artifact-prefix value)
+    (unless (regexp-match? #px"^[A-Za-z0-9_.+-]+$" value)
+      (raise-user-error 'deb-ci-config
+                        f"artifact-prefix must contain only letters, digits, _, ., +, or -: {value}")
+    ) ; end unless safe artifact prefix
+    value
+  ) ; end begin assert-deb-ci-artifact-prefix
+) ; end define assert-deb-ci-artifact-prefix
+
+(define (assert-deb-ci-release-tag value)
+  (begin
+    (assert-single-line-string 'deb-ci-config 'release-tag value)
+    (unless (regexp-match? #px"^[A-Za-z0-9._/-]+$" value)
+      (raise-user-error 'deb-ci-config
+                        f"release-tag must contain only letters, digits, _, ., /, or -: {value}")
+    ) ; end unless safe release tag
+    value
+  ) ; end begin assert-deb-ci-release-tag
+) ; end define assert-deb-ci-release-tag
+
+(define (assert-deb-ci-release-name value)
+  (assert-single-line-string 'deb-ci-config 'release-name value))
+
+(define (deb-ci-normalize-target target)
+  (begin
+    (unless (hash? target)
+      (raise-user-error 'deb-ci-config "each target must be a hash")
+    ) ; end unless target hash
+    (define id
+      (assert-deb-ci-id (config-required-string 'deb-ci-config target 'id)))
+    (define system
+      (assert-deb-system (config-required-string 'deb-ci-config target 'deb-system)))
+    (define release
+      (assert-deb-release (config-required-string 'deb-ci-config target 'deb-release)))
+    (define arch
+      (normalize-deb-arch (config-required-string 'deb-ci-config target 'deb-arch)))
+    (define runner
+      (assert-deb-ci-runner (config-required-string 'deb-ci-config target 'runner)))
+    (define container
+      (assert-deb-ci-container (config-required-string 'deb-ci-config target 'container)))
+    (define packages
+      (config-required-list 'deb-ci-config target 'setup-packages))
+    (when (null? packages)
+      (raise-user-error 'deb-ci-config f"target {id} setup-packages must not be empty")
+    ) ; end when empty setup packages
+    (for ([pkg (in-list packages)])
+      (unless (string? pkg)
+        (raise-user-error 'deb-ci-config f"target {id} setup-packages must contain only strings")
+      ) ; end unless package string
+      (assert-deb-ci-package pkg)
+    ) ; end for setup package
+    (define jobs
+      (required-config-positive-integer target 'jobs))
+    (hash 'id id
+          'deb-system system
+          'deb-release release
+          'deb-arch arch
+          'runner runner
+          'container container
+          'setup-packages packages
+          'jobs jobs)
+  ) ; end begin deb-ci-normalize-target
+) ; end define deb-ci-normalize-target
+
+(define (deb-ci-target-artifact-name artifact-prefix target)
+  f"{artifact-prefix}-{(hash-ref target 'id)}")
+
+(define (deb-ci-normalized-targets config)
+  (begin
+    (define raw-targets (config-required-list 'deb-ci-config config 'targets))
+    (when (null? raw-targets)
+      (raise-user-error 'deb-ci-config "targets must not be empty")
+    ) ; end when no targets
+    (define targets (map deb-ci-normalize-target raw-targets))
+    (define ids (map (lambda (target) (hash-ref target 'id)) targets))
+    (unless (= (length ids) (length (remove-duplicates ids string=?)))
+      (raise-user-error 'deb-ci-config "target ids must be unique")
+    ) ; end unless unique target ids
+    targets
+  ) ; end begin deb-ci-normalized-targets
+) ; end define deb-ci-normalized-targets
+
+(define (validate-deb-ci-config! config)
+  (begin
+    (assert-deb-ci-release-tag (config-required-string 'deb-ci-config config 'release-tag))
+    (assert-deb-ci-release-name (config-required-string 'deb-ci-config config 'release-name))
+    (assert-deb-ci-artifact-prefix (config-required-string 'deb-ci-config config 'artifact-prefix))
+    (config-required-boolean 'deb-ci-config config 'create-release)
+    (deb-ci-normalized-targets config)
+    (void)
+  ) ; end begin validate-deb-ci-config!
+) ; end define validate-deb-ci-config!
+
+(define (read-deb-ci-config c)
+  (begin
+    (define path (cfg-deb-ci-config c))
+    (define config (read-rktd-hash 'deb-ci-config path))
+    (validate-deb-ci-config! config)
+    config
+  ) ; end begin read-deb-ci-config
+) ; end define read-deb-ci-config
+
+(define (deb-ci-matrix-lines artifact-prefix targets)
+  (apply
+   string-append
+   (for/list ([target (in-list targets)])
+     (define id (hash-ref target 'id))
+     (define packages (string-join (hash-ref target 'setup-packages) " "))
+     f"          - id: {(yaml-single-quote id)}
+            deb_system: {(yaml-single-quote (hash-ref target 'deb-system))}
+            deb_release: {(yaml-single-quote (hash-ref target 'deb-release))}
+            deb_arch: {(yaml-single-quote (hash-ref target 'deb-arch))}
+            runner: {(yaml-single-quote (hash-ref target 'runner))}
+            container: {(yaml-single-quote (hash-ref target 'container))}
+            jobs: {(number->string (hash-ref target 'jobs))}
+            artifact_name: {(yaml-single-quote (deb-ci-target-artifact-name artifact-prefix target))}
+            setup_packages: {(yaml-single-quote packages)}
+"
+   ) ; end for/list matrix target
+  ) ; end apply string-append matrix lines
+) ; end define deb-ci-matrix-lines
+
+(define (deb-ci-workflow-content c config)
+  (begin
+    (define targets (deb-ci-normalized-targets config))
+    (define artifact-prefix
+      (assert-deb-ci-artifact-prefix (config-required-string 'deb-ci-config config 'artifact-prefix)))
+    (define release-tag
+      (assert-deb-ci-release-tag (config-required-string 'deb-ci-config config 'release-tag)))
+    (define release-name
+      (assert-deb-ci-release-name (config-required-string 'deb-ci-config config 'release-name)))
+    (define create-release?
+      (config-required-boolean 'deb-ci-config config 'create-release))
+    (define matrix-system "${{ matrix.deb_system }}")
+    (define matrix-release "${{ matrix.deb_release }}")
+    (define matrix-arch "${{ matrix.deb_arch }}")
+    (define matrix-runner "${{ matrix.runner }}")
+    (define matrix-container "${{ matrix.container }}")
+    (define matrix-jobs "${{ matrix.jobs }}")
+    (define matrix-id "${{ matrix.id }}")
+    (define matrix-artifact-name "${{ matrix.artifact_name }}")
+    (define matrix-setup-packages "${{ matrix.setup_packages }}")
+    (define token-expr "${{ secrets.GITHUB_TOKEN }}")
+    (define deb-files-count "${#deb_files[@]}")
+    (define deb-files-array "\"${deb_files[@]}\"")
+    f"{(generated-deb-code-notice "#")}name: deb build and release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-deb:
+    name: build {matrix-system} {matrix-arch}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+{(deb-ci-matrix-lines artifact-prefix targets)}    runs-on: {matrix-runner}
+    container:
+      image: {matrix-container}
+      options: --user root
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout deb-racket
+        uses: actions/checkout@v6
+
+      - name: Check generated repository layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x scripts/build-deb.sh
+          test -x scripts/verify-deb.sh
+          test -f SOURCES/.gitkeep
+
+      - name: Install Debian build dependencies
+        shell: bash
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          packages=\"{matrix-setup-packages}\"
+          [ -n \"$packages\" ] || {{ echo 'matrix setup_packages is empty'; exit 1; }}
+          apt-get update
+          apt-get install -y --no-install-recommends $packages
+
+      - name: Build DEB
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf \"$GITHUB_WORKSPACE/artifacts\" \"$GITHUB_WORKSPACE/.build/{matrix-id}\"
+          mkdir -p \"$GITHUB_WORKSPACE/artifacts\" \"$GITHUB_WORKSPACE/.build\"
+          scripts/build-deb.sh \\
+            --artifact-dir \"$GITHUB_WORKSPACE/artifacts\" \\
+            --work-dir \"$GITHUB_WORKSPACE/.build/{matrix-id}\" \\
+            --deb-system \"{matrix-system}\" \\
+            --deb-release \"{matrix-release}\" \\
+            --deb-arch \"{matrix-arch}\" \\
+            --prefix {(shell-single-quoted (cfg-prefix c))} \\
+            --jobs \"{matrix-jobs}\"
+
+      - name: Install and uninstall smoke test
+        shell: bash
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          PACKAGE_NAME: {(yaml-single-quote (cfg-package-name c))}
+          PACKAGE_VERSION: {(yaml-single-quote (cfg-source-version c))}
+        run: |
+          set -euo pipefail
+          mapfile -t deb_files < <(find \"$GITHUB_WORKSPACE/artifacts\" -maxdepth 1 -name '*.deb' -type f | sort)
+          if [ \"{deb-files-count}\" -ne 1 ]; then
+            printf 'Expected exactly one DEB, got %s\\n' \"{deb-files-count}\"
+            printf '  %s\\n' {deb-files-array}
+            exit 1
+          fi
+          apt-get install -y \"${{deb_files[0]}}\"
+          dpkg -s \"$PACKAGE_NAME\" >/dev/null
+          racket -e '(displayln (version))' | grep -F \"$PACKAGE_VERSION\"
+          racket -e '(displayln f\"deb-ci-ok\")' | grep -F 'deb-ci-ok'
+          racket -e '(require readline/readline) (displayln f\"deb-readline-ok\")' | grep -F 'deb-readline-ok'
+          raco pkg show --all >/tmp/raco-pkgs.txt
+          apt-get purge -y \"$PACKAGE_NAME\"
+          if dpkg -s \"$PACKAGE_NAME\" >/dev/null 2>&1; then
+            echo \"Package still installed after apt-get purge: $PACKAGE_NAME\"
+            exit 1
+          fi
+
+      - name: Upload DEB artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: {matrix-artifact-name}
+          path: artifacts/*.deb
+          if-no-files-found: error
+
+  publish-deb:
+    needs: build-deb
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download DEB artifacts
+        uses: actions/download-artifact@v6
+        with:
+          pattern: {(yaml-single-quote f"{artifact-prefix}-*")}
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish DEB release assets
+        shell: bash
+        env:
+          GH_TOKEN: {token-expr}
+          RELEASE_TAG: {(yaml-single-quote release-tag)}
+          RELEASE_NAME: {(yaml-single-quote release-name)}
+          CREATE_RELEASE: {(yaml-single-quote (if create-release? "true" "false"))}
+          PACKAGE_NAME: {(yaml-single-quote (cfg-package-name c))}
+          PACKAGE_VERSION: {(yaml-single-quote (cfg-formula-version c))}
+          EXPECTED_DEB_COUNT: {(number->string (length targets))}
+        run: |
+          set -euo pipefail
+          command -v gh >/dev/null 2>&1 || {{ echo 'gh CLI is required on the publish runner'; exit 1; }}
+          mapfile -t deb_files < <(find \"$GITHUB_WORKSPACE/release-assets\" -maxdepth 2 -name '*.deb' -type f | sort)
+          printf 'Downloaded DEB files (%s):\\n' \"{deb-files-count}\"
+          printf '  %s\\n' {deb-files-array}
+          if [ \"{deb-files-count}\" -ne \"$EXPECTED_DEB_COUNT\" ]; then
+            printf 'Expected %s DEB assets, got %s\\n' \"$EXPECTED_DEB_COUNT\" \"{deb-files-count}\"
+            exit 1
+          fi
+          declare -A seen
+          for deb_file in \"${{deb_files[@]}}\"; do
+            asset_name=\"${{deb_file##*/}}\"
+            if [ -n \"${{seen[$asset_name]:-}}\" ]; then
+              echo \"Duplicate DEB release asset name: $asset_name\"
+              exit 1
+            fi
+            seen[\"$asset_name\"]=1
+          done
+          if ! gh release view \"$RELEASE_TAG\" >/dev/null 2>&1; then
+            if [ \"$CREATE_RELEASE\" != true ]; then
+              echo \"GitHub release does not exist and create-release is false: $RELEASE_TAG\"
+              exit 1
+            fi
+            gh release create \"$RELEASE_TAG\" --title \"$RELEASE_NAME\" --notes \"Generated DEB artifacts for $PACKAGE_NAME $PACKAGE_VERSION.\"
+          fi
+          gh release upload \"$RELEASE_TAG\" {deb-files-array} --clobber
+"
+  ) ; end begin deb-ci-workflow-content
+) ; end define deb-ci-workflow-content
+
+(define (assert-deb-ci-workflow-replaceable! path)
+  (begin
+    (when (file-exists? path)
+      (define content (file->string path))
+      (unless (string-contains? content generated-deb-repo-notice-marker)
+        (raise-user-error 'write-deb-ci-workflow!
+                          f"refusing to overwrite workflow without generated marker: {(clean-path-string path)}")
+      ) ; end unless generated marker present
+    ) ; end when workflow exists
+  ) ; end begin assert-deb-ci-workflow-replaceable!
+) ; end define assert-deb-ci-workflow-replaceable!
+
+(define (validate-deb-ci-workflow! c config path)
+  (begin
+    (validate-yaml! c path)
+    (define content (file->string path))
+    (define targets (deb-ci-normalized-targets config))
+    (define artifact-prefix
+      (assert-deb-ci-artifact-prefix (config-required-string 'deb-ci-config config 'artifact-prefix)))
+    (for ([needle (in-list (list "name: deb build and release"
+                                 generated-deb-repo-notice-marker
+                                 "build-deb:"
+                                 "publish-deb:"
+                                 "scripts/build-deb.sh"
+                                 "scripts/verify-deb.sh"
+                                 "actions/upload-artifact@v6"
+                                 "actions/download-artifact@v6"
+                                 "gh release upload"
+                                 "apt-get install -y \"${deb_files[0]}\""
+                                 "racket -e '(displayln f\"deb-ci-ok\")'"
+                                 "racket -e '(require readline/readline) (displayln f\"deb-readline-ok\")'"
+                                 "EXPECTED_DEB_COUNT:"))])
+      (unless (string-contains? content needle)
+        (raise-user-error 'validate-deb-ci-workflow! f"DEB CI workflow missing: {needle}")
+      ) ; end unless workflow contains required needle
+    ) ; end for workflow needle
+    (for ([target (in-list targets)])
+      (for ([needle (in-list (list (hash-ref target 'id)
+                                   (hash-ref target 'deb-system)
+                                   (hash-ref target 'deb-arch)
+                                   (hash-ref target 'runner)
+                                   (hash-ref target 'container)
+                                   (deb-ci-target-artifact-name artifact-prefix target)))])
+        (unless (string-contains? content needle)
+          (raise-user-error 'validate-deb-ci-workflow! f"DEB CI workflow missing target field: {needle}")
+        ) ; end unless workflow contains target needle
+      ) ; end for target needle
+    ) ; end for target
+  ) ; end begin validate-deb-ci-workflow!
+) ; end define validate-deb-ci-workflow!
+
+(define (write-deb-ci-workflow! c config)
+  (begin
+    (assert-deb-repo-root! c #:write? #t)
+    (assert-executable 'write-deb-ci-workflow! (cfg-ruby-bin c))
+    (define workflow-path (deb-ci-workflow-path c))
+    (assert-deb-ci-workflow-replaceable! workflow-path)
+    (make-directory* (deb-workflows-dir c))
+    (write-text-file! workflow-path (deb-ci-workflow-content c config))
+    (validate-deb-ci-workflow! c config workflow-path)
+    (println/flush f"Generated DEB CI workflow: {(clean-path-string workflow-path)}")
+  ) ; end begin write-deb-ci-workflow!
+) ; end define write-deb-ci-workflow!
+
+(define (print-deb-ci-dry-run-plan! c config)
+  (begin
+    (assert-deb-repo-root! c #:write? #f)
+    (define workflow-path (deb-ci-workflow-path c))
+    (define targets (deb-ci-normalized-targets config))
+    (println/flush f"Would read DEB CI config: {(clean-path-string (cfg-deb-ci-config c))}")
+    (println/flush f"Would generate DEB CI workflow: {(clean-path-string workflow-path)}")
+    (println/flush f"Would validate DEB CI workflow YAML with: {(cfg-ruby-bin c)}")
+    (println/flush f"Would configure DEB CI target count: {(number->string (length targets))}")
+    (for ([target (in-list targets)])
+      (println/flush
+       f"  - {(hash-ref target 'deb-system)} {(hash-ref target 'deb-arch)} on {(hash-ref target 'runner)} in {(hash-ref target 'container)}")
+    ) ; end for target
+  ) ; end begin print-deb-ci-dry-run-plan!
+) ; end define print-deb-ci-dry-run-plan!
+
+(define (build-deb-ci! c)
+  (begin
+    (define config (read-deb-ci-config c))
+    (if (cfg-dry-run? c)
+        (print-deb-ci-dry-run-plan! c config)
+        (write-deb-ci-workflow! c config))
+  ) ; end begin build-deb-ci!
+) ; end define build-deb-ci!
 
 (define generated-windows-ci-notice-marker
   "GENERATED WINDOWS PORTABLE PACKAGING METADATA - DO NOT EDIT.")
@@ -4668,6 +5835,25 @@ end
       (config-optional-boolean who config key default)
       cli-value))
 
+(define (read-deb-repo-config-values config-path)
+  (begin
+    (define raw (read-rktd-hash 'deb-repo-config config-path))
+    (define root-value
+      (config-required-string 'deb-repo-config raw 'deb-repo-root))
+    (define root (resolve-config-path config-path root-value))
+    (define system
+      (assert-deb-system
+       (config-required-string 'deb-repo-config raw 'deb-system)))
+    (define release
+      (assert-deb-release
+       (config-required-string 'deb-repo-config raw 'deb-release)))
+    (define arch
+      (normalize-deb-arch
+       (config-required-string 'deb-repo-config raw 'deb-arch)))
+    (values root system release arch)
+  ) ; end begin read-deb-repo-config-values
+) ; end define read-deb-repo-config-values
+
 (define (read-rpm-repo-config-values config-path root-arg id-arg name-arg baseurl-arg
                                      enabled-arg gpgcheck-arg)
   (begin
@@ -6076,7 +7262,7 @@ jobs:
   (define rpmbuild-bin-arg "rpmbuild")
   (define rpm-bin-arg "rpm")
   (define createrepo-bin-arg "createrepo_c")
-  (define deb-arch-arg "amd64")
+  (define deb-arch-arg #f)
   (define rpm-system-arg #f)
   (define rpm-release-arg #f)
   (define rpm-arch-arg #f)
@@ -6100,6 +7286,8 @@ jobs:
   (define apt-release-tag-arg #f)
   (define apt-release-asset-arg #f)
   (define apt-release-token-file-arg #f)
+  (define deb-repo-config-arg #f)
+  (define deb-ci-config-arg #f)
   (define rpm-repo-config-arg #f)
   (define rpm-ci-config-arg #f)
   (define windows-ci-config-arg #f)
@@ -6215,6 +7403,10 @@ jobs:
                                (set! apt-release-asset-arg name)]
    [("--apt-github-token-file") path "Override apt token file read as one Racket string datum"
                               (set! apt-release-token-file-arg path)]
+   [("--deb-repo-config") path "Config for generating/updating the deb-racket build-script repository (default: ./deb-repo-config.rktd)"
+			  (set! deb-repo-config-arg path)]
+   [("--deb-ci-config") path "Config for generated deb-racket GitHub Actions workflow (default: ./deb-ci-config.rktd)"
+		       (set! deb-ci-config-arg path)]
    [("--rpm-repo-config") path "Config for generating/updating the RPM repository (default: ./rpm-repo-config.rktd)"
 			  (set! rpm-repo-config-arg path)]
    [("--rpm-ci-config") path "Config for generated rpm-racket GitHub Actions workflow (default: ./rpm-ci-config.rktd)"
@@ -6244,7 +7436,7 @@ jobs:
    [("--within-docs" "--with-docs") "Include raco docs support and the core documentation runtime package group in the Homebrew source archive"
                                    (set! with-docs? #t)]
    #:multi
-   [("--target") target "Packaging target: brew, brew-ci, source-release, apt, apt-release, rpm, rpm-spec, rpm-ci, rpm-repo, windows-portable-ci, or all. May be repeated."
+   [("--target") target "Packaging target: brew, brew-ci, source-release, apt, apt-release, deb-spec, deb-ci, rpm, rpm-spec, rpm-ci, rpm-repo, windows-portable-ci, or all. May be repeated."
 		(set! target-args (append target-args (list target)))]
    [("--brew-package") name "Extra package to include in the Homebrew source archive"
                      (set! brew-package-args (append brew-package-args (list name)))]
@@ -6284,6 +7476,10 @@ jobs:
     (complete-path* (or source-release-config-arg (build-path script-dir "source-release-config.rktd"))))
   (define apt-release-config
     (complete-path* (or apt-release-config-arg (build-path script-dir "apt-release-config.rktd"))))
+  (define deb-repo-config
+    (complete-path* (or deb-repo-config-arg (build-path script-dir "deb-repo-config.rktd"))))
+  (define deb-ci-config
+    (complete-path* (or deb-ci-config-arg (build-path script-dir "deb-ci-config.rktd"))))
   (define rpm-repo-config
     (complete-path* (or rpm-repo-config-arg (build-path script-dir "rpm-repo-config.rktd"))))
   (define rpm-ci-config
@@ -6319,6 +7515,21 @@ jobs:
   (when bottle-root-url-arg
     (assert-bottle-root-url bottle-root-url-arg)
   ) ; end when bottle root url provided
+  (define-values (deb-repo-root deb-system deb-release deb-config-arch)
+    (if (needs-deb-repo-config? targets)
+        (read-deb-repo-config-values deb-repo-config)
+        (values #f #f #f #f))
+  ) ; end define-values deb repo config
+  (define deb-arch
+    (cond
+      [deb-arch-arg
+       (normalize-deb-arch deb-arch-arg)]
+      [deb-config-arch
+       deb-config-arch]
+      [else
+       "amd64"]
+    ) ; end cond deb arch
+  ) ; end define deb-arch
   (define-values (rpm-repo-root rpm-repo-id rpm-repo-name rpm-repo-baseurl
                                 rpm-repo-enabled? rpm-repo-gpgcheck?)
     (if (needs-rpm-repo-config? targets)
@@ -6398,7 +7609,7 @@ jobs:
        rpmbuild-bin-arg
        rpm-bin-arg
        createrepo-bin-arg
-       deb-arch-arg
+       deb-arch
        rpm-system
        rpm-release
        rpm-arch
@@ -6419,12 +7630,17 @@ jobs:
        source-release-token-file-arg
        apt-release-config
        apt-release-repo-arg
-       apt-release-tag-arg
+	       apt-release-tag-arg
 	       apt-release-asset-arg
 	       apt-release-token-file-arg
+	       deb-repo-config
+	       deb-ci-config
 	       rpm-repo-config
 	       rpm-ci-config
 	       windows-ci-config
+	       deb-repo-root
+	       deb-system
+	       deb-release
 	       rpm-repo-root
 	       windows-repo-root
 	       rpm-repo-id
@@ -6467,6 +7683,14 @@ jobs:
     (println/flush f"RPM package release: {(rpm-release c)}")
     (println/flush f"RPM package prefix: {(cfg-prefix c)}")
   ) ; end when rpm target or repo target
+  (when (needs-deb-repo-config? (cfg-targets c))
+    (println/flush f"DEB repo config: {(clean-path-string (cfg-deb-repo-config c))}")
+    (println/flush f"DEB repo root: {(clean-path-string (cfg-deb-repo-root c))}")
+    (println/flush f"DEB target arch: {(cfg-deb-arch c)}")
+    (println/flush f"DEB target system: {(cfg-deb-system c)}")
+    (println/flush f"DEB package version: {(deb-package-version c (cfg-deb-release c) (cfg-deb-system c))}")
+    (println/flush f"DEB package release base: {(cfg-deb-release c)}")
+  ) ; end when deb repo config target
   (when (needs-rpm-repo-config? (cfg-targets c))
     (println/flush f"RPM repo config: {(clean-path-string (cfg-rpm-repo-config c))}")
     (println/flush f"RPM repo root: {(clean-path-string (cfg-rpm-repo-root c))}")
@@ -6474,6 +7698,9 @@ jobs:
   (when (needs-rpm-ci-config? (cfg-targets c))
     (println/flush f"RPM CI config: {(clean-path-string (cfg-rpm-ci-config c))}")
   ) ; end when rpm ci target
+  (when (needs-deb-ci-config? (cfg-targets c))
+    (println/flush f"DEB CI config: {(clean-path-string (cfg-deb-ci-config c))}")
+  ) ; end when deb ci target
   (when (needs-windows-ci-config? (cfg-targets c))
     (println/flush f"Windows CI config: {(clean-path-string (cfg-windows-ci-config c))}")
     (println/flush f"Windows CI repo root: {(clean-path-string (cfg-windows-repo-root c))}")
@@ -6508,6 +7735,8 @@ jobs:
          ["source-release" (build-source-release! c)]
 	 ["apt" (build-apt! c) '()]
 	 ["apt-release" (build-apt-release! c)]
+	 ["deb-spec" (build-deb-spec! c) '()]
+	 ["deb-ci" (build-deb-ci! c) '()]
 	 ["rpm-spec" (build-rpm-spec! c) '()]
 	 ["rpm-ci" (build-rpm-ci! c) '()]
 	 ["rpm" (build-rpm! c) '()]
@@ -6600,9 +7829,14 @@ jobs:
          #f
 	         #f
 	         #f
+	         (build-path test-root "deb-repo-config.rktd")
+	         (build-path test-root "deb-ci-config.rktd")
 	         (build-path test-root "rpm-repo-config.rktd")
 	         (build-path test-root "rpm-ci-config.rktd")
 	         (build-path test-root "windows-ci-config.rktd")
+	         (build-path test-root "deb-racket")
+	         "ubuntu2404"
+	         "1"
 	         (build-path test-root "rpm-racket")
 	         (build-path test-root "package-racket")
          "cutiedeng-racket"
