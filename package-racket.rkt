@@ -2099,10 +2099,10 @@ Supported RPM systems are `el9`, `fc40`, `openeuler2203`, and
 production artifacts. Common explicit target examples:
 
 ```sh
---rpm-system el9 --rpm-release 1 --rpm-arch x86_64
---rpm-system fc40 --rpm-release 1 --rpm-arch x86_64
---rpm-system openeuler2203 --rpm-release 1 --rpm-arch arm64
---rpm-system openeuler2403 --rpm-release 1 --rpm-arch arm64
+--rpm-system el9 --rpm-release {(cfg-rpm-release c)} --rpm-arch x86_64
+--rpm-system fc40 --rpm-release {(cfg-rpm-release c)} --rpm-arch x86_64
+--rpm-system openeuler2203 --rpm-release {(cfg-rpm-release c)} --rpm-arch arm64
+--rpm-system openeuler2403 --rpm-release {(cfg-rpm-release c)} --rpm-arch arm64
 ```
 
 Build the matching SRPM from the generated GitHub Release source URL:
