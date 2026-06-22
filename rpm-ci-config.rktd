@@ -10,8 +10,6 @@
                         (container . "quay.io/centos/centos:stream9")
                         (jobs . 2)
                         (setup-packages . ("bash"
-                                           "coreutils"
-                                           "curl"
                                            "diffutils"
                                            "file"
                                            "findutils"

@@ -1443,7 +1443,6 @@ repo_root_from_script() {{
 require_repo_root() {{
   local root=\"$1\"
   [ -d \"$root\" ] || die \"repository root does not exist: $root\"
-  [ -d \"$root/.git\" ] || die \"repository root is not a Git repository: $root\"
   [ -f \"$root/SPECS/$SPEC_NAME\" ] || die \"missing spec file: $root/SPECS/$SPEC_NAME\"
   [ -f \"$root/scripts/rpm-common.sh\" ] || die \"missing common script: $root/scripts/rpm-common.sh\"
 }}
@@ -6289,6 +6288,24 @@ end
       ) ; end lambda cleanup formula
     ) ; end dynamic-wind formula
   ) ; end test-case within-docs Formula template
+
+  (test-case "real rpm CI config avoids el9 minimal package conflicts"
+    (define config (read-rktd-hash 'rpm-ci-config (build-path script-dir "rpm-ci-config.rktd")))
+    (validate-rpm-ci-config! config)
+    (define targets (rpm-ci-normalized-targets config))
+    (define el9
+      (for/first ([target (in-list targets)]
+                  #:when (string=? (hash-ref target 'id) "el9-x86_64"))
+        target
+      ) ; end for/first el9 target
+    ) ; end define el9
+    (check-true (and el9 #t))
+    (define el9-packages (hash-ref el9 'setup-packages))
+    (check-false (member "coreutils" el9-packages string=?))
+    (check-false (member "curl" el9-packages string=?))
+    (check-true (and (member "findutils" el9-packages string=?) #t))
+    (check-true (and (member "rpm-build" el9-packages string=?) #t))
+  ) ; end test-case real rpm CI config el9
 
   (test-case "brew CI config and workflows keep bottle publication contract"
     (validate-brew-ci-config! test-brew-ci-config)

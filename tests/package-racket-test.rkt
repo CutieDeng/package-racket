@@ -485,6 +485,7 @@ actual output:
        (check-contains spec-content "%files -f %{name}.files")
        (check-not-contains spec-content "Source1:")
        (check-contains (file->string common-path) "prepare_source_archive")
+       (check-not-contains (file->string common-path) "repository root is not a Git repository")
        (check-contains (file->string build-path*) "--source-archive")
        (check-not-contains (file->string build-path*) "--racket-root")
        (check-contains (file->string build-path*) "rpmbuild -bb")
@@ -494,6 +495,7 @@ actual output:
        (check-contains (file->string readme-file) "scripts/build-rpm.sh")
        (check-false (file-exists? (build-path rpm-repo-root "racket9.repo")))
        (check-false (directory-exists? (build-path rpm-repo-root "repo")))
+       (delete-directory/files (build-path rpm-repo-root ".git"))
        (define bash-bin (find-executable-path "bash"))
        (when bash-bin
          (for ([path (in-list (list common-path build-path* srpm-path verify-path))])
