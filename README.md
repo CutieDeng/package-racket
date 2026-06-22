@@ -21,6 +21,14 @@ packaging flows:
 - `apt-release`: uploads the configured `.deb` from `--artifact-dir` to a
   GitHub release with the GitHub REST API. This target can be combined with
   `apt` or used to upload an already generated `.deb`.
+- `deb-spec`: overwrites the configured `deb-racket` build-script repository
+  scaffold: `SOURCES/`, `scripts/`, README, and `.gitignore`. This target does
+  not require `--racket-root`; generated DEB scripts build from the stable
+  GitHub Release source archive by default, or from an explicitly named local
+  source archive.
+- `deb-ci`: generates `deb-racket/.github/workflows/build-deb.yml` from
+  `deb-ci-config.rktd`, validates the workflow YAML, and publishes `.deb`
+  release assets only after all configured matrix builds pass.
 - `rpm-spec`: overwrites the configured `rpm-racket` SPEC repository scaffold:
   `SPECS/`, `SOURCES/`, `scripts/`, README, and `.gitignore`. This target does
   not require `--racket-root`; generated RPM scripts build from the stable
@@ -66,12 +74,19 @@ The `rpm-spec` flow checks that the target root is a writable Git repository,
 generates only the SPEC/SOURCES/scripts scaffold, validates the generated spec
 and script contents, resolves the source archive sha256 before writing `.spec`,
 and marks generated shell entrypoints executable. The
+`deb-spec` flow checks that the target root is a writable Git repository,
+generates only the SOURCES/scripts scaffold, pins the source archive sha256 in
+the generated shell code, validates script contents, and marks generated shell
+entrypoints executable. The
 `rpm-ci` flow checks the target repository root, validates generated workflow
 YAML, and requires every configured target to name its system, release, arch,
 runner, container, dependency list, and job count. The generated workflow checks
 the repository layout, builds with the generated RPM scripts, performs an
 install/uninstall smoke test, checks Release asset count and duplicate names,
 then uploads with the workflow `GITHUB_TOKEN`.
+The `deb-ci` flow applies the same generated workflow checks for Debian-family
+targets and verifies install/purge behavior with `apt-get` before uploading
+release assets with the workflow `GITHUB_TOKEN`.
 The `rpm-repo` flow checks the target repository root, checks RPM metadata before
 copying it, runs `createrepo_c --update`, and requires `repodata/repomd.xml` to
 exist before reporting success.
@@ -92,6 +107,9 @@ The same rule applies to `rpm-racket`: generated `SPECS/`, `SOURCES/`,
 `scripts/`, `.github/workflows/`, and README outputs are produced from this
 repository. `rpm-racket` is a SPEC/build-script repository, not an RPM artifact
 repository.
+The same rule applies to `deb-racket`: generated `SOURCES/`, `scripts/`,
+`.github/workflows/`, and README outputs are produced from this repository.
+`deb-racket` is a DEB build-script repository, not an apt repository.
 Generated Windows portable workflows are also produced from this repository.
 Change `windows-ci-config.rktd` and regenerate instead of editing generated
 workflow YAML by hand.
@@ -106,9 +124,15 @@ workflow YAML by hand.
 ```
 
 `formula-version` drives the Homebrew Formula `version`, the Homebrew bottle
-version, and the Debian `.deb` version and filename. Bump it to a four-level
-value such as `9.2.1.1` when those package managers need users to see an update
-even though the Racket runtime still reports `9.2.1`.
+version, and the Debian `.deb` package version and filename. Bump it to a
+four-level value such as `9.2.1.1` when those package managers need users to
+see an update even though the Racket runtime still reports `9.2.1`.
+
+The direct `apt` target produces filenames such as
+`racket9_9.2.1.1-1_amd64.deb`, where `1` is `--release`. The generated
+`deb-racket` scripts use Debian's package version plus revision model with an
+explicit target-system suffix, such as
+`racket9_9.2.1.1-1.ubuntu2404_amd64.deb`.
 
 RPM intentionally uses a different model. The RPM `Version:` field stays equal
 to `source-version`, while the RPM `Release:` field is derived from explicit
@@ -190,9 +214,10 @@ temporary directories. They cover Homebrew Formula and workflow semantics,
 dry-run isolation between targets, release-upload validation without reading
 local tokens, and combined producer/release targets such as `apt + apt-release`
 and `brew + source-release`. They also cover `rpm-spec` dry-run isolation, SPEC
-scaffold generation, generated shell syntax checks, generated `rpm-ci` workflow
-validation, and `rpm + rpm-repo` dry-run isolation so repository generation
-cannot silently write files during planning.
+scaffold generation, generated shell syntax checks, generated `deb-spec`
+scaffold generation, generated `deb-ci` and `rpm-ci` workflow validation, and
+`rpm + rpm-repo` dry-run isolation so repository generation cannot silently
+write files during planning.
 
 `--dry-run` still performs safety checks for configured paths, but it does not
 write package artifacts, generated Homebrew workflow files, or tap Formula
@@ -213,6 +238,11 @@ updates.
   `Contents: Read and write`, stored locally as one Racket string datum in
   `secret/ghtoken.rktd`. The file is ignored by Git and should be mode `600`.
 - For `apt`: `dpkg-deb`, or `ar` + `tar` + `xz` through the automatic fallback.
+- For `deb-spec` and `deb-ci`: an explicit `--deb-repo-config` and an explicit
+  repository root in that config. `deb-ci` also requires Ruby for YAML
+  validation. GitHub Actions uses the generated workflow's same-repository
+  `GITHUB_TOKEN` with `contents: write` to create or update release assets; no
+  local token is read for this target.
 - For `rpm-spec` and `rpm-ci`: an explicit `--rpm-repo-config` and an explicit
   repository root in that config or `--rpm-repo-root`.
 - For `rpm-ci`: Ruby for YAML validation. GitHub Actions uses the generated
@@ -311,6 +341,36 @@ racket package-racket.rkt \
   --target apt-release \
   --artifact-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/artifacts \
   --apt-release-config /Users/cutiedeng/Y2026/M06/D21/package-racket/apt-release-config.rktd
+```
+
+Generate or refresh the `deb-racket` DEB build-script repository scaffold:
+
+```sh
+racket package-racket.rkt \
+  --target deb-spec \
+  --prefix /usr \
+  --deb-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/deb-repo-config.rktd
+```
+
+Generate or refresh the `deb-racket` GitHub Actions DEB workflow:
+
+```sh
+racket package-racket.rkt \
+  --target deb-ci \
+  --prefix /usr \
+  --deb-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/deb-repo-config.rktd \
+  --deb-ci-config /Users/cutiedeng/Y2026/M06/D21/package-racket/deb-ci-config.rktd
+```
+
+Refresh both the generated DEB scripts and CI workflow in one run:
+
+```sh
+racket package-racket.rkt \
+  --target deb-spec \
+  --target deb-ci \
+  --prefix /usr \
+  --deb-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/deb-repo-config.rktd \
+  --deb-ci-config /Users/cutiedeng/Y2026/M06/D21/package-racket/deb-ci-config.rktd
 ```
 
 Generate the Homebrew tap CI workflows from `brew-ci-config.rktd` and overwrite
@@ -450,6 +510,51 @@ racket package-racket.rkt \
   --install-root /tmp/racket-package-root \
   --deb-backend ar
 ```
+
+`deb-spec` writes only `.gitignore`, README, `SOURCES/`, and `scripts/` in the
+configured `deb-racket` root. It must not create `repo/` or apt repository
+metadata.
+
+`deb-ci` writes only `.github/workflows/build-deb.yml` in the same
+`deb-racket` root. The matrix lives in `deb-ci-config.rktd`; each target
+explicitly names `deb-system`, `deb-release`, `deb-arch`, GitHub runner,
+container image, dependency package list, and job count. The generated workflow
+runs on push to `main` and manual dispatch, builds all matrix DEBs, installs
+and purges each package inside its target container, uploads Actions artifacts,
+then publishes the DEB files to the configured GitHub Release with `--clobber`.
+
+The default DEB repository config is `deb-repo-config.rktd`; it explicitly sets
+`deb-repo-root` to `/Users/cutiedeng/Y2026/M06/D23/deb-racket`, plus the
+default `deb-system`, `deb-release`, and `deb-arch` used for local scaffold
+validation. Supported generated DEB systems are `debian12` and `ubuntu2404`.
+Supported DEB architecture spellings are `amd64`, `x86_64`, `x64`, `arm64`,
+and `aarch64`; they normalize to Debian's `amd64` or `arm64`.
+
+When generating `deb-racket/scripts/deb-common.sh`, `package-racket` resolves
+the source archive sha256 in this order:
+
+- use the local `artifacts/racket-minimal-9.2.1-src.tgz` when it exists;
+- otherwise read the GitHub Release asset digest for the generated source URL;
+- otherwise download the source archive into `.build/deb-source/` and
+  calculate sha256.
+
+That sha is pinned into the generated shell code as `SOURCE_SHA256`.
+
+Build a DEB from the generated `deb-racket` repository:
+
+```sh
+/Users/cutiedeng/Y2026/M06/D23/deb-racket/scripts/build-deb.sh \
+  --artifact-dir /path/to/package-racket/artifacts \
+  --work-dir /path/to/package-racket/.build/deb-racket \
+  --deb-system ubuntu2404 \
+  --deb-release 1 \
+  --prefix /usr \
+  --deb-arch amd64
+```
+
+Use `deb-racket/scripts/build-deb.sh --source-archive ...` when a build host
+must use an explicit local source archive instead of downloading the generated
+source URL.
 
 Generate or refresh the `rpm-racket` SPEC repository scaffold:
 

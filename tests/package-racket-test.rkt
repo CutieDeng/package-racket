@@ -87,6 +87,14 @@ end
   ) ; end begin make-fake-rpm-repo!
 ) ; end define make-fake-rpm-repo!
 
+(define (make-fake-deb-repo! base)
+  (begin
+    (define repo (build-path base "deb-racket"))
+    (make-directory* (build-path repo ".git"))
+    repo
+  ) ; end begin make-fake-deb-repo!
+) ; end define make-fake-deb-repo!
+
 (define (make-fake-windows-repo! base)
   (begin
     (define repo (build-path base "package-racket"))
@@ -146,6 +154,40 @@ end
       (rpm-repo-baseurl . \"https://raw.githubusercontent.com/CutieDeng/rpm-racket/main/repo/$basearch\")
       (rpm-repo-enabled . #t)
       (rpm-repo-gpgcheck . #f))
+"))
+
+  (define (write-deb-repo-config! path root)
+    (write-text!
+     path
+     f"#hash((deb-repo-root . \"{(path-arg root)}\")
+      (deb-system . \"ubuntu2404\")
+      (deb-release . \"1\")
+      (deb-arch . \"amd64\"))
+"))
+
+  (define (write-deb-ci-config! path)
+    (write-text!
+     path
+     "#hash((release-tag . \"v9.2.1\")
+      (release-name . \"Racket 9.2.1 DEB packages\")
+      (artifact-prefix . \"deb\")
+      (create-release . #t)
+      (targets . (#hash((id . \"debian12-amd64\")
+                        (deb-system . \"debian12\")
+                        (deb-release . \"1\")
+                        (deb-arch . \"amd64\")
+                        (runner . \"ubuntu-24.04\")
+                        (container . \"debian:12\")
+                        (jobs . 2)
+                        (setup-packages . (\"build-essential\" \"curl\" \"dpkg-dev\" \"libedit-dev\" \"libffi-dev\" \"libssl-dev\" \"zlib1g-dev\")))
+                  #hash((id . \"ubuntu2404-arm64\")
+                        (deb-system . \"ubuntu2404\")
+                        (deb-release . \"1\")
+                        (deb-arch . \"arm64\")
+                        (runner . \"ubuntu-24.04-arm\")
+                        (container . \"ubuntu:24.04\")
+                        (jobs . 2)
+                        (setup-packages . (\"build-essential\" \"curl\" \"dpkg-dev\" \"libedit-dev\" \"libffi-dev\" \"libssl-dev\" \"zlib1g-dev\"))))))
 "))
 
   (define (write-rpm-ci-config! path)
@@ -585,6 +627,145 @@ actual output:
       ) ; end lambda temp dir
     ) ; end with-temp-dir
   ) ; end test-case rpm-ci dry-run
+
+  (test-case "deb-spec dry-run generates no files and does not require racket root"
+    (with-temp-dir
+     (lambda (tmp)
+       (define deb-repo-root (make-fake-deb-repo! tmp))
+       (define config-path (build-path tmp "deb-repo-config.rktd"))
+       (define work-dir (build-path tmp "work"))
+       (write-deb-repo-config! config-path deb-repo-root)
+       (define-values (out err)
+         (run-package/success
+          (list "--target" "deb-spec"
+                "--work-dir" (path-arg work-dir)
+                "--deb-repo-config" (path-arg config-path)
+                "--dry-run")))
+       (define text (combined-output out err))
+       (check-contains text "Targets: deb-spec")
+       (check-contains text "DEB repo config:")
+       (check-contains text "DEB repo root:")
+       (check-contains text "DEB target system: ubuntu2404")
+       (check-contains text "DEB package version: 9.2.1.1-1.ubuntu2404")
+       (check-contains text "Would generate DEB scaffold in:")
+       (check-false (file-exists? (build-path deb-repo-root "scripts" "build-deb.sh")))
+       (check-false (directory-exists? work-dir))
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case deb-spec dry-run
+
+  (test-case "deb-spec writes generated scaffold into a temporary deb repository"
+    (with-temp-dir
+     (lambda (tmp)
+       (define deb-repo-root (make-fake-deb-repo! tmp))
+       (define config-path (build-path tmp "deb-repo-config.rktd"))
+       (write-deb-repo-config! config-path deb-repo-root)
+       (define-values (out err)
+         (run-package/success
+          (list "--target" "deb-spec"
+                "--deb-repo-config" (path-arg config-path))))
+       (define text (combined-output out err))
+       (check-contains text "DEB source archive sha256 from local artifact:")
+       (check-contains text "Generated DEB scaffold:")
+       (define readme-file (build-path deb-repo-root "README.md"))
+       (define common-script (build-path deb-repo-root "scripts" "deb-common.sh"))
+       (define build-script (build-path deb-repo-root "scripts" "build-deb.sh"))
+       (define verify-script (build-path deb-repo-root "scripts" "verify-deb.sh"))
+       (check-true (file-exists? readme-file))
+       (check-true (file-exists? common-script))
+       (check-true (file-exists? build-script))
+       (check-true (file-exists? verify-script))
+       (check-contains (file->string readme-file) "not an apt repository")
+       (check-contains (file->string common-script) "SOURCE_SHA256='")
+       (check-contains (file->string build-script) "dpkg-deb --root-owner-group --build")
+       (check-contains (file->string build-script) "Depends: libc6, libedit2")
+       (check-contains (file->string verify-script) "dpkg-deb --field")
+       (check-false (directory-exists? (build-path deb-repo-root "repo")))
+       (when (find-executable-path "bash")
+         (run-command! 'deb-spec-build-deb-dry-run
+                       (find-executable-path "bash")
+                       (list (path-arg build-script)
+                             "--artifact-dir" (path-arg (build-path tmp "artifacts"))
+                             "--work-dir" (path-arg (build-path tmp "work"))
+                             "--deb-system" "ubuntu2404"
+                             "--deb-release" "1"
+                             "--deb-arch" "amd64"
+                             "--dry-run"))
+         (run-command! 'deb-spec-verify-deb-dry-run
+                       (find-executable-path "bash")
+                       (list (path-arg verify-script)
+                             "--deb" (path-arg (build-path tmp "artifacts" "racket9_9.2.1.1-1.ubuntu2404_amd64.deb"))
+                             "--deb-system" "ubuntu2404"
+                             "--deb-release" "1"
+                             "--deb-arch" "amd64"
+                             "--dry-run"))
+       ) ; end when bash exists
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case deb-spec writes scaffold
+
+  (test-case "deb-ci dry-run validates matrix config and writes no workflow"
+    (with-temp-dir
+     (lambda (tmp)
+       (define deb-repo-root (make-fake-deb-repo! tmp))
+       (define repo-config-path (build-path tmp "deb-repo-config.rktd"))
+       (define ci-config-path (build-path tmp "deb-ci-config.rktd"))
+       (define work-dir (build-path tmp "work"))
+       (write-deb-repo-config! repo-config-path deb-repo-root)
+       (write-deb-ci-config! ci-config-path)
+       (define-values (out err)
+         (run-package/success
+          (list "--target" "deb-ci"
+                "--work-dir" (path-arg work-dir)
+                "--deb-repo-config" (path-arg repo-config-path)
+                "--deb-ci-config" (path-arg ci-config-path)
+                "--dry-run")))
+       (define text (combined-output out err))
+       (check-contains text "Targets: deb-ci")
+       (check-contains text "DEB CI config:")
+       (check-contains text "Would read DEB CI config:")
+       (check-contains text "Would generate DEB CI workflow:")
+       (check-contains text "Would configure DEB CI target count: 2")
+       (check-contains text "ubuntu2404 arm64 on ubuntu-24.04-arm in ubuntu:24.04")
+       (check-false (file-exists? (build-path deb-repo-root ".github" "workflows" "build-deb.yml")))
+       (check-false (directory-exists? work-dir))
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case deb-ci dry-run
+
+  (test-case "deb-ci installs generated workflow into a temporary deb repository"
+    (with-temp-dir
+     (lambda (tmp)
+       (define deb-repo-root (make-fake-deb-repo! tmp))
+       (define repo-config-path (build-path tmp "deb-repo-config.rktd"))
+       (define ci-config-path (build-path tmp "deb-ci-config.rktd"))
+       (write-deb-repo-config! repo-config-path deb-repo-root)
+       (write-deb-ci-config! ci-config-path)
+       (run-package/success
+        (list "--target" "deb-spec"
+              "--deb-repo-config" (path-arg repo-config-path)))
+       (define-values (out err)
+         (run-package/success
+          (list "--target" "deb-ci"
+                "--deb-repo-config" (path-arg repo-config-path)
+                "--deb-ci-config" (path-arg ci-config-path))))
+       (define text (combined-output out err))
+       (define workflow-path (build-path deb-repo-root ".github" "workflows" "build-deb.yml"))
+       (check-contains text "Generated DEB CI workflow:")
+       (check-true (file-exists? workflow-path))
+       (define workflow-content (file->string workflow-path))
+       (check-contains workflow-content "GENERATED DEB PACKAGING METADATA - DO NOT EDIT IN deb-racket.")
+       (check-contains workflow-content "name: deb build and release")
+       (check-contains workflow-content "debian:12")
+       (check-contains workflow-content "ubuntu-24.04-arm")
+       (check-contains workflow-content "EXPECTED_DEB_COUNT: 2")
+       (check-contains workflow-content "apt-get install -y \"${deb_files[0]}\"")
+       (check-contains workflow-content "racket -e '(displayln f\"deb-ci-ok\")'")
+       (check-contains workflow-content "racket -e '(require readline/readline) (displayln f\"deb-readline-ok\")'")
+       (check-contains workflow-content "gh release upload")
+      ) ; end lambda temp dir
+    ) ; end with-temp-dir
+  ) ; end test-case deb-ci workflow install
 
   (test-case "rpm-ci installs generated workflow into a temporary rpm repository"
     (with-temp-dir
