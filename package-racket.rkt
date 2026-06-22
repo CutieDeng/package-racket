@@ -2507,10 +2507,13 @@ jobs:
         run: |
           set -euo pipefail
           command -v gh >/dev/null 2>&1 || {{ echo 'gh CLI is required on the publish runner'; exit 1; }}
+          gh --version | sed -n '1,2p'
+          gh auth status -h github.com || true
           mapfile -t rpm_files < <(find \"$GITHUB_WORKSPACE/release-assets\" -maxdepth 2 -name '*.rpm' ! -name '*.src.rpm' -type f | sort)
+          printf 'Downloaded RPM files (%s):\\n' \"{rpm-files-count}\"
+          printf '  %s\\n' {rpm-files-array}
           if [ \"{rpm-files-count}\" -ne \"$EXPECTED_RPM_COUNT\" ]; then
             printf 'Expected %s RPM assets, got %s\\n' \"$EXPECTED_RPM_COUNT\" \"{rpm-files-count}\"
-            printf '  %s\\n' {rpm-files-array}
             exit 1
           fi
           declare -A seen
@@ -2522,6 +2525,8 @@ jobs:
             fi
             seen[\"$asset_name\"]=1
           done
+          printf 'Release assets before upload for %s:\\n' \"$RELEASE_TAG\"
+          gh api \"repos/${{GITHUB_REPOSITORY}}/releases/tags/$RELEASE_TAG\" --jq '.assets[].name' || true
           if ! gh release view \"$RELEASE_TAG\" >/dev/null 2>&1; then
             if [ \"$CREATE_RELEASE\" != true ]; then
               echo \"GitHub release does not exist and create-release is false: $RELEASE_TAG\"
@@ -2529,7 +2534,11 @@ jobs:
             fi
             gh release create \"$RELEASE_TAG\" --title \"$RELEASE_NAME\" --notes \"Generated RPM artifacts for $PACKAGE_NAME $PACKAGE_VERSION.\"
           fi
+          printf 'Uploading RPM files to release %s:\\n' \"$RELEASE_TAG\"
+          printf '  %s\\n' {rpm-files-array}
           gh release upload \"$RELEASE_TAG\" {rpm-files-array} --clobber
+          printf 'Release assets after upload for %s:\\n' \"$RELEASE_TAG\"
+          gh api \"repos/${{GITHUB_REPOSITORY}}/releases/tags/$RELEASE_TAG\" --jq '.assets[].name'
 "
   ) ; end begin rpm-ci-workflow-content
 ) ; end define rpm-ci-workflow-content
@@ -2566,6 +2575,9 @@ jobs:
                                  "actions/download-artifact@v6"
                                  "gh release upload"
                                  "contents: write"
+                                 "Downloaded RPM files"
+                                 "Release assets before upload"
+                                 "Release assets after upload"
                                  "$pm -y install \"${rpm_files[0]}\""
                                  "rpm -q libedit >/dev/null"
                                  "racket -e '(displayln f\"rpm-ci-ok\")'"
