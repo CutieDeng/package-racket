@@ -84,11 +84,67 @@
                                            "tar"
                                            "which"
                                            "zlib-devel")))
+                  #hash((id . "openeuler2203-x86_64")
+                        (rpm-system . "openeuler2203")
+                        (rpm-release . "3")
+                        (rpm-arch . "x86_64")
+                        (runner . "ubuntu-24.04")
+                        (container . "openeuler/openeuler:22.03-lts")
+                        (jobs . 2)
+                        (setup-packages . ("bash"
+                                           "coreutils"
+                                           "curl"
+                                           "diffutils"
+                                           "file"
+                                           "findutils"
+                                           "gcc"
+                                           "grep"
+                                           "gzip"
+                                           "libffi-devel"
+                                           "make"
+                                           "ncurses-devel"
+                                           "openssl-devel"
+                                           "perl"
+                                           "rpm"
+                                           "rpm-build"
+                                           "sed"
+                                           "sqlite-devel"
+                                           "tar"
+                                           "which"
+                                           "zlib-devel")))
                   #hash((id . "openeuler2403-aarch64")
                         (rpm-system . "openeuler2403")
                         (rpm-release . "3")
                         (rpm-arch . "aarch64")
                         (runner . "ubuntu-24.04-arm")
+                        (container . "openeuler/openeuler:24.03-lts")
+                        (jobs . 2)
+                        (setup-packages . ("bash"
+                                           "coreutils"
+                                           "curl"
+                                           "diffutils"
+                                           "file"
+                                           "findutils"
+                                           "gcc"
+                                           "grep"
+                                           "gzip"
+                                           "libffi-devel"
+                                           "make"
+                                           "ncurses-devel"
+                                           "openssl-devel"
+                                           "perl"
+                                           "rpm"
+                                           "rpm-build"
+                                           "sed"
+                                           "sqlite-devel"
+                                           "tar"
+                                           "which"
+                                           "zlib-devel")))
+                  #hash((id . "openeuler2403-x86_64")
+                        (rpm-system . "openeuler2403")
+                        (rpm-release . "3")
+                        (rpm-arch . "x86_64")
+                        (runner . "ubuntu-24.04")
                         (container . "openeuler/openeuler:24.03-lts")
                         (jobs . 2)
                         (setup-packages . ("bash"

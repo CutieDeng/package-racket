@@ -2132,7 +2132,9 @@ production artifacts. Common explicit target examples:
 ```sh
 --rpm-system el9 --rpm-release {(cfg-rpm-release c)} --rpm-arch x86_64
 --rpm-system fc40 --rpm-release {(cfg-rpm-release c)} --rpm-arch x86_64
+--rpm-system openeuler2203 --rpm-release {(cfg-rpm-release c)} --rpm-arch x86_64
 --rpm-system openeuler2203 --rpm-release {(cfg-rpm-release c)} --rpm-arch arm64
+--rpm-system openeuler2403 --rpm-release {(cfg-rpm-release c)} --rpm-arch x86_64
 --rpm-system openeuler2403 --rpm-release {(cfg-rpm-release c)} --rpm-arch arm64
 ```
 
