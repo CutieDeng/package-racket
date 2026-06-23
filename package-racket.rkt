@@ -1411,19 +1411,21 @@ if [ \"${{#source_dirs[@]}}\" -ne 1 ]; then
 fi
 SOURCE_DIR=\"${{source_dirs[0]}}\"
 
-sed -i 's/))$/) (default-scope . \"installation\"))/' \"$SOURCE_DIR/etc/config.rktd\"
+sed -i 's|))$|) (default-scope . \"installation\") (compiled-file-cache-roots . (user system)) (compiled-file-system-cache-root . \"/var/cache/racket/compiled\"))|' \"$SOURCE_DIR/etc/config.rktd\"
 sed -i 's/\"1[.]1\"/\"3\"/g' \"$SOURCE_DIR/collects/openssl/libssl.rkt\" \"$SOURCE_DIR/collects/openssl/libcrypto.rkt\"
 cd \"$SOURCE_DIR/src\"
 ./configure \\
   --disable-debug \\
   --disable-dependency-tracking \\
   --enable-origtree=no \\
+  --enable-sharezo \\
   --prefix=\"$PREFIX\" \\
   --sysconfdir=/etc \\
   --enable-useprefix
 make -j\"$JOBS\"
 make install DESTDIR=\"$STAGE_ROOT\"
 cd \"$REPO_ROOT\"
+find \"$STAGE_ROOT\" -type d -name compiled -prune -exec rm -rf {{}} +
 
 if ! find \"$STAGE_ROOT\" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
   die \"staged package root is empty: $STAGE_ROOT\"
@@ -1441,9 +1443,21 @@ Depends: libc6, libedit2, libffi8, libssl3, libsqlite3-0, zlib1g
 Description: $PACKAGE_SUMMARY
  Racket packaged from a stable source release archive.
 CONTROL
+cat > \"$DEBIAN_DIR/prerm\" <<'PRERM'
+#!/bin/sh
+set -e
+if [ \"$1\" = \"remove\" ] || [ \"$1\" = \"deconfigure\" ]; then
+  if command -v raco >/dev/null 2>&1; then
+    raco setup --system --delete-cache || true
+  fi
+fi
+exit 0
+PRERM
+chmod 755 \"$DEBIAN_DIR/prerm\"
 
 (cd \"$STAGE_ROOT\" && find . -type f ! -path './DEBIAN/*' -print0 | sort -z | xargs -0 md5sum > DEBIAN/md5sums)
 require_nonempty_file \"$DEBIAN_DIR/control\"
+require_nonempty_file \"$DEBIAN_DIR/prerm\"
 require_nonempty_file \"$DEBIAN_DIR/md5sums\"
 mkdir -p \"$ARTIFACT_DIR\"
 dpkg-deb --root-owner-group --build \"$STAGE_ROOT\" \"$ARTIFACT_DIR/$DEB_NAME\"
@@ -1576,9 +1590,14 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
     (validate-generated-deb-script! c
                                     "build-deb.sh"
                                     '("Usage: scripts/build-deb.sh"
-                                      "dpkg-deb --root-owner-group --build"
-                                      "Depends: libc6, libedit2"
-                                      "--dry-run"))
+                                     "dpkg-deb --root-owner-group --build"
+                                     "Depends: libc6, libedit2"
+                                      "compiled-file-cache-roots"
+                                      "--enable-sharezo"
+                                      "find \"$STAGE_ROOT\" -type d -name compiled"
+                                      "$DEBIAN_DIR/prerm"
+                                      "raco setup --system --delete-cache"
+                                     "--dry-run"))
     (validate-generated-deb-script! c
                                     "verify-deb.sh"
                                     '("dpkg-deb --field"
@@ -1708,13 +1727,14 @@ fi
 %setup -q -n racket-{(cfg-source-version c)}
 
 %build
-sed -i 's/))$/) (default-scope . \"installation\"))/' etc/config.rktd
+sed -i 's|))$|) (default-scope . \"installation\") (compiled-file-cache-roots . (user system)) (compiled-file-system-cache-root . \"/var/cache/racket/compiled\"))|' etc/config.rktd
 sed -i 's/\"1[.]1\"/\"3\"/g' collects/openssl/libssl.rkt collects/openssl/libcrypto.rkt
 cd src
 ./configure \\
   --disable-debug \\
   --disable-dependency-tracking \\
   --enable-origtree=no \\
+  --enable-sharezo \\
   --prefix=%{{package_prefix}} \\
   --sysconfdir=%{{_sysconfdir}} \\
   --enable-useprefix
@@ -1725,6 +1745,7 @@ rm -rf %{{buildroot}}
 cd src
 make install DESTDIR=%{{buildroot}}
 cd ..
+find \"%{{buildroot}}\" -type d -name compiled -prune -exec rm -rf {{}} +
 
 manifest=\"%{{name}}.files\"
 paths=\"%{{name}}.paths\"
@@ -1746,6 +1767,11 @@ while IFS= read -r path; do
   fi
 done < \"$paths\"
 grep -Eq '^(%dir )?({(rpm-shared-directory-egrep-pattern)})$' \"$manifest\" && exit 1
+
+%preun
+if [ \"$1\" = \"0\" ] && command -v raco >/dev/null 2>&1; then
+  raco setup --system --delete-cache || :
+fi
 
 %files -f %{{name}}.files
 %defattr(-,root,root,-)
@@ -1777,8 +1803,13 @@ grep -Eq '^(%dir )?({(rpm-shared-directory-egrep-pattern)})$' \"$manifest\" && e
                                  "%global source_sha256"
                                  "Source0 sha256 mismatch"
                                  "%setup -q -n racket-"
+                                 "compiled-file-cache-roots"
+                                 "--enable-sharezo"
                                  "./configure"
                                  "make install DESTDIR=%{buildroot}"
+                                 "find \"%{buildroot}\" -type d -name compiled"
+                                 "%preun"
+                                 "raco setup --system --delete-cache"
                                  "printf '%s %s\\n' '%%dir' \"$rel\" >> \"$manifest\""
                                  "%files -f %{name}.files"))])
       (unless (string-contains? content needle)
@@ -4621,10 +4652,11 @@ jobs:
 (define generated-code-notice-marker
   "GENERATED CODE - DO NOT EDIT IN homebrew-racket.")
 
+(define generated-source-url
+  "https://github.com/CutieDeng/package-racket")
+
 (define (generated-source-root)
-  (regexp-replace #rx"/$"
-                  (regexp-replace #rx"/[.]$" (clean-path-string script-dir) "")
-                  ""))
+  generated-source-url)
 
 (define (generated-code-notice comment-prefix)
   f"{comment-prefix} {generated-code-notice-marker}
@@ -5569,6 +5601,7 @@ information.
     (define rb-prefix (ruby-interpolate "prefix"))
     (define rb-man (ruby-interpolate "man"))
     (define rb-etc (ruby-interpolate "etc"))
+    (define rb-var (ruby-interpolate "var"))
     (define rb-openssl-rpath (ruby-interpolate "formula_opt_lib(\"openssl@3\")"))
     (define rb-openssl-libssl (ruby-interpolate "formula_opt_lib(\"openssl@3\")/shared_library(\"libssl\")"))
     (define rb-bin (ruby-interpolate "bin"))
@@ -5607,7 +5640,7 @@ information.
 
   def install
     # Configure racket's package tool (raco) to use installation scope.
-    inreplace \"etc/config.rktd\", /\\)\\)\\n$/, \") (default-scope . \\\"installation\\\"))\\n\"
+    inreplace \"etc/config.rktd\", /\\)\\)\\n$/, \") (default-scope . \\\"installation\\\") (compiled-file-cache-roots . (user system)) (compiled-file-system-cache-root . \\\"{rb-var}/cache/racket/compiled\\\"))\\n\"
 
     # Prefer Homebrew OpenSSL 3 over older OpenSSL variants.
     inreplace %w[libssl.rkt libcrypto.rkt].map {{ |file| buildpath/\"collects/openssl\"/file }},
@@ -5618,6 +5651,7 @@ information.
         --disable-debug
         --disable-dependency-tracking
         --enable-origtree=no
+        --enable-sharezo
         --enable-macprefix
         --prefix={rb-prefix}
         --mandir={rb-man}
@@ -5646,20 +5680,17 @@ information.
       end
     end
 
-    inreplace racket_config,
-              /\\(compiled-file-roots \\. \\(same (\"[^\"]+\")\\)\\)/,
-              '(compiled-file-roots . (\\1))'
-    system bin/\"raco\", \"setup\", \"--no-user\"
-    prune_build_compile_cache
+    system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
+    remove_precompiled_cache
   end
 
   def post_install
-    system bin/\"raco\", \"setup\", \"--no-user\"
-    prune_build_compile_cache
+    system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
+    remove_precompiled_cache
   end
 
-  def prune_build_compile_cache
-    rm_r Dir[\"{rb-lib}/racket/compiled/**/ephemeral\"]
+  def remove_precompiled_cache
+    rm_rf Dir[\"{rb-prefix}/**/compiled\"]
   end
 
   def caveats
@@ -8368,6 +8399,12 @@ end
     ) ; end dynamic-wind formula order
   ) ; end test-case incremental Formula order
 
+  (test-case "generated code notice uses public source URL"
+    (define notice (generated-code-notice "#"))
+    (check-true (string-contains? notice f"Source of truth: {generated-source-url}"))
+    (check-false (string-contains? notice (clean-path-string script-dir)))
+  ) ; end test-case generated code notice source URL
+
   (test-case "full brew Formula template keeps runtime checks and dependencies"
     (define content (formula-content/full (test-cfg) test-sha256))
     (for ([needle (in-list (list "class RacketAT9 < Formula"
@@ -8385,10 +8422,11 @@ end
                                  "rhombus-lang-ok"
                                  "rhombus --version"
                                  "rhombus -e '1 + 2'"
-                                 "compiled-file-roots"
-                                 "system bin/\"raco\", \"setup\", \"--no-user\""
-                                 "prune_build_compile_cache"
-                                 "racket/compiled/**/ephemeral"
+                                 "compiled-file-cache-roots"
+                                 "compiled-file-system-cache-root"
+                                 "system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\""
+                                 "remove_precompiled_cache"
+                                 "rm_rf Dir[\"#{prefix}/**/compiled\"]"
                                  "printf 'f\\\"hi\\\""
                                  "refute_match(/no readline support/"
                                  "LD_DEBUG=libs"
