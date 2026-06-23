@@ -461,6 +461,9 @@ The brew archive also excludes the official macOS arm64 binary platform package
 and rewrites the staged `racket-lib/info.rkt` dependency entry for it, because
 Homebrew builds from source and links platform libraries through Formula
 dependencies instead.
+The minimal source archive prunes Chez Scheme documentation, test, and example
+source trees such as `csug`, `release_notes`, `nanopass/doc`, `stex/doc`,
+`mats`, and `examples`; those are not used by the package build.
 When `--within-docs` is enabled, the staged `draw-lib/info.rkt` platform native
 package dependencies are removed with the same source-build rationale.
 

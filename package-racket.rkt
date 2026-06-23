@@ -4993,6 +4993,96 @@ information.
   ) ; end begin copy-brew-tree!
 ) ; end define copy-brew-tree!
 
+(define brew-source-pruned-source-dirs
+  '(("ChezScheme" "csug")
+    ("ChezScheme" "release_notes")
+    ("ChezScheme" "nanopass" "doc")
+    ("ChezScheme" "stex" "doc")
+    ("ChezScheme" "mats")
+    ("ChezScheme" "examples")))
+
+(define (replace-exact-source! who path old new)
+  (begin
+    (assert-file who path)
+    (define content (file->string path))
+    (define old-rx (regexp (regexp-quote old)))
+    (define count (regexp-match-count old-rx content))
+    (unless (= count 1)
+      (raise-user-error who
+                        f"expected exactly one source patch match in {(clean-path-string path)}, found {count}")
+    ) ; end unless exactly one match
+    (write-text-file! path (regexp-replace old-rx content new))
+  ) ; end begin replace-exact-source!
+) ; end define replace-exact-source!
+
+(define (patch-brew-chez-minimal-build! src-dir)
+  (begin
+    (define chez-dir (build-path src-dir "ChezScheme"))
+    (replace-exact-source!
+     'patch-brew-chez-minimal-build!
+     (build-path chez-dir "build.zuo")
+     "  (define bounce-dirs
+    '(\"c\" \"s\" \"mats\" \"examples\"))"
+     "  (define bounce-dirs
+    '(\"c\" \"s\"))")
+    (replace-exact-source!
+     'patch-brew-chez-minimal-build!
+     (build-path chez-dir "build.zuo")
+     "  (define (cross-build-boot/safe+examples token args)
+    (cross-build-boot token args (hash 'o \"2\" 'd \"3\" 'i \"t\") '(\"all\" \"examples\") #t))"
+     "  (define (cross-build-boot/safe+examples token args)
+    (cross-build-boot token args (hash 'o \"2\" 'd \"3\" 'i \"t\") '(\"all\") #t))")
+    (replace-exact-source!
+     'patch-brew-chez-minimal-build!
+     (build-path chez-dir "s" "build.zuo")
+     "(require \"../makefiles/lib.zuo\"
+         \"machine.zuo\"
+         (only-in \"../examples/build.zuo\"
+                  [targets-at examples-targets-at]))"
+     "(require \"../makefiles/lib.zuo\"
+         \"machine.zuo\")")
+    (replace-exact-source!
+     'patch-brew-chez-minimal-build!
+     (build-path chez-dir "s" "build.zuo")
+     "       [:target examples ()
+                ,(lambda (token)
+                   (mkdir-p (at-dir \"../examples\"))
+                   (build (find-target \"all\" (examples-targets-at (make-at-dir (at-dir \"../examples\")) vars))
+                          token))]"
+     "       [:target examples ()
+                ,(lambda (token)
+                   (error \"examples target is not included in the minimal source archive\"))]")
+    (replace-exact-source!
+     'patch-brew-chez-minimal-build!
+     (build-path chez-dir "makefiles" "install.zuo")
+     "    (apply I (list* \"-m\" \"444\" (append
+                                (map (lambda (n) (at-source* \"../examples\" n))
+                                     (ls (at-source \"../examples\")))
+                                (list LibExamples)))))"
+     "    (when (directory-exists? (at-source \"../examples\"))
+      (apply I (list* \"-m\" \"444\" (append
+                                  (map (lambda (n) (at-source* \"../examples\" n))
+                                       (ls (at-source \"../examples\")))
+                                  (list LibExamples))))))")
+    (replace-exact-source!
+     'patch-brew-chez-minimal-build!
+     (build-path chez-dir "makefiles" "bintar.zuo")
+     "  (immediate \"examples\")"
+     "  (when (directory-exists? (at-source \"../examples\"))
+    (immediate \"examples\"))")
+  ) ; end begin patch-brew-chez-minimal-build!
+) ; end define patch-brew-chez-minimal-build!
+
+(define (prune-brew-source-assets! src-dir)
+  (begin
+    (for ([rel (in-list brew-source-pruned-source-dirs)])
+      (define dir (apply build-path src-dir rel))
+      (when (directory-exists? dir)
+        (delete-directory/files dir))
+    ) ; end for pruned source dir
+  ) ; end begin prune-brew-source-assets!
+) ; end define prune-brew-source-assets!
+
 (define (brew-package-source racket-root name)
   (or (for/or ([candidate (in-list (list (build-path racket-root "pkgs" name)
                                          (build-path racket-root "racket" "share" "pkgs" name)))])
@@ -5176,9 +5266,12 @@ information.
     (write-brew-config! (build-path dist-root "etc" "config.rktd") (cfg-source-version c))
     (copy-brew-tree! (build-path (cfg-racket-root c) "racket" "collects")
                      (build-path dist-root "collects"))
+    (define staged-src (build-path dist-root "src"))
     (copy-brew-tree! (build-path (cfg-racket-root c) "racket" "src")
-                     (build-path dist-root "src")
+                     staged-src
                      #:skip-first-components '("build"))
+    (patch-brew-chez-minimal-build! staged-src)
+    (prune-brew-source-assets! staged-src)
     (define share-dir (build-path dist-root "share"))
     (define pkgs-dir (build-path share-dir "pkgs"))
     (make-directory* pkgs-dir)
@@ -8233,6 +8326,31 @@ jobs:
       ) ; end lambda cleanup draw info
     ) ; end dynamic-wind draw info
   ) ; end test-case brew docs patch
+
+  (test-case "brew source pruning removes Chez documentation assets"
+    (define src-dir (make-temporary-file "package-racket-src~a" 'directory))
+    (dynamic-wind
+      void
+      (lambda ()
+        (for ([rel (in-list brew-source-pruned-source-dirs)])
+          (define dir (apply build-path src-dir rel))
+          (make-directory* dir)
+          (write-text-file! (build-path dir "asset") "unused")
+        ) ; end for create pruned dirs
+        (define kept-dir (build-path src-dir "ChezScheme" "c"))
+        (make-directory* kept-dir)
+        (write-text-file! (build-path kept-dir "scheme.c") "kept")
+        (prune-brew-source-assets! src-dir)
+        (for ([rel (in-list brew-source-pruned-source-dirs)])
+          (check-false (directory-exists? (apply build-path src-dir rel)))
+        ) ; end for pruned dirs gone
+        (check-true (file-exists? (build-path kept-dir "scheme.c")))
+      ) ; end lambda prune source assets
+      (lambda ()
+        (delete-directory/files src-dir)
+      ) ; end lambda cleanup source assets
+    ) ; end dynamic-wind source assets
+  ) ; end test-case brew source pruning
 
   (test-case "rpm system release and arch stay explicit"
     (define el9 (test-cfg #:rpm-system "el9"
