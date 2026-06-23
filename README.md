@@ -127,16 +127,16 @@ workflow YAML by hand.
 
 ```racket
 #hash((source-version . "9.2.1")
-      (formula-version . "9.2.1.3"))
+      (formula-version . "9.2.1.4"))
 ```
 
 `formula-version` drives the Homebrew Formula `version`, the Homebrew bottle
 version, and the direct `apt` target `.deb` package version and filename. Bump
-it to a four-level value such as `9.2.1.3` when those package managers need
+it to a four-level value such as `9.2.1.4` when those package managers need
 users to see an update even though the Racket runtime still reports `9.2.1`.
 
 The direct `apt` target produces filenames such as
-`racket9_9.2.1.3-1_amd64.deb`, where `1` is `--release`. The generated
+`racket9_9.2.1.4-1_amd64.deb`, where `1` is `--release`. The generated
 `deb-racket` scripts use the same source-version plus release model as RPM:
 the Debian upstream version stays equal to `source-version`, while the Debian
 revision is derived from explicit `deb-release` and `deb-system` fields, such
@@ -147,7 +147,7 @@ to `source-version`, while the RPM `Release:` field is derived from explicit
 `--rpm-release` and `--rpm-system` fields. For example, source version `9.2.1`
 with `--rpm-release 4` and `--rpm-system el9` produces
 `racket9-9.2.1-4.el9.<arch>.rpm`, not
-`racket9-9.2.1.3-4.<arch>.rpm`.
+`racket9-9.2.1.4-4.<arch>.rpm`.
 
 The Racket source/runtime version is read from
 `racket/src/version/racket_version.h` in `--racket-root`, and must match
@@ -419,7 +419,7 @@ chmod 600 secret/ghtoken.rktd
 The stable Debian package release settings live in `apt-release-config.rktd`.
 The release tag is configured there, while the asset defaults to the `.deb`
 basename generated from `formula-version`, `--release`, and `--deb-arch`, for
-example `racket9_9.2.1.3-1_amd64.deb`.
+example `racket9_9.2.1.4-1_amd64.deb`.
 
 For `brew`, `--formula` means the final tap formula path. When omitted, it is
 derived from the explicit `--homebrew-tap` as `Formula/racket@9.rb`.
