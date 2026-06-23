@@ -385,6 +385,11 @@ actual output:
 {text}"))
 
 (module+ test
+  (test-case "homebrew formula removes nested compiled dirs deepest first"
+    (check-contains (file->string package-script)
+                    "rm_r Dir[\\\"{rb-prefix}/**/compiled\\\"].sort_by(&:length).reverse")
+  ) ; end test-case homebrew compiled cleanup order
+
   (test-case "apt dry-run is isolated from apt-release config and writes no artifacts"
     (with-temp-dir
      (lambda (tmp)

@@ -5796,7 +5796,7 @@ information.
   end
 
   def remove_precompiled_cache
-    rm_r Dir[\"{rb-prefix}/**/compiled\"]
+    rm_r Dir[\"{rb-prefix}/**/compiled\"].sort_by(&:length).reverse
   end
 
   def caveats
