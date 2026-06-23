@@ -328,6 +328,11 @@
   ) ; end begin assert-version-string
 ) ; end define assert-version-string
 
+(define (catalog-lookup-version version)
+  (match (regexp-match #px"^([0-9]+[.][0-9]+)" version)
+    [(list _ v) v]
+    [_ version]))
+
 (define (read-package-formula-version package-config)
   (begin
     (define raw (read-rktd-hash 'read-package-config package-config))
@@ -1425,7 +1430,7 @@ cd \"$SOURCE_DIR/src\"
 make -j\"$JOBS\"
 make install DESTDIR=\"$STAGE_ROOT\"
 cd \"$REPO_ROOT\"
-find \"$STAGE_ROOT\" -type d -name compiled -prune -exec rm -rf {{}} +
+find \"$STAGE_ROOT\" -type d -name compiled ! -path '*/info-domain/compiled' -prune -exec rm -rf {{}} +
 
 if ! find \"$STAGE_ROOT\" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
   die \"staged package root is empty: $STAGE_ROOT\"
@@ -1594,7 +1599,7 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
                                      "Depends: libc6, libedit2"
                                       "compiled-file-cache-roots"
                                       "--enable-sharezo"
-                                      "find \"$STAGE_ROOT\" -type d -name compiled"
+                                      "find \"$STAGE_ROOT\" -type d -name compiled ! -path '*/info-domain/compiled'"
                                       "$DEBIAN_DIR/prerm"
                                       "raco setup --system --delete-cache"
                                      "--dry-run"))
@@ -1745,7 +1750,7 @@ rm -rf %{{buildroot}}
 cd src
 make install DESTDIR=%{{buildroot}}
 cd ..
-find \"%{{buildroot}}\" -type d -name compiled -prune -exec rm -rf {{}} +
+find \"%{{buildroot}}\" -type d -name compiled ! -path '*/info-domain/compiled' -prune -exec rm -rf {{}} +
 
 manifest=\"%{{name}}.files\"
 paths=\"%{{name}}.paths\"
@@ -1807,7 +1812,7 @@ fi
                                  "--enable-sharezo"
                                  "./configure"
                                  "make install DESTDIR=%{buildroot}"
-                                 "find \"%{buildroot}\" -type d -name compiled"
+                                 "find \"%{buildroot}\" -type d -name compiled ! -path '*/info-domain/compiled'"
                                  "%preun"
                                  "raco setup --system --delete-cache"
                                  "printf '%s %s\\n' '%%dir' \"$rel\" >> \"$manifest\""
@@ -4930,6 +4935,7 @@ information.
         (write `#hash((catalogs . ,catalogs)
                       (gui-interactive-file . racket/gui/interactive)
                       (installation-name . ,version)
+                      (pkg-catalog-lookup-version . ,(catalog-lookup-version version))
                       (interactive-file . racket/interactive/tstring))
                out)
         (newline out)
@@ -5735,7 +5741,12 @@ information.
 
   def install
     # Configure racket's package tool (raco) to use installation scope.
-    inreplace \"etc/config.rktd\", /\\)\\)\\n$/, \") (default-scope . \\\"installation\\\") (compiled-file-cache-roots . (user system)) (compiled-file-system-cache-root . \\\"{rb-var}/cache/racket/compiled\\\"))\\n\"
+    config_entries = [
+      \"(default-scope . \\\"installation\\\")\",
+      \"(compiled-file-cache-roots . (user system))\",
+      \"(compiled-file-system-cache-root . \\\"{rb-var}/cache/racket/compiled\\\")\",
+    ].join(\" \")
+    inreplace \"etc/config.rktd\", /\\)\\)\\n$/, \") \" + config_entries + \")\\n\"
 
     # Prefer Homebrew OpenSSL 3 over older OpenSSL variants.
     inreplace %w[libssl.rkt libcrypto.rkt].map {{ |file| buildpath/\"collects/openssl\"/file }},
@@ -5785,7 +5796,7 @@ information.
   end
 
   def remove_precompiled_cache
-    rm_rf Dir[\"{rb-prefix}/**/compiled\"]
+    rm_r Dir[\"{rb-prefix}/**/compiled\"]
   end
 
   def caveats
@@ -8225,6 +8236,19 @@ jobs:
   (test-case "brew target names and package closure stay stable"
     (define c (test-cfg #:brew-packages '("sandbox-lib" "custom-extra")))
     (define packages (brew-source-packages c))
+    (check-equal? (catalog-lookup-version "9.2") "9.2")
+    (check-equal? (catalog-lookup-version "9.2.1") "9.2")
+    (define config-path (make-temporary-file "package-racket-config~a.rktd"))
+    (dynamic-wind
+      void
+      (lambda ()
+        (write-brew-config! config-path "9.2.1")
+        (define cfg (call-with-input-file config-path read))
+        (check-equal? (hash-ref cfg 'installation-name) "9.2.1")
+        (check-equal? (hash-ref cfg 'pkg-catalog-lookup-version) "9.2"))
+      (lambda ()
+        (when (file-exists? config-path)
+          (delete-file config-path))))
     (check-equal? (normalize-targets '("all" "brew-ci" "source-release" "apt-release"))
                   '("brew-ci" "brew" "source-release" "apt" "apt-release" "rpm"))
     (check-equal? (normalize-targets '("rpm-repo" "rpm" "rpm-spec"))
@@ -8546,7 +8570,7 @@ end
                                  "compiled-file-system-cache-root"
                                  "system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\""
                                  "remove_precompiled_cache"
-                                 "rm_rf Dir[\"#{prefix}/**/compiled\"]"
+                                 "rm_r Dir[\"#{prefix}/**/compiled\"]"
                                  "printf 'f\\\"hi\\\""
                                  "refute_match(/no readline support/"
                                  "LD_DEBUG=libs"
