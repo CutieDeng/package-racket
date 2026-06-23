@@ -127,27 +127,27 @@ workflow YAML by hand.
 
 ```racket
 #hash((source-version . "9.2.1")
-      (formula-version . "9.2.1.4"))
+      (formula-version . "9.2.1.5"))
 ```
 
 `formula-version` drives the Homebrew Formula `version`, the Homebrew bottle
 version, and the direct `apt` target `.deb` package version and filename. Bump
-it to a four-level value such as `9.2.1.4` when those package managers need
+it to a four-level value such as `9.2.1.5` when those package managers need
 users to see an update even though the Racket runtime still reports `9.2.1`.
 
 The direct `apt` target produces filenames such as
-`racket9_9.2.1.4-1_amd64.deb`, where `1` is `--release`. The generated
+`racket9_9.2.1.5-1_amd64.deb`, where `1` is `--release`. The generated
 `deb-racket` scripts use the same source-version plus release model as RPM:
 the Debian upstream version stays equal to `source-version`, while the Debian
 revision is derived from explicit `deb-release` and `deb-system` fields, such
-as `racket9_9.2.1-4.ubuntu2404_amd64.deb`.
+as `racket9_9.2.1-5.ubuntu2404_amd64.deb`.
 
 RPM uses the same release-oriented model. The RPM `Version:` field stays equal
 to `source-version`, while the RPM `Release:` field is derived from explicit
 `--rpm-release` and `--rpm-system` fields. For example, source version `9.2.1`
-with `--rpm-release 4` and `--rpm-system el9` produces
-`racket9-9.2.1-4.el9.<arch>.rpm`, not
-`racket9-9.2.1.4-4.<arch>.rpm`.
+with `--rpm-release 5` and `--rpm-system el9` produces
+`racket9-9.2.1-5.el9.<arch>.rpm`, not
+`racket9-9.2.1.5-5.<arch>.rpm`.
 
 The Racket source/runtime version is read from
 `racket/src/version/racket_version.h` in `--racket-root`, and must match
@@ -419,7 +419,7 @@ chmod 600 secret/ghtoken.rktd
 The stable Debian package release settings live in `apt-release-config.rktd`.
 The release tag is configured there, while the asset defaults to the `.deb`
 basename generated from `formula-version`, `--release`, and `--deb-arch`, for
-example `racket9_9.2.1.4-1_amd64.deb`.
+example `racket9_9.2.1.5-1_amd64.deb`.
 
 For `brew`, `--formula` means the final tap formula path. When omitted, it is
 derived from the explicit `--homebrew-tap` as `Formula/racket@9.rb`.
@@ -541,8 +541,8 @@ then publishes the DEB files to the configured GitHub Release with `--clobber`.
 The default DEB repository config is `deb-repo-config.rktd`; it explicitly sets
 `deb-repo-root` to `/Users/cutiedeng/Y2026/M06/D23/deb-racket`, plus the
 default `deb-system`, `deb-release`, and `deb-arch` used for local scaffold
-validation. With `source-version` `9.2.1`, `deb-release` `4`, and `deb-system`
-`ubuntu2404`, the generated Debian package version is `9.2.1-4.ubuntu2404`.
+validation. With `source-version` `9.2.1`, `deb-release` `5`, and `deb-system`
+`ubuntu2404`, the generated Debian package version is `9.2.1-5.ubuntu2404`.
 Supported generated DEB systems are `debian12` and `ubuntu2404`.
 Supported DEB architecture spellings are `amd64`, `x86_64`, `x64`, `arm64`,
 and `aarch64`; they normalize to Debian's `amd64` or `arm64`.
@@ -564,7 +564,7 @@ Build a DEB from the generated `deb-racket` repository:
   --artifact-dir /path/to/package-racket/artifacts \
   --work-dir /path/to/package-racket/.build/deb-racket \
   --deb-system ubuntu2404 \
-  --deb-release 4 \
+  --deb-release 5 \
   --prefix /usr \
   --deb-arch amd64
 ```
@@ -580,7 +580,7 @@ racket package-racket.rkt \
   --target rpm-spec \
   --prefix /usr \
   --rpm-system openeuler2403 \
-  --rpm-release 4 \
+  --rpm-release 5 \
   --rpm-arch arm64 \
   --rpm-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-repo-config.rktd
 ```
@@ -603,7 +603,7 @@ racket package-racket.rkt \
   --target rpm-ci \
   --prefix /usr \
   --rpm-system openeuler2403 \
-  --rpm-release 4 \
+  --rpm-release 5 \
   --rpm-arch arm64 \
   --rpm-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-repo-config.rktd \
   --rpm-ci-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-ci-config.rktd
@@ -655,7 +655,7 @@ Build an RPM from the generated `rpm-racket` repository:
   --artifact-dir /path/to/package-racket/artifacts \
   --work-dir /path/to/package-racket/.build/rpm-racket \
   --rpm-system openeuler2403 \
-  --rpm-release 4 \
+  --rpm-release 5 \
   --prefix /usr \
   --rpm-arch arm64
 ```
@@ -667,7 +667,7 @@ Build the matching SRPM:
   --artifact-dir /path/to/package-racket/artifacts \
   --work-dir /path/to/package-racket/.build/rpm-racket-srpm \
   --rpm-system openeuler2403 \
-  --rpm-release 4 \
+  --rpm-release 5 \
   --prefix /usr \
   --rpm-arch arm64
 ```
@@ -678,7 +678,7 @@ Create an RPM package directly from `package-racket` on a Linux x64 build:
 racket package-racket.rkt \
   --target rpm \
   --rpm-system el9 \
-  --rpm-release 4 \
+  --rpm-release 5 \
   --prefix /usr \
   --rpm-arch x86_64
 ```
@@ -689,7 +689,7 @@ Create an RPM package directly from `package-racket` on a Linux arm64 build:
 racket package-racket.rkt \
   --target rpm \
   --rpm-system openeuler2403 \
-  --rpm-release 4 \
+  --rpm-release 5 \
   --prefix /usr \
   --rpm-arch arm64
 ```
@@ -698,17 +698,17 @@ racket package-racket.rkt \
 `openeuler2203`, and `openeuler2403`. The generic `openeuler` value is rejected
 because production RPM artifacts must name the concrete target system.
 `--rpm-release` is the release base before the system suffix, so
-`--rpm-release 4 --rpm-system fc40` becomes RPM `Release: 4.fc40`.
+`--rpm-release 5 --rpm-system fc40` becomes RPM `Release: 5.fc40`.
 `--rpm-arch arm64` is normalized to RPM's `aarch64` target. The accepted RPM
 architecture spellings are `x86_64`, `amd64`, `x64`, `aarch64`, and `arm64`.
 
 Common RPM target examples:
 
 ```sh
---rpm-system el9 --rpm-release 4 --rpm-arch x86_64
---rpm-system fc40 --rpm-release 4 --rpm-arch x86_64
---rpm-system openeuler2203 --rpm-release 4 --rpm-arch arm64
---rpm-system openeuler2403 --rpm-release 4 --rpm-arch arm64
+--rpm-system el9 --rpm-release 5 --rpm-arch x86_64
+--rpm-system fc40 --rpm-release 5 --rpm-arch x86_64
+--rpm-system openeuler2203 --rpm-release 5 --rpm-arch arm64
+--rpm-system openeuler2403 --rpm-release 5 --rpm-arch arm64
 ```
 
 Create an RPM package directly from `package-racket` and update the generated
@@ -719,7 +719,7 @@ racket package-racket.rkt \
   --target rpm \
   --target rpm-repo \
   --rpm-system openeuler2403 \
-  --rpm-release 4 \
+  --rpm-release 5 \
   --prefix /usr \
   --rpm-arch arm64 \
   --artifact-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/artifacts \
@@ -734,7 +734,7 @@ racket package-racket.rkt \
   --target rpm-repo \
   --artifact-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/artifacts \
   --rpm-system openeuler2403 \
-  --rpm-release 4 \
+  --rpm-release 5 \
   --rpm-arch arm64 \
   --rpm-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-repo-config.rktd
 ```
