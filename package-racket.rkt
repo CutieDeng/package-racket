@@ -1448,6 +1448,16 @@ Depends: libc6, libedit2, libffi8, libssl3, libsqlite3-0, zlib1g
 Description: $PACKAGE_SUMMARY
  Racket packaged from a stable source release archive.
 CONTROL
+cat > \"$DEBIAN_DIR/postinst\" <<'POSTINST'
+#!/bin/sh
+set -e
+if [ \"$1\" = \"configure\" ]; then
+  raco setup --system --no-user --reset-cache -D --no-pkg-deps
+fi
+exit 0
+POSTINST
+chmod 755 \"$DEBIAN_DIR/postinst\"
+
 cat > \"$DEBIAN_DIR/prerm\" <<'PRERM'
 #!/bin/sh
 set -e
@@ -1459,10 +1469,21 @@ fi
 exit 0
 PRERM
 chmod 755 \"$DEBIAN_DIR/prerm\"
+cat > \"$DEBIAN_DIR/postrm\" <<'POSTRM'
+#!/bin/sh
+set -e
+if [ \"$1\" = \"remove\" ] || [ \"$1\" = \"purge\" ]; then
+  rm -rf /var/cache/racket/compiled
+fi
+exit 0
+POSTRM
+chmod 755 \"$DEBIAN_DIR/postrm\"
 
 (cd \"$STAGE_ROOT\" && find . -type f ! -path './DEBIAN/*' -print0 | sort -z | xargs -0 md5sum > DEBIAN/md5sums)
 require_nonempty_file \"$DEBIAN_DIR/control\"
+require_nonempty_file \"$DEBIAN_DIR/postinst\"
 require_nonempty_file \"$DEBIAN_DIR/prerm\"
+require_nonempty_file \"$DEBIAN_DIR/postrm\"
 require_nonempty_file \"$DEBIAN_DIR/md5sums\"
 mkdir -p \"$ARTIFACT_DIR\"
 dpkg-deb --root-owner-group --build \"$STAGE_ROOT\" \"$ARTIFACT_DIR/$DEB_NAME\"
@@ -1520,6 +1541,7 @@ if [ \"$DRY_RUN\" = 1 ]; then
 fi
 
 require_exe dpkg-deb
+require_exe tar
 require_nonempty_file \"$DEB_PATH\"
 [ \"$(basename \"$DEB_PATH\")\" = \"$EXPECTED_DEB\" ] || die \"DEB basename does not match expected $EXPECTED_DEB: $DEB_PATH\"
 
@@ -1530,6 +1552,20 @@ arch=$(dpkg-deb --field \"$DEB_PATH\" Architecture)
 [ \"$version\" = \"$DEB_VERSION\" ] || die \"DEB Version field mismatch: expected $DEB_VERSION got $version\"
 [ \"$arch\" = \"$NORMALIZED_ARCH\" ] || die \"DEB Architecture field mismatch: expected $NORMALIZED_ARCH got $arch\"
 dpkg-deb --contents \"$DEB_PATH\" >/dev/null
+control_files=$(dpkg-deb --ctrl-tarfile \"$DEB_PATH\" | tar -tf -)
+for script in ./postinst ./prerm ./postrm; do
+  printf '%s\\n' \"$control_files\" | grep -Fx \"$script\" >/dev/null \\
+    || die \"DEB control archive missing $script\"
+done
+postinst_content=$(dpkg-deb --ctrl-tarfile \"$DEB_PATH\" | tar -xOf - ./postinst)
+printf '%s\\n' \"$postinst_content\" | grep -F 'raco setup --system --no-user --reset-cache -D --no-pkg-deps' >/dev/null \\
+  || die \"DEB postinst does not build the system compiled cache\"
+prerm_content=$(dpkg-deb --ctrl-tarfile \"$DEB_PATH\" | tar -xOf - ./prerm)
+printf '%s\\n' \"$prerm_content\" | grep -F 'raco setup --system --delete-cache' >/dev/null \\
+  || die \"DEB prerm does not delete the system compiled cache\"
+postrm_content=$(dpkg-deb --ctrl-tarfile \"$DEB_PATH\" | tar -xOf - ./postrm)
+printf '%s\\n' \"$postrm_content\" | grep -F 'rm -rf /var/cache/racket/compiled' >/dev/null \\
+  || die \"DEB postrm does not purge the system compiled cache directory\"
 printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
 ")
 
@@ -1600,13 +1636,20 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
                                       "compiled-file-cache-roots"
                                       "--enable-sharezo"
                                       "find \"$STAGE_ROOT\" -type d -name compiled ! -path '*/info-domain/compiled'"
+                                      "$DEBIAN_DIR/postinst"
+                                      "raco setup --system --no-user --reset-cache -D --no-pkg-deps"
                                       "$DEBIAN_DIR/prerm"
                                       "raco setup --system --delete-cache"
+                                      "$DEBIAN_DIR/postrm"
+                                      "rm -rf /var/cache/racket/compiled"
                                      "--dry-run"))
     (validate-generated-deb-script! c
                                     "verify-deb.sh"
                                     '("dpkg-deb --field"
                                       "dpkg-deb --contents"
+                                      "dpkg-deb --ctrl-tarfile"
+                                      "DEB control archive missing"
+                                      "DEB postinst does not build the system compiled cache"
                                       "--dry-run"))
   ) ; end begin validate-deb-spec-scaffold!
 ) ; end define validate-deb-spec-scaffold!
@@ -1773,9 +1816,17 @@ while IFS= read -r path; do
 done < \"$paths\"
 grep -Eq '^(%dir )?({(rpm-shared-directory-egrep-pattern)})$' \"$manifest\" && exit 1
 
+%posttrans
+raco setup --system --no-user --reset-cache -D --no-pkg-deps
+
 %preun
 if [ \"$1\" = \"0\" ] && command -v raco >/dev/null 2>&1; then
   raco setup --system --delete-cache || :
+fi
+
+%postun
+if [ \"$1\" = \"0\" ]; then
+  rm -rf /var/cache/racket/compiled
 fi
 
 %files -f %{{name}}.files
@@ -1813,8 +1864,12 @@ fi
                                  "./configure"
                                  "make install DESTDIR=%{buildroot}"
                                  "find \"%{buildroot}\" -type d -name compiled ! -path '*/info-domain/compiled'"
+                                 "%posttrans"
+                                 "raco setup --system --no-user --reset-cache -D --no-pkg-deps"
                                  "%preun"
                                  "raco setup --system --delete-cache"
+                                 "%postun"
+                                 "rm -rf /var/cache/racket/compiled"
                                  "printf '%s %s\\n' '%%dir' \"$rel\" >> \"$manifest\""
                                  "%files -f %{name}.files"))])
       (unless (string-contains? content needle)
@@ -1848,6 +1903,17 @@ fi
                           f"RPM metadata is missing: {needle}")
       ) ; end unless metadata contains needle
     ) ; end for needle
+    (define scripts
+      (capture! 'validate-rpm! (cfg-rpm-bin c) (list "-qp" "--scripts" (clean-path-string rpm-path)))
+    ) ; end define scripts
+    (for ([needle (in-list (list "raco setup --system --no-user --reset-cache -D --no-pkg-deps"
+                                 "raco setup --system --delete-cache"
+                                 "rm -rf /var/cache/racket/compiled"))])
+      (unless (string-contains? scripts needle)
+        (raise-user-error 'validate-rpm!
+                          f"RPM scriptlets are missing: {needle}")
+      ) ; end unless scripts contains needle
+    ) ; end for scriptlet needle
     (println/flush f"Validated .rpm: {(clean-path-string rpm-path)}")
   ) ; end begin validate-rpm!
 ) ; end define validate-rpm!
@@ -2830,12 +2896,12 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
 
 (define (validate-rpm-spec-scaffold! c)
   (begin
-	    (assert-nonempty-file 'validate-rpm-spec-scaffold! (rpm-repo-readme-path c))
-	    (assert-nonempty-file 'validate-rpm-spec-scaffold! (rpm-repo-gitignore-path c))
-	    (assert-file 'validate-rpm-spec-scaffold! (rpm-definition-source-keep-path c))
-	    (validate-rpm-spec! c
-	                        (rpm-definition-spec-path c)
-	                        (formula-source-url c))
+    (assert-nonempty-file 'validate-rpm-spec-scaffold! (rpm-repo-readme-path c))
+    (assert-nonempty-file 'validate-rpm-spec-scaffold! (rpm-repo-gitignore-path c))
+    (assert-file 'validate-rpm-spec-scaffold! (rpm-definition-source-keep-path c))
+    (validate-rpm-spec! c
+                        (rpm-definition-spec-path c)
+                        (formula-source-url c))
     (define readme-content (file->string (rpm-repo-readme-path c)))
     (for ([needle (in-list (list "RPM SPEC and build-script repository"
                                  "not an RPM artifact repository"
@@ -2847,11 +2913,11 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
                           f"generated README is missing: {needle}")
       ) ; end unless readme content contains needle
     ) ; end for readme needle
-	    (validate-generated-rpm-script! c
-	                                    "rpm-common.sh"
-	                                    '("prepare_source_archive"
-	                                      "validate_source_archive"
-	                                      "require_repo_root"))
+    (validate-generated-rpm-script! c
+                                    "rpm-common.sh"
+                                    '("prepare_source_archive"
+                                      "validate_source_archive"
+                                      "require_repo_root"))
     (validate-generated-rpm-script! c
                                     "build-rpm.sh"
                                     '("Usage: scripts/build-rpm.sh"
@@ -2874,19 +2940,19 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
   (begin
     (assert-rpm-repo-root! c #:write? #t)
     (remove-rpm-spec-stale-outputs! c)
-	    (make-directory* (rpm-spec-dir c))
-	    (make-directory* (rpm-sources-dir c))
-	    (make-directory* (rpm-scripts-dir c))
-	    (define source-url (formula-source-url c))
-	    (define source-sha256 (resolve-rpm-source-sha256! c source-url))
-	    (write-text-file! (rpm-repo-gitignore-path c) rpm-spec-gitignore-content)
-	    (write-rpm-spec! c
-	                     (rpm-definition-spec-path c)
-	                     source-url
-	                     source-sha256)
-	    (write-text-file! (rpm-definition-source-keep-path c) "")
-	    (write-executable-text-file! (rpm-script-path c "rpm-common.sh")
-	                                 (rpm-common-script-content c source-sha256))
+    (make-directory* (rpm-spec-dir c))
+    (make-directory* (rpm-sources-dir c))
+    (make-directory* (rpm-scripts-dir c))
+    (define source-url (formula-source-url c))
+    (define source-sha256 (resolve-rpm-source-sha256! c source-url))
+    (write-text-file! (rpm-repo-gitignore-path c) rpm-spec-gitignore-content)
+    (write-rpm-spec! c
+                     (rpm-definition-spec-path c)
+                     source-url
+                     source-sha256)
+    (write-text-file! (rpm-definition-source-keep-path c) "")
+    (write-executable-text-file! (rpm-script-path c "rpm-common.sh")
+                                 (rpm-common-script-content c source-sha256))
     (write-executable-text-file! (rpm-script-path c "build-rpm.sh")
                                  (rpm-build-script-content c))
     (write-executable-text-file! (rpm-script-path c "build-srpm.sh")
@@ -3231,15 +3297,21 @@ jobs:
           fi
           $pm -y install \"${{rpm_files[0]}}\"
           rpm -q libedit >/dev/null
+          cache_count=$(find /var/cache/racket/compiled -path '*/compiled/*.zo' 2>/dev/null | wc -l)
+          [ \"$cache_count\" -gt 0 ] || {{ echo 'system compiled cache is empty after RPM install'; exit 1; }}
           racket -e '(displayln (version))' | grep -F \"$PACKAGE_VERSION\"
           racket -e '(displayln f\"rpm-ci-ok\")' | grep -F 'rpm-ci-ok'
           racket -e '(require readline/readline) (displayln f\"rpm-readline-ok\")' | grep -F 'rpm-readline-ok'
+          empty_home=$(mktemp -d)
+          HOME=\"$empty_home\" racket -e '(require racket/list racket/match racket/file) (displayln f\"rpm-empty-home-ok\")' | grep -F 'rpm-empty-home-ok'
+          rm -rf \"$empty_home\"
           raco pkg show --all >/tmp/raco-pkgs.txt
           rpm -e \"$PACKAGE_NAME\"
           if rpm -q \"$PACKAGE_NAME\" >/dev/null 2>&1; then
             echo \"Package still installed after rpm -e: $PACKAGE_NAME\"
             exit 1
           fi
+          [ ! -d /var/cache/racket/compiled ] || {{ echo 'system compiled cache remains after RPM erase'; exit 1; }}
 
       - name: Upload RPM artifact
         uses: actions/upload-artifact@v6
@@ -3351,6 +3423,9 @@ jobs:
                                  "Release assets after upload"
                                  "$pm -y install \"${rpm_files[0]}\""
                                  "rpm -q libedit >/dev/null"
+                                 "system compiled cache is empty after RPM install"
+                                 "rpm-empty-home-ok"
+                                 "system compiled cache remains after RPM erase"
                                  "racket -e '(displayln f\"rpm-ci-ok\")'"
                                  "racket -e '(require readline/readline) (displayln f\"rpm-readline-ok\")'"
                                  "EXPECTED_RPM_COUNT:"))])
@@ -3693,15 +3768,21 @@ jobs:
           fi
           apt-get install -y \"${{deb_files[0]}}\"
           dpkg -s \"$PACKAGE_NAME\" >/dev/null
+          cache_count=$(find /var/cache/racket/compiled -path '*/compiled/*.zo' 2>/dev/null | wc -l)
+          [ \"$cache_count\" -gt 0 ] || {{ echo 'system compiled cache is empty after DEB install'; exit 1; }}
           racket -e '(displayln (version))' | grep -F \"$PACKAGE_VERSION\"
           racket -e '(displayln f\"deb-ci-ok\")' | grep -F 'deb-ci-ok'
           racket -e '(require readline/readline) (displayln f\"deb-readline-ok\")' | grep -F 'deb-readline-ok'
+          empty_home=$(mktemp -d)
+          HOME=\"$empty_home\" racket -e '(require racket/list racket/match racket/file) (displayln f\"deb-empty-home-ok\")' | grep -F 'deb-empty-home-ok'
+          rm -rf \"$empty_home\"
           raco pkg show --all >/tmp/raco-pkgs.txt
           apt-get purge -y \"$PACKAGE_NAME\"
           if dpkg -s \"$PACKAGE_NAME\" >/dev/null 2>&1; then
             echo \"Package still installed after apt-get purge: $PACKAGE_NAME\"
             exit 1
           fi
+          [ ! -d /var/cache/racket/compiled ] || {{ echo 'system compiled cache remains after DEB purge'; exit 1; }}
 
       - name: Upload DEB artifact
         uses: actions/upload-artifact@v6
@@ -3805,6 +3886,9 @@ jobs:
                                  "gh release upload"
                                  "--repo \"$GITHUB_REPOSITORY\""
                                  "apt-get install -y \"${deb_files[0]}\""
+                                 "system compiled cache is empty after DEB install"
+                                 "deb-empty-home-ok"
+                                 "system compiled cache remains after DEB purge"
                                  "Downloaded DEB files"
                                  "Release assets before upload"
                                  "Release assets after upload"
@@ -5543,6 +5627,8 @@ information.
                                  f"version \"{(cfg-formula-version c)}\""
                                  "depends_on \"openssl@3\""
                                  "depends_on \"ncurses\""
+                                 "(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")"
+                                 "system bin/\"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
                                  "test do"
                                  f"assert_match \"{(cfg-source-version c)}\""))])
       (unless (string-contains? content needle)
@@ -5663,9 +5749,24 @@ information.
                       f"{(formula-version-line c)}
 {(formula-source-sha256-line digest)}")
     ) ; end define with-version
+    (define with-cache-root
+      (string-replace with-version
+                      "(compiled-file-system-cache-root . \\\"#{var}/cache/racket/compiled\\\")"
+                      "(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")")
+    ) ; end define with-cache-root
+    (define with-post-install
+      (string-replace with-cache-root
+                      "  def post_install
+    system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
+    remove_precompiled_cache
+  end"
+                      "  def post_install
+    system bin/\"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"
+  end")
+    ) ; end define with-post-install
     (write-text-file!
      formula-path
-     with-version)
+     with-post-install)
     (ensure-formula-docs-test! c formula-path)
     (validate-formula-file! c formula-path)
   ) ; end begin set-formula-source!
@@ -5702,11 +5803,11 @@ information.
     (define rb-prefix (ruby-interpolate "prefix"))
     (define rb-man (ruby-interpolate "man"))
     (define rb-etc (ruby-interpolate "etc"))
-    (define rb-var (ruby-interpolate "var"))
     (define rb-openssl-rpath (ruby-interpolate "formula_opt_lib(\"openssl@3\")"))
     (define rb-openssl-libssl (ruby-interpolate "formula_opt_lib(\"openssl@3\")/shared_library(\"libssl\")"))
     (define rb-bin (ruby-interpolate "bin"))
     (define rb-lib (ruby-interpolate "lib"))
+    (define rb-empty-home (ruby-interpolate "empty_home"))
     (define rb-test-script (ruby-interpolate "testpath/\"interactive-packages.rkt\""))
     (define rb-rhombus-script (ruby-interpolate "testpath/\"rhombus-smoke.rhm\""))
     (define macos-openssl-rx "%r{.*openssl@3/.*/libssl.*\\.dylib}")
@@ -5744,7 +5845,7 @@ information.
     config_entries = [
       \"(default-scope . \\\"installation\\\")\",
       \"(compiled-file-cache-roots . (user system))\",
-      \"(compiled-file-system-cache-root . \\\"{rb-var}/cache/racket/compiled\\\")\",
+      \"(compiled-file-system-cache-root . \\\"{rb-prefix}/var/cache/racket/compiled\\\")\",
     ].join(\" \")
     inreplace \"etc/config.rktd\", /\\)\\)\\n$/, \") \" + config_entries + \")\\n\"
 
@@ -5791,8 +5892,7 @@ information.
   end
 
   def post_install
-    system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
-    remove_precompiled_cache
+    system bin/\"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"
   end
 
   def remove_precompiled_cache
@@ -5818,6 +5918,15 @@ information.
     assert_match \"{version}\", shell_output(\"{rb-bin}/racket -e '(displayln (version))'\"){(if (cfg-with-docs? c) (formula-docs-test-content rb-bin) "")}
     output = shell_output(\"{rb-bin}/racket -e '(require racket/pvector) (displayln (pvector->list (pvector 1 2 3)))'\")
     assert_match \"(1 2 3)\", output
+    assert !Dir[\"{rb-prefix}/var/cache/racket/compiled/**/*.zo\"].empty?, \"system compiled cache is empty\"
+
+    empty_home = testpath/\"empty-home\"
+    empty_home.mkpath
+    output = shell_output(
+      \"HOME={rb-empty-home} {rb-bin}/racket \" \\
+      \"-e '(require racket/list racket/match racket/file) (displayln \\\"brew-empty-home-ok\\\")'\",
+    )
+    assert_match \"brew-empty-home-ok\", output
 
     (testpath/\"interactive-packages.rkt\").write <<~RACKET
       #lang racket/base
@@ -8527,6 +8636,20 @@ jobs:
     depends_on \"ncurses\"
   end
 
+  def install
+    config_entries = [
+      \"(default-scope . \\\"installation\\\")\",
+      \"(compiled-file-cache-roots . (user system))\",
+      \"(compiled-file-system-cache-root . \\\"{(ruby-interpolate "var")}/cache/racket/compiled\\\")\",
+    ].join(\" \")
+    inreplace \"etc/config.rktd\", /\\)\\)\\n$/, \") \" + config_entries + \")\\n\"
+  end
+
+  def post_install
+    system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
+    remove_precompiled_cache
+  end
+
   test do
     assert_match \"9.2.1\", shell_output(\"racket -e '(displayln (version))'\")
   end
@@ -8536,6 +8659,9 @@ end
         (define content (file->string formula-path))
         (check-true (formula-version-before-sha? content))
         (check-true (string-contains? content f"sha256 \"{test-sha256}\""))
+        (check-true (string-contains? content "(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")"))
+        (check-true (string-contains? content "system bin/\"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""))
+        (check-false (string-contains? content "#{var}/cache/racket/compiled"))
       ) ; end lambda update formula
       (lambda ()
         (delete-directory/files formula-dir)
@@ -8567,10 +8693,13 @@ end
                                  "rhombus --version"
                                  "rhombus -e '1 + 2'"
                                  "compiled-file-cache-roots"
-                                 "compiled-file-system-cache-root"
+                                 "(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")"
                                  "system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\""
+                                 "system bin/\"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
                                  "remove_precompiled_cache"
                                  "rm_r Dir[\"#{prefix}/**/compiled\"]"
+                                 "Dir[\"#{prefix}/var/cache/racket/compiled/**/*.zo\"]"
+                                 "brew-empty-home-ok"
                                  "printf 'f\\\"hi\\\""
                                  "refute_match(/no readline support/"
                                  "LD_DEBUG=libs"
@@ -8581,6 +8710,7 @@ end
     (check-false (string-contains? content "inreplace racket_config, prefix, opt_prefix"))
     (check-false (string-contains? content "Fixing up Cellar references"))
     (check-false (string-contains? content "Formula[\"openssl@3\"].opt_lib"))
+    (check-false (string-contains? content "#{var}/cache/racket/compiled"))
     (check-false (string-contains? content "assert_match(/\\e\\["))
   ) ; end test-case full Formula template
 
