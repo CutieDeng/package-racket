@@ -322,7 +322,7 @@
     (unless (and (string? version)
                  (regexp-match? #px"^[0-9]+([.][0-9]+)*$" version))
       (raise-user-error who
-                        f"{label} must be a dotted numeric version such as 9.2.1 or 9.2.1.1: {version}")
+                        f"{label} must be a dotted numeric version such as 9.2.2 or 9.2.2.1: {version}")
     ) ; end unless dotted numeric version
     version
   ) ; end begin assert-version-string
@@ -4131,6 +4131,14 @@ jobs:
   ) ; end begin windows-ci-portable-zip-name
 ) ; end define windows-ci-portable-zip-name
 
+(define (windows-ci-installer-exe-name c config)
+  (begin
+    (define arch
+      (assert-windows-ci-arch (config-required-string 'windows-ci-config config 'arch)))
+    f"{(cfg-package-name c)}-{(cfg-formula-version c)}-windows-{arch}-setup.exe"
+  ) ; end begin windows-ci-installer-exe-name
+) ; end define windows-ci-installer-exe-name
+
 (define (windows-ci-artifact-name config)
   (begin
     (define artifact-prefix
@@ -4148,6 +4156,7 @@ jobs:
     (define runner
       (assert-windows-ci-runner (config-required-string 'windows-ci-config config 'runner)))
     (define zip-name (windows-ci-portable-zip-name c config))
+    (define exe-name (windows-ci-installer-exe-name c config))
     (define release-note
       (if (config-required-boolean 'windows-ci-config config 'publish-release)
           (let ([release-repo
@@ -4159,8 +4168,8 @@ jobs:
                 [token-secret
                  (assert-windows-ci-safe-token
                   (config-required-string 'windows-ci-config config 'token-secret))])
-            f"Release asset publishing is enabled. The workflow uploads `{zip-name}` to `{release-repo}` release `{release-tag}` using the `{token-secret}` repository secret.")
-          "Release asset publishing is disabled; successful runs retain the zip as a GitHub Actions artifact."))
+            f"Release asset publishing is enabled. The workflow uploads `{zip-name}` and `{exe-name}` to `{release-repo}` release `{release-tag}` using the `{token-secret}` repository secret.")
+          "Release asset publishing is disabled; successful runs retain the zip and installer as GitHub Actions artifacts."))
     f"# win-racket
 
 {generated-windows-ci-notice-marker}
@@ -4175,10 +4184,12 @@ and regenerate this repository instead.
 ## Build
 
 The generated workflow builds Racket on `{runner}` for `{arch}` and uploads
-`{zip-name}` as a GitHub Actions artifact. It runs `nmake all` before the
+`{zip-name}` and `{exe-name}` as GitHub Actions artifacts. It runs `nmake all` before the
 configured `nmake` target so a clean CI checkout never tries to install missing
-build outputs. The portable archive copies only the installed runtime tree, not
-the source/build tree. {release-note}
+build outputs. The portable archive and Inno Setup installer copy only the
+installed runtime tree, not the source/build tree. The installer accepts
+`/DIR=...` for the install path and `/CACHEPATH=...` for the Racket cache path;
+the default cache path is inside the install directory. {release-note}
 
 ## Regenerate
 
@@ -4264,7 +4275,7 @@ racket package-racket.rkt \\
           name: {(yaml-single-quote (windows-ci-artifact-name config))}
           path: release-assets
 
-      - name: Publish Windows portable release asset
+      - name: Publish Windows release assets
         shell: bash
         env:
           GH_TOKEN: {token-expr}
@@ -4276,9 +4287,15 @@ racket package-racket.rkt \\
           set -euo pipefail
           command -v gh >/dev/null 2>&1 || {{ echo 'gh CLI is required on the publish runner'; exit 1; }}
           mapfile -t zip_files < <(find \"$GITHUB_WORKSPACE/release-assets\" -maxdepth 1 -name '*.zip' -type f | sort)
+          mapfile -t exe_files < <(find \"$GITHUB_WORKSPACE/release-assets\" -maxdepth 1 -name '*.exe' -type f | sort)
           if [ \"${{#zip_files[@]}}\" -ne 1 ]; then
             printf 'Expected exactly one Windows portable zip, got %s\\n' \"${{#zip_files[@]}}\"
             printf '  %s\\n' \"${{zip_files[@]}}\"
+            exit 1
+          fi
+          if [ \"${{#exe_files[@]}}\" -ne 1 ]; then
+            printf 'Expected exactly one Windows installer exe, got %s\\n' \"${{#exe_files[@]}}\"
+            printf '  %s\\n' \"${{exe_files[@]}}\"
             exit 1
           fi
           if ! gh release view \"$RELEASE_TAG\" -R \"$RELEASE_REPO\" >/dev/null 2>&1; then
@@ -4286,9 +4303,9 @@ racket package-racket.rkt \\
               echo \"GitHub release does not exist and create-release is false: $RELEASE_REPO $RELEASE_TAG\"
               exit 1
             fi
-            gh release create \"$RELEASE_TAG\" -R \"$RELEASE_REPO\" --title \"$RELEASE_NAME\" --notes \"Generated Windows portable Racket artifact.\"
+            gh release create \"$RELEASE_TAG\" -R \"$RELEASE_REPO\" --title \"$RELEASE_NAME\" --notes \"Generated Windows Racket artifacts.\"
           fi
-          gh release upload \"$RELEASE_TAG\" -R \"$RELEASE_REPO\" \"${{zip_files[0]}}\" --clobber
+          gh release upload \"$RELEASE_TAG\" -R \"$RELEASE_REPO\" \"${{zip_files[0]}}\" \"${{exe_files[0]}}\" --clobber
 ")
         "")
   ) ; end begin windows-ci-publish-job-content
@@ -4315,6 +4332,7 @@ racket package-racket.rkt \\
                                       source-url
                                       "Windows source archive"))
     (define zip-name (windows-ci-portable-zip-name c config))
+    (define exe-name (windows-ci-installer-exe-name c config))
     f"{(generated-windows-ci-code-notice "#")}name: windows portable build
 
 on:
@@ -4339,6 +4357,7 @@ jobs:
       SOURCE_URL: {(yaml-single-quote source-url)}
       SOURCE_SHA256: {(yaml-single-quote source-sha)}
       ZIP_NAME: {(yaml-single-quote zip-name)}
+      EXE_NAME: {(yaml-single-quote exe-name)}
       PORTABLE_DIR: {(yaml-single-quote portable-dir)}
       BUILD_JOBS: {(yaml-single-quote (number->string jobs))}
       MSVC_ARCH: {(yaml-single-quote msvc-arch)}
@@ -4452,6 +4471,22 @@ jobs:
             throw \"nmake build failed with exit $LASTEXITCODE\"
           }}
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress --yes
+          $programFilesX86 = [Environment]::GetFolderPath(\"ProgramFilesX86\")
+          $iscc = Join-Path $programFilesX86 \"Inno Setup 6\\ISCC.exe\"
+          if (!(Test-Path $iscc)) {{
+            $iscc = Get-ChildItem $programFilesX86 -Recurse -Filter ISCC.exe -ErrorAction SilentlyContinue |
+              Sort-Object FullName |
+              Select-Object -First 1 -ExpandProperty FullName
+          }}
+          if (!$iscc -or !(Test-Path $iscc)) {{
+            throw \"ISCC.exe not found after installing Inno Setup\"
+          }}
+          \"ISCC_EXE=$iscc\" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Assemble portable zip
         shell: pwsh
         run: |
@@ -4525,11 +4560,198 @@ jobs:
           }}
           Get-FileHash $artifactPath -Algorithm SHA256
 
-      - name: Upload Windows portable artifact
+      - name: Build Inno Setup installer
+        shell: pwsh
+        run: |
+          $portableRoot = Join-Path \"portable\" $env:PORTABLE_DIR
+          if (!(Test-Path $portableRoot)) {{
+            throw \"portable tree missing: $portableRoot\"
+          }}
+          @'
+          param(
+            [Parameter(Mandatory=$true)] [string] $InstallRoot,
+            [Parameter(Mandatory=$true)] [string] $CacheRoot
+          )
+
+          $ErrorActionPreference = 'Stop'
+
+          function Test-DirectoryEmpty([string] $Path) {{
+            if (!(Test-Path -LiteralPath $Path)) {{ return $true }}
+            return -not (Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop | Select-Object -First 1)
+          }}
+
+          $CacheRoot = [IO.Path]::GetFullPath($CacheRoot)
+          $root = [IO.Path]::GetPathRoot($CacheRoot).TrimEnd('\\')
+          if ([string]::IsNullOrWhiteSpace($CacheRoot) -or ($CacheRoot.TrimEnd('\\') -eq $root)) {{
+            throw \"Refusing unsafe cache path: $CacheRoot\"
+          }}
+
+          $marker = Join-Path $CacheRoot '.racket-installer-cache'
+          if ((Test-Path -LiteralPath $CacheRoot) -and
+              !(Test-Path -LiteralPath $marker) -and
+              !(Test-DirectoryEmpty $CacheRoot)) {{
+            throw \"Cache path exists and is not empty or installer-owned: $CacheRoot\"
+          }}
+
+          New-Item -ItemType Directory -Force $CacheRoot | Out-Null
+          Set-Content -LiteralPath $marker -Value 'Racket installer owned cache directory' -Encoding ASCII
+
+          $configPath = Join-Path $InstallRoot 'etc\\config.rktd'
+          if (!(Test-Path -LiteralPath $configPath)) {{
+            throw \"Racket config not found: $configPath\"
+          }}
+          $configText = Get-Content -LiteralPath $configPath -Raw
+          foreach ($key in @('default-scope', 'compiled-file-cache-roots', 'compiled-file-system-cache-root')) {{
+            $pattern = '\\s*\\(' + [regex]::Escape($key) + '\\s+\\.\\s+(\"[^\"]*\"|\\([^)]*\\)|[^)]*)\\)'
+            $configText = [regex]::Replace($configText, $pattern, '')
+          }}
+          $cacheForConfig = $CacheRoot.Replace('\\', '/').Replace('\"', '\\\"')
+          $entries = ' (default-scope . \"installation\") (compiled-file-cache-roots . (user system)) (compiled-file-system-cache-root . \"' + $cacheForConfig + '\")'
+          $configText = [regex]::Replace($configText, '\\s*\\)\\)\\s*$', $entries + \"))`r`n\")
+          if ($configText -notmatch '\\(compiled-file-system-cache-root \\.' ) {{
+            throw 'Unable to configure Racket system cache root'
+          }}
+          Set-Content -LiteralPath $configPath -Value $configText -Encoding UTF8
+
+          $racoExe = Join-Path $InstallRoot 'raco.exe'
+          $racketExe = Join-Path $InstallRoot 'Racket.exe'
+          if (Test-Path -LiteralPath $racoExe) {{
+            & $racoExe setup --system --no-user --reset-cache -D --no-pkg-deps
+          }} elseif (Test-Path -LiteralPath $racketExe) {{
+            & $racketExe -N raco -l- raco setup --system --no-user --reset-cache -D --no-pkg-deps
+          }} else {{
+            throw \"Neither raco.exe nor Racket.exe exists in $InstallRoot\"
+          }}
+          if ($LASTEXITCODE -ne 0) {{
+            exit $LASTEXITCODE
+          }}
+          '@ | Set-Content -Path (Join-Path $portableRoot \"installer-configure.ps1\") -Encoding UTF8
+
+          $outputBase = [IO.Path]::GetFileNameWithoutExtension($env:EXE_NAME)
+          @\"
+          [Setup]
+          AppId={(cfg-package-name c)}
+          AppName=Racket
+          AppVersion=$env:FORMULA_VERSION
+          DefaultDirName={{autopf}}\\Racket9
+          DefaultGroupName=Racket 9
+          DisableProgramGroupPage=yes
+          OutputDir=artifacts
+          OutputBaseFilename=$outputBase
+          Compression=lzma2
+          SolidCompression=yes
+          ArchitecturesAllowed=x64compatible
+          ArchitecturesInstallIn64BitMode=x64compatible
+          PrivilegesRequired=admin
+          WizardStyle=modern
+
+          [Files]
+          Source: \"portable\\$env:PORTABLE_DIR\\*\"; DestDir: \"{{app}}\"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Icons]
+          Name: \"{{group}}\\Racket\"; Filename: \"{{app}}\\Racket.exe\"
+          Name: \"{{group}}\\Uninstall Racket\"; Filename: \"{{uninstallexe}}\"
+
+          [Code]
+          var
+            CachePage: TInputDirWizardPage;
+            CacheDefaultRoot: String;
+
+          function DefaultCacheRoot(): String;
+          begin
+            Result := ExpandConstant('{{app}}\\var\\cache\\racket\\compiled');
+          end;
+
+          function GetCacheRoot(Param: String): String;
+          var
+            Value: String;
+          begin
+            Value := ExpandConstant('{{param:CACHEPATH|}}');
+            if Value <> '' then
+              Result := Value
+            else if Assigned(CachePage) then
+              Result := CachePage.Values[0]
+            else
+              Result := DefaultCacheRoot();
+          end;
+
+          procedure InitializeWizard;
+          begin
+            CachePage := CreateInputDirPage(wpSelectDir, 'Racket Cache Directory',
+              'Choose the compiled cache directory.',
+              'Racket builds the system cache during installation. For unattended installs, pass /CACHEPATH=...',
+              False, '');
+            CachePage.Add('');
+            CacheDefaultRoot := DefaultCacheRoot();
+            CachePage.Values[0] := CacheDefaultRoot;
+          end;
+
+          procedure CurPageChanged(CurPageID: Integer);
+          begin
+            if Assigned(CachePage) and (CurPageID = CachePage.ID) then
+              if (CachePage.Values[0] = '') or (CachePage.Values[0] = CacheDefaultRoot) then begin
+                CacheDefaultRoot := DefaultCacheRoot();
+                CachePage.Values[0] := CacheDefaultRoot;
+              end;
+          end;
+
+          function NextButtonClick(CurPageID: Integer): Boolean;
+          begin
+            Result := True;
+            if Assigned(CachePage) and (CurPageID = CachePage.ID) and (Trim(CachePage.Values[0]) = '') then begin
+              MsgBox('Cache path is required.', mbError, MB_OK);
+              Result := False;
+            end;
+          end;
+
+          procedure CurStepChanged(CurStep: TSetupStep);
+          var
+            ResultCode: Integer;
+            Params: String;
+          begin
+            if CurStep = ssPostInstall then begin
+              if not RegWriteStringValue(HKLM, 'Software\\Racket9', 'CacheRoot', GetCacheRoot('')) then
+                RaiseException('Failed to save Racket cache path.');
+              Params := '-NoProfile -ExecutionPolicy Bypass -File \"' + ExpandConstant('{{app}}\\installer-configure.ps1') +
+                '\" -InstallRoot \"' + ExpandConstant('{{app}}') + '\" -CacheRoot \"' + GetCacheRoot('') + '\"';
+              if not Exec('powershell.exe', Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+                RaiseException('Failed to run Racket cache setup.');
+              if ResultCode <> 0 then
+                RaiseException('Racket cache setup failed with exit code ' + IntToStr(ResultCode) + '.');
+            end;
+          end;
+
+          procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+          var
+            CacheRoot: String;
+          begin
+            if CurUninstallStep = usUninstall then begin
+              if RegQueryStringValue(HKLM, 'Software\\Racket9', 'CacheRoot', CacheRoot) then begin
+                if FileExists(AddBackslash(CacheRoot) + '.racket-installer-cache') then
+                  DelTree(CacheRoot, True, True, True);
+              end;
+              RegDeleteKeyIncludingSubkeys(HKLM, 'Software\\Racket9');
+            end;
+          end;
+          \"@ | Set-Content -Path racket-installer.iss -Encoding UTF8
+
+          & $env:ISCC_EXE racket-installer.iss
+          if ($LASTEXITCODE -ne 0) {{
+            throw \"Inno Setup failed with exit $LASTEXITCODE\"
+          }}
+          $installerPath = Join-Path \"artifacts\" $env:EXE_NAME
+          if (!(Test-Path $installerPath) -or (Get-Item $installerPath).Length -le 0) {{
+            throw \"installer exe missing or empty: $installerPath\"
+          }}
+          Get-FileHash $installerPath -Algorithm SHA256
+
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v6
         with:
           name: {(yaml-single-quote (windows-ci-artifact-name config))}
-          path: artifacts/*.zip
+          path: |
+            artifacts/*.zip
+            artifacts/*.exe
           if-no-files-found: error
 {(windows-ci-publish-job-content config)}"
   ) ; end begin windows-ci-workflow-content
@@ -4563,11 +4785,14 @@ jobs:
   (begin
     (define content (file->string path))
     (define zip-name (windows-ci-portable-zip-name c config))
+    (define exe-name (windows-ci-installer-exe-name c config))
     (for ([needle (in-list (list "# win-racket"
                                  generated-windows-ci-notice-marker
                                  "package-racket"
                                  ".github/workflows/build-windows-portable.yml"
-                                 zip-name))])
+                                 zip-name
+                                 exe-name
+                                 "/CACHEPATH"))])
       (unless (string-contains? content needle)
         (raise-user-error 'validate-windows-ci-readme! f"Windows README missing: {needle}")
       ) ; end unless README contains required text
@@ -4580,6 +4805,7 @@ jobs:
     (validate-yaml! c path)
     (define content (file->string path))
     (define zip-name (windows-ci-portable-zip-name c config))
+    (define exe-name (windows-ci-installer-exe-name c config))
     (for ([needle (in-list (list "name: windows portable build"
                                  generated-windows-ci-notice-marker
                                  "runs-on:"
@@ -4590,9 +4816,16 @@ jobs:
                                  "src\\winfig.bat"
                                  "nmake /f Makefile"
                                  "Compress-Archive"
+                                 "choco install innosetup"
+                                 "ISCC.exe"
+                                 "Build Inno Setup installer"
+                                 "/CACHEPATH"
+                                 "raco setup --system --no-user --reset-cache -D --no-pkg-deps"
+                                 "RegDeleteKeyIncludingSubkeys"
                                  "windows-portable-ok"
                                  "actions/upload-artifact@v6"
-                                 zip-name))])
+                                 zip-name
+                                 exe-name))])
       (unless (string-contains? content needle)
         (raise-user-error 'validate-windows-ci-workflow! f"Windows CI workflow missing: {needle}")
       ) ; end unless workflow contains required needle
@@ -4638,6 +4871,7 @@ jobs:
     (println/flush f"Would validate Windows CI workflow YAML with: {(cfg-ruby-bin c)}")
     (println/flush f"Would configure Windows runner: {(config-required-string 'windows-ci-config config 'runner)}")
     (println/flush f"Would configure Windows portable zip: {(windows-ci-portable-zip-name c config)}")
+    (println/flush f"Would configure Windows Inno installer: {(windows-ci-installer-exe-name c config)}")
     (println/flush f"Would publish Windows release asset: {(if (config-required-boolean 'windows-ci-config config 'publish-release) "yes" "no")}")
   ) ; end begin print-windows-ci-dry-run-plan!
 ) ; end define print-windows-ci-dry-run-plan!
@@ -8237,15 +8471,15 @@ jobs:
 
 (module+ test
   (define test-root (find-system-path 'temp-dir))
-  (define test-bottle-root-url "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.1")
+  (define test-bottle-root-url "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.2.2")
   (define test-sha256 (make-string 64 #\a))
 
   (define (test-cfg #:targets [targets '("brew")]
                     #:dry-run? [dry-run? #t]
                     #:update-formula? [update-formula? #t]
                     #:formula-build-mode [formula-build-mode "full"]
-                    #:source-version [source-version "9.2.1"]
-                    #:formula-version [formula-version "9.2.1"]
+                    #:source-version [source-version "9.2.2"]
+                    #:formula-version [formula-version "9.2.2"]
                     #:rpm-system [rpm-system "el9"]
                     #:rpm-release [rpm-release "1"]
                     #:rpm-arch [rpm-arch "x86_64"]
@@ -8346,14 +8580,14 @@ jobs:
     (define c (test-cfg #:brew-packages '("sandbox-lib" "custom-extra")))
     (define packages (brew-source-packages c))
     (check-equal? (catalog-lookup-version "9.2") "9.2")
-    (check-equal? (catalog-lookup-version "9.2.1") "9.2")
+    (check-equal? (catalog-lookup-version "9.2.2") "9.2")
     (define config-path (make-temporary-file "package-racket-config~a.rktd"))
     (dynamic-wind
       void
       (lambda ()
-        (write-brew-config! config-path "9.2.1")
+        (write-brew-config! config-path "9.2.2")
         (define cfg (call-with-input-file config-path read))
-        (check-equal? (hash-ref cfg 'installation-name) "9.2.1")
+        (check-equal? (hash-ref cfg 'installation-name) "9.2.2")
         (check-equal? (hash-ref cfg 'pkg-catalog-lookup-version) "9.2"))
       (lambda ()
         (when (file-exists? config-path)
@@ -8368,8 +8602,8 @@ jobs:
                   '("windows-portable-ci"))
     (check-equal? (normalize-rpm-arch "arm64") "aarch64")
     (check-equal? (normalize-rpm-arch "amd64") "x86_64")
-    (check-equal? (brew-source-tgz-name c) "racket-minimal-9.2.1-src.tgz")
-    (check-equal? (rpm-package-name c) "racket9-9.2.1-1.el9.x86_64.rpm")
+    (check-equal? (brew-source-tgz-name c) "racket-minimal-9.2.2-src.tgz")
+    (check-equal? (rpm-package-name c) "racket9-9.2.2-1.el9.x86_64.rpm")
     (check-true (and (member "sandbox-lib" packages string=?) #t))
     (check-true (and (member "errortrace-lib" packages string=?) #t))
     (check-true (and (member "source-syntax" packages string=?) #t))
@@ -8499,13 +8733,13 @@ jobs:
                                     #:rpm-release "1"
                                     #:rpm-arch "aarch64"))
     (check-equal? (rpm-release el9) "1.el9")
-    (check-equal? (rpm-package-name el9) "racket9-9.2.1-1.el9.x86_64.rpm")
+    (check-equal? (rpm-package-name el9) "racket9-9.2.2-1.el9.x86_64.rpm")
     (check-equal? (rpm-release fc40) "2.fc40")
-    (check-equal? (rpm-package-name fc40) "racket9-9.2.1-2.fc40.x86_64.rpm")
+    (check-equal? (rpm-package-name fc40) "racket9-9.2.2-2.fc40.x86_64.rpm")
     (check-equal? (rpm-release openeuler2203) "1.openeuler2203")
-    (check-equal? (rpm-package-name openeuler2203) "racket9-9.2.1-1.openeuler2203.aarch64.rpm")
+    (check-equal? (rpm-package-name openeuler2203) "racket9-9.2.2-1.openeuler2203.aarch64.rpm")
     (check-equal? (rpm-release openeuler2403) "1.openeuler2403")
-    (check-equal? (rpm-package-name openeuler2403) "racket9-9.2.1-1.openeuler2403.aarch64.rpm")
+    (check-equal? (rpm-package-name openeuler2403) "racket9-9.2.2-1.openeuler2403.aarch64.rpm")
     (check-exn exn:fail?
                (lambda ()
                  (assert-rpm-system "openeuler")
@@ -8541,25 +8775,25 @@ jobs:
   ) ; end test-case deb md5sums
 
   (test-case "formula-version drives brew and apt while rpm and deb-racket keep version plus release"
-    (define c (test-cfg #:source-version "9.2.1"
-                        #:formula-version "9.2.1.1"))
-    (check-equal? (brew-source-tgz-name c) "racket-minimal-9.2.1-src.tgz")
-    (check-equal? (apt-deb-name c) "racket9_9.2.1.1-1_amd64.deb")
+    (define c (test-cfg #:source-version "9.2.2"
+                        #:formula-version "9.2.2.1"))
+    (check-equal? (brew-source-tgz-name c) "racket-minimal-9.2.2-src.tgz")
+    (check-equal? (apt-deb-name c) "racket9_9.2.2.1-1_amd64.deb")
     (check-equal? (deb-generated-package-name c "1" "ubuntu2404" "amd64")
-                  "racket9_9.2.1-1.ubuntu2404_amd64.deb")
-    (check-equal? (rpm-package-name c) "racket9-9.2.1-1.el9.x86_64.rpm")
+                  "racket9_9.2.2-1.ubuntu2404_amd64.deb")
+    (check-equal? (rpm-package-name c) "racket9-9.2.2-1.el9.x86_64.rpm")
     (check-equal? (brew-tgz-member-path c "src/README.txt")
-                  "racket-9.2.1/src/README.txt")
+                  "racket-9.2.2/src/README.txt")
     (define content (formula-content/full c test-sha256))
     (check-true
      (string-contains? content
-                       "url \"https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz\""))
-    (check-true (string-contains? content "version \"9.2.1.1\""))
+                       "url \"https://github.com/CutieDeng/racket/releases/download/v9.2.2/racket-minimal-9.2.2-src.tgz\""))
+    (check-true (string-contains? content "version \"9.2.2.1\""))
     (check-true (formula-version-before-sha? content))
-    (check-true (string-contains? content "assert_match \"9.2.1\""))
-    (check-false (string-contains? content "Welcome to Racket v9.2.1.1 [cs]."))
+    (check-true (string-contains? content "assert_match \"9.2.2\""))
+    (check-false (string-contains? content "Welcome to Racket v9.2.2.1 [cs]."))
     (define publish-content (publish-workflow-content c test-brew-ci-config))
-    (check-true (string-contains? publish-content "RELEASE_TAG: v9.2.1"))
+    (check-true (string-contains? publish-content "RELEASE_TAG: v9.2.2"))
     (define rpm-root (make-temporary-file "package-racket-rpm-spec~a" 'directory))
     (dynamic-wind
       void
@@ -8573,16 +8807,16 @@ jobs:
         (define spec-path (build-path rpm-root "racket9.spec"))
         (write-rpm-spec! c
                          spec-path
-                         "https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz"
+                         "https://github.com/CutieDeng/racket/releases/download/v9.2.2/racket-minimal-9.2.2-src.tgz"
                          test-sha256)
         (define file-list (rpm-file-list c))
         (define spec-content (file->string spec-path))
-        (check-true (string-contains? spec-content "Version: 9.2.1"))
-        (check-false (string-contains? spec-content "Version: 9.2.1.1"))
+        (check-true (string-contains? spec-content "Version: 9.2.2"))
+        (check-false (string-contains? spec-content "Version: 9.2.2.1"))
         (check-true (string-contains? spec-content "%{!?package_system:%global package_system el9}"))
         (check-true (string-contains? spec-content "%{!?package_release:%global package_release 1}"))
         (check-true (string-contains? spec-content "Release: %{package_release}.%{package_system}"))
-        (check-true (string-contains? spec-content "Source0: https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz"))
+        (check-true (string-contains? spec-content "Source0: https://github.com/CutieDeng/racket/releases/download/v9.2.2/racket-minimal-9.2.2-src.tgz"))
         (check-true (string-contains? spec-content "Requires: libedit"))
         (check-false (string-contains? spec-content "Source1:"))
         (check-true (string-contains? spec-content "%global __brp_compress %{nil}"))
@@ -8625,9 +8859,9 @@ jobs:
          f"{(generated-code-notice "#")}class RacketAT9 < Formula
   desc \"Modern programming language in the Lisp/Scheme family\"
   homepage \"https://racket-lang.org/\"
-  url \"https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz\"
+  url \"https://github.com/CutieDeng/racket/releases/download/v9.2.2/racket-minimal-9.2.2-src.tgz\"
   sha256 \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"
-  version \"9.2.1\"
+  version \"9.2.2\"
   license any_of: [\"MIT\", \"Apache-2.0\"]
 
   depends_on \"openssl@3\"
@@ -8651,7 +8885,7 @@ jobs:
   end
 
   test do
-    assert_match \"9.2.1\", shell_output(\"racket -e '(displayln (version))'\")
+    assert_match \"9.2.2\", shell_output(\"racket -e '(displayln (version))'\")
   end
 end
 ")
@@ -8679,9 +8913,9 @@ end
     (define content (formula-content/full (test-cfg) test-sha256))
     (for ([needle (in-list (list "class RacketAT9 < Formula"
                                  generated-code-notice-marker
-                                 "url \"https://github.com/CutieDeng/racket/releases/download/v9.2.1/racket-minimal-9.2.1-src.tgz\""
+                                 "url \"https://github.com/CutieDeng/racket/releases/download/v9.2.2/racket-minimal-9.2.2-src.tgz\""
                                  f"sha256 \"{test-sha256}\""
-                                 "version \"9.2.1\""
+                                 "version \"9.2.2\""
                                  "depends_on \"openssl@3\""
                                  "formula_opt_lib(\"openssl@3\")"
                                  "depends_on \"ncurses\""
