@@ -7486,6 +7486,7 @@ jobs:
     (define bottle-runners (config-ref* config 'bottle-runners '()))
     (define root-url (cfg-bottle-root-url c))
     (define release-tag (github-release-tag-from-root-url 'publish-workflow-content root-url))
+    (define release-name f"Racket {(cfg-source-version c)} Homebrew bottles")
     (define matrix-os "${{ matrix.os }}")
     (define container-expr "${{ matrix.container }}")
     (define token-expr "${{ secrets.GITHUB_TOKEN }}")
@@ -7581,6 +7582,7 @@ jobs:
           GH_REPO: {github-repository-expr}
           BOTTLE_ROOT_URL: {root-url}
           RELEASE_TAG: {release-tag}
+          RELEASE_NAME: {release-name}
           BOTTLE_REBUILD: {bottle-rebuild}
         run: |
           set -euo pipefail
@@ -7607,7 +7609,9 @@ jobs:
             exit 1
           fi
 
-          gh release view \"$RELEASE_TAG\" >/dev/null
+          if ! gh release view \"$RELEASE_TAG\" >/dev/null 2>&1; then
+            gh release create \"$RELEASE_TAG\" --title \"$RELEASE_NAME\" --notes \"Generated Homebrew bottle artifacts for {formula} {(cfg-formula-version c)}.\"
+          fi
 
           release_asset_dir=\"${{RUNNER_TEMP:-$GITHUB_WORKSPACE}}/bottle-release-assets\"
           normalized_json_dir=\"${{RUNNER_TEMP:-$GITHUB_WORKSPACE}}/normalized-bottle-json\"
@@ -8794,6 +8798,7 @@ jobs:
     (check-false (string-contains? content "Welcome to Racket v9.2.2.1 [cs]."))
     (define publish-content (publish-workflow-content c test-brew-ci-config))
     (check-true (string-contains? publish-content "RELEASE_TAG: v9.2.2"))
+    (check-true (string-contains? publish-content "gh release create \"$RELEASE_TAG\""))
     (define rpm-root (make-temporary-file "package-racket-rpm-spec~a" 'directory))
     (dynamic-wind
       void
