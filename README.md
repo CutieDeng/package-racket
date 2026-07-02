@@ -694,9 +694,9 @@ racket package-racket.rkt \
   --rpm-arch arm64
 ```
 
-`--rpm-system` must be explicit. Supported values are `el9`, `fc40`,
-`openeuler2203`, and `openeuler2403`. The generic `openeuler` value is rejected
-because production RPM artifacts must name the concrete target system.
+`--rpm-system` must be explicit. Supported values are `el9`, `fc40`, `fc43`,
+`fc44`, `openeuler2203`, and `openeuler2403`. The generic `openeuler` value is
+rejected because production RPM artifacts must name the concrete target system.
 `--rpm-release` is the release base before the system suffix, so
 `--rpm-release 5 --rpm-system fc40` becomes RPM `Release: 5.fc40`.
 `--rpm-arch arm64` is normalized to RPM's `aarch64` target. The accepted RPM
@@ -707,6 +707,8 @@ Common RPM target examples:
 ```sh
 --rpm-system el9 --rpm-release 5 --rpm-arch x86_64
 --rpm-system fc40 --rpm-release 5 --rpm-arch x86_64
+--rpm-system fc43 --rpm-release 5 --rpm-arch x86_64
+--rpm-system fc44 --rpm-release 5 --rpm-arch x86_64
 --rpm-system openeuler2203 --rpm-release 5 --rpm-arch arm64
 --rpm-system openeuler2403 --rpm-release 5 --rpm-arch arm64
 ```

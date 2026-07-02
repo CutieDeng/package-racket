@@ -56,6 +56,62 @@
                                            "tar"
                                            "which"
                                            "zlib-devel")))
+                  #hash((id . "fc43-x86_64")
+                        (rpm-system . "fc43")
+                        (rpm-release . "1")
+                        (rpm-arch . "x86_64")
+                        (runner . "ubuntu-24.04")
+                        (container . "fedora:43")
+                        (jobs . 2)
+                        (setup-packages . ("bash"
+                                           "coreutils"
+                                           "curl"
+                                           "diffutils"
+                                           "file"
+                                           "findutils"
+                                           "gcc"
+                                           "grep"
+                                           "gzip"
+                                           "libffi-devel"
+                                           "make"
+                                           "ncurses-devel"
+                                           "openssl-devel"
+                                           "perl"
+                                           "rpm"
+                                           "rpm-build"
+                                           "sed"
+                                           "sqlite-devel"
+                                           "tar"
+                                           "which"
+                                           "zlib-devel")))
+                  #hash((id . "fc44-x86_64")
+                        (rpm-system . "fc44")
+                        (rpm-release . "1")
+                        (rpm-arch . "x86_64")
+                        (runner . "ubuntu-24.04")
+                        (container . "fedora:44")
+                        (jobs . 2)
+                        (setup-packages . ("bash"
+                                           "coreutils"
+                                           "curl"
+                                           "diffutils"
+                                           "file"
+                                           "findutils"
+                                           "gcc"
+                                           "grep"
+                                           "gzip"
+                                           "libffi-devel"
+                                           "make"
+                                           "ncurses-devel"
+                                           "openssl-devel"
+                                           "perl"
+                                           "rpm"
+                                           "rpm-build"
+                                           "sed"
+                                           "sqlite-devel"
+                                           "tar"
+                                           "which"
+                                           "zlib-devel")))
                   #hash((id . "openeuler2203-aarch64")
                         (rpm-system . "openeuler2203")
                         (rpm-release . "1")
