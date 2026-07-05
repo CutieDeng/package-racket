@@ -1326,27 +1326,67 @@ find_staged_collects_dir() {{
   die \"could not find staged Racket collects under $stage_root\"
 }}
 
-replace_config_cache_root() {{
-  local config_file=\"$1\"
-  local from=\"$2\"
-  local to=\"$3\"
-  local escaped_from escaped_to
-  escaped_from=$(printf '%s\\n' \"$from\" | sed 's/[&|]/\\\\&/g')
-  escaped_to=$(printf '%s\\n' \"$to\" | sed 's/[&|]/\\\\&/g')
-  grep -F \"$from\" \"$config_file\" >/dev/null \\
-    || die \"config does not contain expected cache root $from: $config_file\"
-  sed -i \"s|$escaped_from|$escaped_to|g\" \"$config_file\"
-}}
-
 require_staged_system_cache() {{
   local stage_root=\"$1\"
   local prefix=\"$2\"
   local cache_root=\"$stage_root/var/cache/racket/compiled\"
   local runtime_collects_dir=\"$prefix/share/racket/collects\"
+  local runtime_pkgs_dir=\"$prefix/share/racket/pkgs\"
   local runtime_collects_cache=\"$cache_root/${{runtime_collects_dir#/}}\"
+  local runtime_pkgs_cache=\"$cache_root/${{runtime_pkgs_dir#/}}\"
   if ! find \"$runtime_collects_cache\" -path '*/compiled/*.zo' -type f -print -quit 2>/dev/null | grep -q .; then
     die \"runtime-keyed staged system compiled cache is empty: $runtime_collects_cache\"
   fi
+  if ! find \"$runtime_pkgs_cache\" -path '*/compiled/*.zo' -type f -print -quit 2>/dev/null | grep -q .; then
+    die \"runtime-keyed staged package compiled cache is empty: $runtime_pkgs_cache\"
+  fi
+}}
+
+write_staged_config() {{
+  local config_file=\"$1\"
+  local stage_root=\"$2\"
+  local prefix=\"$3\"
+  local runtime_cache_root=\"$4\"
+  local staged_cache_root=\"$5\"
+  local racket_bin=\"$6\"
+  local collects_dir=\"$7\"
+  local config_dir=\"$8\"
+  \"$racket_bin\" -X \"$collects_dir\" -G \"$config_dir\" -e '
+(let ()
+  (define args (current-command-line-arguments))
+  (define config-file (vector-ref args 0))
+  (define stage-root (vector-ref args 1))
+  (define prefix (vector-ref args 2))
+  (define runtime-cache-root (vector-ref args 3))
+  (define staged-cache-root (vector-ref args 4))
+  (define config (call-with-input-file config-file read))
+  (unless (hash? config)
+    (error (quote write-staged-config) \"expected config.rktd to contain a hash\" config-file))
+  (unless (equal? (hash-ref config (quote compiled-file-system-cache-root) #f)
+                  runtime-cache-root)
+    (error (quote write-staged-config) \"config missing expected runtime cache root\" runtime-cache-root))
+  (define (staged-path suffix)
+    (string-append stage-root prefix suffix))
+  (define updates
+    (hash (quote compiled-file-system-cache-root) staged-cache-root
+          (quote share-dir) (staged-path \"/share/racket\")
+          (quote pkgs-dir) (staged-path \"/share/racket/pkgs\")
+          (quote doc-dir) (staged-path \"/share/doc/racket\")
+          (quote lib-dir) (staged-path \"/lib/racket\")
+          (quote include-dir) (staged-path \"/include/racket\")
+          (quote bin-dir) (staged-path \"/bin\")
+          (quote apps-dir) (staged-path \"/share/applications\")
+          (quote man-dir) (staged-path \"/share/man\")))
+  (define staged-config
+    (for/fold ([config config]) ([(key value) (in-hash updates)])
+      (if (hash-has-key? config key)
+          (hash-set config key value)
+          config)))
+  (call-with-output-file config-file
+    #:exists (quote truncate/replace)
+    (lambda (out)
+      (write staged-config out)
+      (newline out))))' -- \"$config_file\" \"$stage_root\" \"$prefix\" \"$runtime_cache_root\" \"$staged_cache_root\"
 }}
 
 move_staged_cache_tree() {{
@@ -1388,7 +1428,7 @@ build_staged_system_cache() {{
   racket_bin=$(find_staged_racket \"$stage_root\" \"$prefix\")
   backup=\"$config_file.package-racket-cache-backup\"
   cp \"$config_file\" \"$backup\"
-  replace_config_cache_root \"$config_file\" \"$runtime_cache_root\" \"$staged_cache_root\"
+  write_staged_config \"$config_file\" \"$stage_root\" \"$prefix\" \"$runtime_cache_root\" \"$staged_cache_root\" \"$racket_bin\" \"$collects_dir\" \"$config_dir\"
   mkdir -p \"$staged_cache_root\"
   if ! \"$racket_bin\" -X \"$collects_dir\" -G \"$config_dir\" -N raco -l- raco setup --system --no-user --reset-cache -D --no-pkg-deps; then
     cp \"$backup\" \"$config_file\"
@@ -1789,6 +1829,9 @@ else
   runtime_collects_cache=\"./var/cache/racket/compiled/${{DEFAULT_PREFIX#/}}/share/racket/collects\"
   printf '%s\\n' \"$contents\" | grep -F \"$runtime_collects_cache/\" | grep -E '[.]zo$' >/dev/null \\
     || die \"cached DEB payload does not include runtime-keyed collects cache .zo files\"
+  runtime_pkgs_cache=\"./var/cache/racket/compiled/${{DEFAULT_PREFIX#/}}/share/racket/pkgs\"
+  printf '%s\\n' \"$contents\" | grep -F \"$runtime_pkgs_cache/\" | grep -E '[.]zo$' >/dev/null \\
+    || die \"cached DEB payload does not include runtime-keyed package cache .zo files\"
 fi
 prerm_content=$(dpkg-deb --ctrl-tarfile \"$DEB_PATH\" | tar -xOf - ./prerm)
 if [ \"$CACHE_MODE\" = postinstall ]; then
@@ -1866,8 +1909,11 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
 	                                      "validate_cache_mode"
 	                                      "build_staged_system_cache"
 	                                      "find_staged_collects_dir"
+	                                      "write_staged_config"
 	                                      "normalize_staged_system_cache"
 	                                      "runtime-keyed staged system compiled cache"
+	                                      "runtime-keyed staged package compiled cache"
+	                                      "pkgs-dir"
 	                                      "racket-compiled-cache.log"
 	                                      "-X \"$collects_dir\" -G \"$config_dir\""
 	                                      "racket9-cached"
@@ -1898,6 +1944,7 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
 	                                      "DEB postinst does not build the system compiled cache"
 	                                      "cached DEB payload does not include system compiled cache"
 	                                      "cached DEB payload does not include runtime-keyed collects cache"
+	                                      "cached DEB payload does not include runtime-keyed package cache"
 	                                      "racket compiled cache debug log"
 	                                      "--cache-mode"
 	                                      "--dry-run"))
@@ -2066,10 +2113,42 @@ backup=\"$config_file.package-racket-cache-backup\"
 [ -x \"$racket_bin\" ] || {{ echo \"missing staged racket: $racket_bin\" >&2; exit 1; }}
 [ -d \"$collects_dir\" ] || {{ echo \"missing staged collects: $collects_dir\" >&2; exit 1; }}
 cp \"$config_file\" \"$backup\"
-escaped_runtime=$(printf '%s\\n' \"$runtime_cache_root\" | sed 's/[&|]/\\\\&/g')
-escaped_staged=$(printf '%s\\n' \"$staged_cache_root\" | sed 's/[&|]/\\\\&/g')
-grep -F \"$runtime_cache_root\" \"$config_file\" >/dev/null || {{ echo \"config missing runtime cache root\" >&2; exit 1; }}
-sed -i \"s|$escaped_runtime|$escaped_staged|g\" \"$config_file\"
+\"$racket_bin\" -X \"$collects_dir\" -G \"$config_dir\" -e '
+(let ()
+  (define args (current-command-line-arguments))
+  (define config-file (vector-ref args 0))
+  (define stage-root (vector-ref args 1))
+  (define prefix (vector-ref args 2))
+  (define runtime-cache-root (vector-ref args 3))
+  (define staged-cache-root (vector-ref args 4))
+  (define config (call-with-input-file config-file read))
+  (unless (hash? config)
+    (error (quote rpm-staged-config) \"expected config.rktd to contain a hash\" config-file))
+  (unless (equal? (hash-ref config (quote compiled-file-system-cache-root) #f)
+                  runtime-cache-root)
+    (error (quote rpm-staged-config) \"config missing expected runtime cache root\" runtime-cache-root))
+  (define (staged-path suffix)
+    (string-append stage-root prefix suffix))
+  (define updates
+    (hash (quote compiled-file-system-cache-root) staged-cache-root
+          (quote share-dir) (staged-path \"/share/racket\")
+          (quote pkgs-dir) (staged-path \"/share/racket/pkgs\")
+          (quote doc-dir) (staged-path \"/share/doc/racket\")
+          (quote lib-dir) (staged-path \"/lib/racket\")
+          (quote include-dir) (staged-path \"/include/racket\")
+          (quote bin-dir) (staged-path \"/bin\")
+          (quote apps-dir) (staged-path \"/share/applications\")
+          (quote man-dir) (staged-path \"/share/man\")))
+  (define staged-config
+    (for/fold ([config config]) ([(key value) (in-hash updates)])
+      (if (hash-has-key? config key)
+          (hash-set config key value)
+          config)))
+  (call-with-output-file config-file
+    #:exists (quote truncate/replace)
+    (lambda (out)
+      (write staged-config out)
+      (newline out))))' -- \"$config_file\" \"%{{buildroot}}\" \"%{{package_prefix}}\" \"$runtime_cache_root\" \"$staged_cache_root\"
 mkdir -p \"$staged_cache_root\"
 if ! \"$racket_bin\" -X \"$collects_dir\" -G \"$config_dir\" -N raco -l- raco setup --system --no-user --reset-cache -D --no-pkg-deps; then
   cp \"$backup\" \"$config_file\"
@@ -2094,12 +2173,15 @@ move_cache_tree() {{
   fi
 }}
 runtime_collects_dir=\"%{{package_prefix}}/share/racket/collects\"
+runtime_pkgs_dir=\"%{{package_prefix}}/share/racket/pkgs\"
 move_cache_tree \"$collects_dir\" \"$runtime_collects_dir\"
-move_cache_tree \"%{{buildroot}}%{{package_prefix}}/share/racket/pkgs\" \"%{{package_prefix}}/share/racket/pkgs\"
+move_cache_tree \"%{{buildroot}}$runtime_pkgs_dir\" \"$runtime_pkgs_dir\"
 rm -f \"%{{buildroot}}/var/cache/racket/racket-compiled-cache.log\"
 find \"$staged_cache_root\" -type d -empty -delete 2>/dev/null || :
 runtime_collects_cache=\"$staged_cache_root/${{runtime_collects_dir#/}}\"
+runtime_pkgs_cache=\"$staged_cache_root/${{runtime_pkgs_dir#/}}\"
 find \"$runtime_collects_cache\" -path '*/compiled/*.zo' -type f -print -quit | grep -q . || {{ echo \"runtime-keyed staged system compiled cache is empty: $runtime_collects_cache\" >&2; exit 1; }}
+find \"$runtime_pkgs_cache\" -path '*/compiled/*.zo' -type f -print -quit | grep -q . || {{ echo \"runtime-keyed staged package compiled cache is empty: $runtime_pkgs_cache\" >&2; exit 1; }}
 %endif
 
 manifest=\"%{{name}}.files\"
@@ -2196,8 +2278,11 @@ fi
                                  "find \"%{buildroot}\" -type d -name compiled ! -path '*/info-domain/compiled'"
                                  "missing staged collects"
                                  "-X \"$collects_dir\" -G \"$config_dir\""
+                                 "rpm-staged-config"
+                                 "pkgs-dir"
                                  "move_cache_tree"
                                  "runtime-keyed staged system compiled cache"
+                                 "runtime-keyed staged package compiled cache"
                                  "racket-compiled-cache.log"
                                  "%posttrans"
                                  "/etc/os-release"
@@ -3197,6 +3282,9 @@ else
   runtime_collects_cache=\"/var/cache/racket/compiled/${{DEFAULT_PREFIX#/}}/share/racket/collects\"
   printf '%s\\n' \"$payload\" | grep -F \"$runtime_collects_cache/\" | grep -E '[.]zo$' >/dev/null \\
     || die \"cached RPM payload does not include runtime-keyed collects cache .zo files\"
+  runtime_pkgs_cache=\"/var/cache/racket/compiled/${{DEFAULT_PREFIX#/}}/share/racket/pkgs\"
+  printf '%s\\n' \"$payload\" | grep -F \"$runtime_pkgs_cache/\" | grep -E '[.]zo$' >/dev/null \\
+    || die \"cached RPM payload does not include runtime-keyed package cache .zo files\"
 fi
 scripts=$(rpm -qp --scripts \"$RPM_PATH\")
 if [ \"$CACHE_MODE\" = postinstall ]; then
@@ -3359,6 +3447,7 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
                                       "--cache-mode"
                                       "cached RPM payload does not include system compiled cache"
                                       "cached RPM payload does not include runtime-keyed collects cache"
+                                      "cached RPM payload does not include runtime-keyed package cache"
                                       "racket compiled cache debug log"
                                       "--dry-run"))
   ) ; end begin validate-rpm-spec-scaffold!
@@ -3746,11 +3835,19 @@ jobs:
           rpm -q libedit >/dev/null
           cache_count=$(find /var/cache/racket/compiled -path '*/compiled/*.zo' 2>/dev/null | wc -l)
           [ \"$cache_count\" -gt 0 ] || {{ echo 'system compiled cache is empty after RPM install'; exit 1; }}
+          runtime_collects_cache=\"/var/cache/racket/compiled{(cfg-prefix c)}/share/racket/collects\"
+          runtime_pkgs_cache=\"/var/cache/racket/compiled{(cfg-prefix c)}/share/racket/pkgs\"
+          find \"$runtime_collects_cache\" -path '*/compiled/*.zo' -type f -print -quit | grep -q . \\
+            || {{ echo \"runtime-keyed collects cache is empty after RPM install: $runtime_collects_cache\"; exit 1; }}
+          find \"$runtime_pkgs_cache\" -path '*/compiled/*.zo' -type f -print -quit | grep -q . \\
+            || {{ echo \"runtime-keyed package cache is empty after RPM install: $runtime_pkgs_cache\"; exit 1; }}
           racket -e '(displayln (version))' | grep -F \"$PACKAGE_VERSION\"
           racket -e '(displayln f\"rpm-ci-ok\")' | grep -F 'rpm-ci-ok'
           racket -e '(require readline/readline) (displayln f\"rpm-readline-ok\")' | grep -F 'rpm-readline-ok'
           empty_home=$(mktemp -d)
           HOME=\"$empty_home\" racket -e '(require racket/list racket/match racket/file) (displayln f\"rpm-empty-home-ok\")' | grep -F 'rpm-empty-home-ok'
+          HOME=\"$empty_home\" rhombus --version | grep -F 'Rhombus'
+          HOME=\"$empty_home\" rhombus -e 'println(f\"rpm-rhombus-ok {{1}}\")' | grep -F 'rpm-rhombus-ok 1'
           rm -rf \"$empty_home\"
           raco pkg show --all >/tmp/raco-pkgs.txt
           rpm -e \"$PACKAGE_NAME\"
@@ -3874,7 +3971,11 @@ jobs:
                                  "$pm -y install \"${rpm_files[0]}\""
                                  "rpm -q libedit >/dev/null"
                                  "system compiled cache is empty after RPM install"
+                                 "runtime-keyed collects cache is empty after RPM install"
+                                 "runtime-keyed package cache is empty after RPM install"
                                  "rpm-empty-home-ok"
+                                 "rhombus --version"
+                                 "rpm-rhombus-ok 1"
                                  "system compiled cache remains after RPM erase"
                                  "racket -e '(displayln f\"rpm-ci-ok\")'"
                                  "racket -e '(require readline/readline) (displayln f\"rpm-readline-ok\")'"
@@ -4228,11 +4329,19 @@ jobs:
           dpkg -s \"$PACKAGE_NAME\" >/dev/null
           cache_count=$(find /var/cache/racket/compiled -path '*/compiled/*.zo' 2>/dev/null | wc -l)
           [ \"$cache_count\" -gt 0 ] || {{ echo 'system compiled cache is empty after DEB install'; exit 1; }}
+          runtime_collects_cache=\"/var/cache/racket/compiled{(cfg-prefix c)}/share/racket/collects\"
+          runtime_pkgs_cache=\"/var/cache/racket/compiled{(cfg-prefix c)}/share/racket/pkgs\"
+          find \"$runtime_collects_cache\" -path '*/compiled/*.zo' -type f -print -quit 2>/dev/null | grep -q . \\
+            || {{ echo \"runtime-keyed collects cache is empty after DEB install: $runtime_collects_cache\"; exit 1; }}
+          find \"$runtime_pkgs_cache\" -path '*/compiled/*.zo' -type f -print -quit 2>/dev/null | grep -q . \\
+            || {{ echo \"runtime-keyed package cache is empty after DEB install: $runtime_pkgs_cache\"; exit 1; }}
           racket -e '(displayln (version))' | grep -F \"$PACKAGE_VERSION\"
           racket -e '(displayln f\"deb-ci-ok\")' | grep -F 'deb-ci-ok'
           racket -e '(require readline/readline) (displayln f\"deb-readline-ok\")' | grep -F 'deb-readline-ok'
           empty_home=$(mktemp -d)
           HOME=\"$empty_home\" racket -e '(require racket/list racket/match racket/file) (displayln f\"deb-empty-home-ok\")' | grep -F 'deb-empty-home-ok'
+          HOME=\"$empty_home\" rhombus --version | grep -F 'Rhombus'
+          HOME=\"$empty_home\" rhombus -e 'println(f\"deb-rhombus-ok {{1}}\")' | grep -F 'deb-rhombus-ok 1'
           rm -rf \"$empty_home\"
           raco pkg show --all >/tmp/raco-pkgs.txt
           apt-get purge -y \"$PACKAGE_NAME\"
@@ -4348,7 +4457,11 @@ jobs:
                                  "--repo \"$GITHUB_REPOSITORY\""
                                  "apt-get install -y \"${deb_files[0]}\""
                                  "system compiled cache is empty after DEB install"
+                                 "runtime-keyed collects cache is empty after DEB install"
+                                 "runtime-keyed package cache is empty after DEB install"
                                  "deb-empty-home-ok"
+                                 "rhombus --version"
+                                 "deb-rhombus-ok 1"
                                  "system compiled cache remains after DEB purge"
                                  "Downloaded DEB files"
                                  "Release assets before upload"
