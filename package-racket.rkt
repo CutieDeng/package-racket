@@ -1313,6 +1313,19 @@ find_staged_racket() {{
   die \"could not find staged racket executable under $stage_root\"
 }}
 
+find_staged_collects_dir() {{
+  local stage_root=\"$1\"
+  local prefix=\"$2\"
+  local candidate
+  for candidate in \"$stage_root$prefix/share/racket/collects\" \"$stage_root/usr/share/racket/collects\"; do
+    if [ -d \"$candidate\" ]; then
+      printf '%s\\n' \"$candidate\"
+      return
+    fi
+  done
+  die \"could not find staged Racket collects under $stage_root\"
+}}
+
 replace_config_cache_root() {{
   local config_file=\"$1\"
   local from=\"$2\"
@@ -1338,15 +1351,16 @@ build_staged_system_cache() {{
   local prefix=\"$2\"
   local runtime_cache_root=\"/var/cache/racket/compiled\"
   local staged_cache_root=\"$stage_root$runtime_cache_root\"
-  local config_dir config_file racket_bin backup
+  local config_dir config_file collects_dir racket_bin backup
   config_dir=$(find_staged_config_dir \"$stage_root\" \"$prefix\")
   config_file=\"$config_dir/config.rktd\"
+  collects_dir=$(find_staged_collects_dir \"$stage_root\" \"$prefix\")
   racket_bin=$(find_staged_racket \"$stage_root\" \"$prefix\")
   backup=\"$config_file.package-racket-cache-backup\"
   cp \"$config_file\" \"$backup\"
   replace_config_cache_root \"$config_file\" \"$runtime_cache_root\" \"$staged_cache_root\"
   mkdir -p \"$staged_cache_root\"
-  if ! \"$racket_bin\" -G \"$config_dir\" -N raco -l- raco setup --system --no-user --reset-cache -D --no-pkg-deps; then
+  if ! \"$racket_bin\" -X \"$collects_dir\" -G \"$config_dir\" -N raco -l- raco setup --system --no-user --reset-cache -D --no-pkg-deps; then
     cp \"$backup\" \"$config_file\"
     rm -f \"$backup\"
     return 1
@@ -1814,6 +1828,8 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
 	                                      "require_repo_root"
 	                                      "validate_cache_mode"
 	                                      "build_staged_system_cache"
+	                                      "find_staged_collects_dir"
+	                                      "-X \"$collects_dir\" -G \"$config_dir\""
 	                                      "racket9-cached"
 	                                      "deb_name_for_arch"))
     (validate-generated-deb-script! c
@@ -2002,16 +2018,18 @@ config_file=\"$config_dir/config.rktd\"
 runtime_cache_root=\"/var/cache/racket/compiled\"
 staged_cache_root=\"%{{buildroot}}$runtime_cache_root\"
 racket_bin=\"%{{buildroot}}%{{package_prefix}}/bin/racket\"
+collects_dir=\"%{{buildroot}}%{{package_prefix}}/share/racket/collects\"
 backup=\"$config_file.package-racket-cache-backup\"
 [ -f \"$config_file\" ] || {{ echo \"missing staged config: $config_file\" >&2; exit 1; }}
 [ -x \"$racket_bin\" ] || {{ echo \"missing staged racket: $racket_bin\" >&2; exit 1; }}
+[ -d \"$collects_dir\" ] || {{ echo \"missing staged collects: $collects_dir\" >&2; exit 1; }}
 cp \"$config_file\" \"$backup\"
 escaped_runtime=$(printf '%s\\n' \"$runtime_cache_root\" | sed 's/[&|]/\\\\&/g')
 escaped_staged=$(printf '%s\\n' \"$staged_cache_root\" | sed 's/[&|]/\\\\&/g')
 grep -F \"$runtime_cache_root\" \"$config_file\" >/dev/null || {{ echo \"config missing runtime cache root\" >&2; exit 1; }}
 sed -i \"s|$escaped_runtime|$escaped_staged|g\" \"$config_file\"
 mkdir -p \"$staged_cache_root\"
-if ! \"$racket_bin\" -G \"$config_dir\" -N raco -l- raco setup --system --no-user --reset-cache -D --no-pkg-deps; then
+if ! \"$racket_bin\" -X \"$collects_dir\" -G \"$config_dir\" -N raco -l- raco setup --system --no-user --reset-cache -D --no-pkg-deps; then
   cp \"$backup\" \"$config_file\"
   rm -f \"$backup\"
   exit 1
@@ -2102,6 +2120,8 @@ fi
                                  "./configure"
                                  "make install DESTDIR=%{buildroot}"
                                  "find \"%{buildroot}\" -type d -name compiled ! -path '*/info-domain/compiled'"
+                                 "missing staged collects"
+                                 "-X \"$collects_dir\" -G \"$config_dir\""
                                  "staged system compiled cache"
                                  "%posttrans"
                                  "raco setup --system --no-user --reset-cache -D --no-pkg-deps"
