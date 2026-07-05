@@ -534,9 +534,15 @@ metadata.
 `deb-racket` root. The matrix lives in `deb-ci-config.rktd`; each target
 explicitly names `deb-system`, `deb-release`, `deb-arch`, GitHub runner,
 container image, dependency package list, and job count. The generated workflow
-runs on push to `main` and manual dispatch, builds all matrix DEBs, installs
-and purges each package inside its target container, uploads Actions artifacts,
-then publishes the DEB files to the configured GitHub Release with `--clobber`.
+runs on push to `main` and manual dispatch, expands every target into
+`postinstall` and `cached` cache modes, installs and purges each package inside
+its target container, uploads Actions artifacts, then publishes the DEB files
+to the configured GitHub Release with `--clobber`.
+
+The `postinstall` mode emits the normal `racket9` package and builds the system
+compiled cache after install. The `cached` mode emits `racket9-cached`, embeds
+the generated system compiled cache in the package payload, and skips install
+time cache generation.
 
 The default DEB repository config is `deb-repo-config.rktd`; it explicitly sets
 `deb-repo-root` to `/Users/cutiedeng/Y2026/M06/D23/deb-racket`, plus the
@@ -564,9 +570,23 @@ Build a DEB from the generated `deb-racket` repository:
   --artifact-dir /path/to/package-racket/artifacts \
   --work-dir /path/to/package-racket/.build/deb-racket \
   --deb-system ubuntu2404 \
-  --deb-release 5 \
+  --deb-release 2 \
   --prefix /usr \
-  --deb-arch amd64
+  --deb-arch amd64 \
+  --cache-mode postinstall
+```
+
+Build the cached DEB variant:
+
+```sh
+/Users/cutiedeng/Y2026/M06/D23/deb-racket/scripts/build-deb.sh \
+  --artifact-dir /path/to/package-racket/artifacts \
+  --work-dir /path/to/package-racket/.build/deb-racket-cached \
+  --deb-system ubuntu2404 \
+  --deb-release 2 \
+  --prefix /usr \
+  --deb-arch amd64 \
+  --cache-mode cached
 ```
 
 Use `deb-racket/scripts/build-deb.sh --source-archive ...` when a build host
@@ -580,7 +600,7 @@ racket package-racket.rkt \
   --target rpm-spec \
   --prefix /usr \
   --rpm-system openeuler2403 \
-  --rpm-release 5 \
+  --rpm-release 2 \
   --rpm-arch arm64 \
   --rpm-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-repo-config.rktd
 ```
@@ -603,7 +623,7 @@ racket package-racket.rkt \
   --target rpm-ci \
   --prefix /usr \
   --rpm-system openeuler2403 \
-  --rpm-release 5 \
+  --rpm-release 2 \
   --rpm-arch arm64 \
   --rpm-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-repo-config.rktd \
   --rpm-ci-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-ci-config.rktd
@@ -617,9 +637,15 @@ racket package-racket.rkt \
 `rpm-racket` root. The matrix lives in `rpm-ci-config.rktd`; each target
 explicitly names `rpm-system`, `rpm-release`, `rpm-arch`, GitHub runner,
 container image, dependency package list, and job count. The generated workflow
-runs on push to `main` and manual dispatch, builds all matrix RPMs, installs and
-uninstalls each package inside its target container, uploads Actions artifacts,
-then publishes the RPM files to the configured GitHub Release with `--clobber`.
+runs on push to `main` and manual dispatch, expands every target into
+`postinstall` and `cached` cache modes, installs and uninstalls each package
+inside its target container, uploads Actions artifacts, then publishes the RPM
+files to the configured GitHub Release with `--clobber`.
+
+The `postinstall` mode emits the normal `racket9` package and builds the system
+compiled cache after install. The `cached` mode emits `racket9-cached`, embeds
+the generated system compiled cache in the package payload, and skips install
+time cache generation.
 
 When writing `SPECS/racket9.spec`, `package-racket` resolves the `Source0`
 sha256 in this order:
@@ -655,9 +681,23 @@ Build an RPM from the generated `rpm-racket` repository:
   --artifact-dir /path/to/package-racket/artifacts \
   --work-dir /path/to/package-racket/.build/rpm-racket \
   --rpm-system openeuler2403 \
-  --rpm-release 5 \
+  --rpm-release 2 \
   --prefix /usr \
-  --rpm-arch arm64
+  --rpm-arch arm64 \
+  --cache-mode postinstall
+```
+
+Build the cached RPM variant:
+
+```sh
+/Users/cutiedeng/Y2026/M06/D22/rpm-racket/scripts/build-rpm.sh \
+  --artifact-dir /path/to/package-racket/artifacts \
+  --work-dir /path/to/package-racket/.build/rpm-racket-cached \
+  --rpm-system openeuler2403 \
+  --rpm-release 2 \
+  --prefix /usr \
+  --rpm-arch arm64 \
+  --cache-mode cached
 ```
 
 Build the matching SRPM:
@@ -667,7 +707,7 @@ Build the matching SRPM:
   --artifact-dir /path/to/package-racket/artifacts \
   --work-dir /path/to/package-racket/.build/rpm-racket-srpm \
   --rpm-system openeuler2403 \
-  --rpm-release 5 \
+  --rpm-release 2 \
   --prefix /usr \
   --rpm-arch arm64
 ```
@@ -678,7 +718,7 @@ Create an RPM package directly from `package-racket` on a Linux x64 build:
 racket package-racket.rkt \
   --target rpm \
   --rpm-system el9 \
-  --rpm-release 5 \
+  --rpm-release 2 \
   --prefix /usr \
   --rpm-arch x86_64
 ```
@@ -689,7 +729,7 @@ Create an RPM package directly from `package-racket` on a Linux arm64 build:
 racket package-racket.rkt \
   --target rpm \
   --rpm-system openeuler2403 \
-  --rpm-release 5 \
+  --rpm-release 2 \
   --prefix /usr \
   --rpm-arch arm64
 ```
@@ -698,19 +738,19 @@ racket package-racket.rkt \
 `fc44`, `openeuler2203`, and `openeuler2403`. The generic `openeuler` value is
 rejected because production RPM artifacts must name the concrete target system.
 `--rpm-release` is the release base before the system suffix, so
-`--rpm-release 5 --rpm-system fc40` becomes RPM `Release: 5.fc40`.
+`--rpm-release 2 --rpm-system fc40` becomes RPM `Release: 2.fc40`.
 `--rpm-arch arm64` is normalized to RPM's `aarch64` target. The accepted RPM
 architecture spellings are `x86_64`, `amd64`, `x64`, `aarch64`, and `arm64`.
 
 Common RPM target examples:
 
 ```sh
---rpm-system el9 --rpm-release 5 --rpm-arch x86_64
---rpm-system fc40 --rpm-release 5 --rpm-arch x86_64
---rpm-system fc43 --rpm-release 5 --rpm-arch x86_64
---rpm-system fc44 --rpm-release 5 --rpm-arch x86_64
---rpm-system openeuler2203 --rpm-release 5 --rpm-arch arm64
---rpm-system openeuler2403 --rpm-release 5 --rpm-arch arm64
+--rpm-system el9 --rpm-release 2 --rpm-arch x86_64
+--rpm-system fc40 --rpm-release 2 --rpm-arch x86_64
+--rpm-system fc43 --rpm-release 2 --rpm-arch x86_64
+--rpm-system fc44 --rpm-release 2 --rpm-arch x86_64
+--rpm-system openeuler2203 --rpm-release 2 --rpm-arch arm64
+--rpm-system openeuler2403 --rpm-release 2 --rpm-arch arm64
 ```
 
 Create an RPM package directly from `package-racket` and update the generated
@@ -721,7 +761,7 @@ racket package-racket.rkt \
   --target rpm \
   --target rpm-repo \
   --rpm-system openeuler2403 \
-  --rpm-release 5 \
+  --rpm-release 2 \
   --prefix /usr \
   --rpm-arch arm64 \
   --artifact-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/artifacts \
@@ -736,7 +776,7 @@ racket package-racket.rkt \
   --target rpm-repo \
   --artifact-dir /Users/cutiedeng/Y2026/M06/D21/package-racket/artifacts \
   --rpm-system openeuler2403 \
-  --rpm-release 5 \
+  --rpm-release 2 \
   --rpm-arch arm64 \
   --rpm-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-repo-config.rktd
 ```
