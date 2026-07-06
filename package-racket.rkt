@@ -6447,7 +6447,9 @@ information.
                                  "depends_on \"openssl@3\""
                                  "depends_on \"ncurses\""
                                  "(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")"
-                                 "system bin/\"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
+	                                 "setup_system_cache if build.bottle?"
+	                                 "system_cache_populated?"
+	                                 "system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
                                  "test do"
                                  f"assert_match \"{(cfg-source-version c)}\""))])
       (unless (string-contains? content needle)
@@ -6583,9 +6585,82 @@ information.
     system bin/\"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"
   end")
     ) ; end define with-post-install
+    (define with-system-cache-methods
+      (string-replace with-post-install
+                      "  def post_install
+    system bin/\"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"
+  end
+
+  def remove_precompiled_cache
+    rm_r Dir[\"#{prefix}/**/compiled\"].sort_by(&:length).reverse
+  end"
+                      "  def system_cache_roots
+    [
+      prefix/\"var/cache/racket/compiled#{prefix}/share/racket/collects\",
+      prefix/\"var/cache/racket/compiled#{prefix}/share/racket/pkgs\",
+    ]
+  end
+
+  def system_cache_populated?
+    system_cache_roots.all? { |root| !Dir[\"#{root}/**/compiled/*.zo\"].empty? }
+  end
+
+  def setup_system_cache
+    system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"
+  end
+
+  def post_install
+    setup_system_cache unless system_cache_populated?
+  end
+
+  def remove_precompiled_cache
+    rm_r Dir[\"#{prefix}/**/compiled\"].sort_by(&:length).reverse
+  end")
+    ) ; end define with-system-cache-methods
+    (define with-system-cache-methods/fallback
+      (if (string-contains? with-system-cache-methods "def system_cache_roots")
+          with-system-cache-methods
+          (string-replace with-system-cache-methods
+                          "  def post_install
+    system bin/\"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"
+  end"
+                          "  def system_cache_roots
+    [
+      prefix/\"var/cache/racket/compiled#{prefix}/share/racket/collects\",
+      prefix/\"var/cache/racket/compiled#{prefix}/share/racket/pkgs\",
+    ]
+  end
+
+  def system_cache_populated?
+    system_cache_roots.all? { |root| !Dir[\"#{root}/**/compiled/*.zo\"].empty? }
+  end
+
+  def setup_system_cache
+    system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"
+  end
+
+  def post_install
+    setup_system_cache unless system_cache_populated?
+  end"))
+    ) ; end define with-system-cache-methods/fallback
+    (define with-bottle-cache-setup
+      (string-replace with-system-cache-methods/fallback
+                      "    system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
+    remove_precompiled_cache
+  end"
+                      "    system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
+    remove_precompiled_cache
+    setup_system_cache if build.bottle?
+  end")
+    ) ; end define with-bottle-cache-setup
+    (define with-cache-test
+      (string-replace with-bottle-cache-setup
+                      "    assert !Dir[\"#{prefix}/var/cache/racket/compiled/**/*.zo\"].empty?, \"system compiled cache is empty\""
+                      "    assert system_cache_populated?, \"system compiled cache is empty\"")
+    ) ; end define with-cache-test
     (write-text-file!
      formula-path
-     with-post-install)
+     with-cache-test)
     (ensure-formula-docs-test! c formula-path)
     (validate-formula-file! c formula-path)
   ) ; end begin set-formula-source!
@@ -6626,6 +6701,7 @@ information.
     (define rb-openssl-libssl (ruby-interpolate "formula_opt_lib(\"openssl@3\")/shared_library(\"libssl\")"))
     (define rb-bin (ruby-interpolate "bin"))
     (define rb-lib (ruby-interpolate "lib"))
+    (define rb-root (ruby-interpolate "root"))
     (define rb-empty-home (ruby-interpolate "empty_home"))
     (define rb-test-script (ruby-interpolate "testpath/\"interactive-packages.rkt\""))
     (define rb-rhombus-script (ruby-interpolate "testpath/\"rhombus-smoke.rhm\""))
@@ -6708,10 +6784,26 @@ information.
 
     system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
     remove_precompiled_cache
+    setup_system_cache if build.bottle?
+  end
+
+  def system_cache_roots
+    [
+      prefix/\"var/cache/racket/compiled{rb-prefix}/share/racket/collects\",
+      prefix/\"var/cache/racket/compiled{rb-prefix}/share/racket/pkgs\",
+    ]
+  end
+
+  def system_cache_populated?
+    system_cache_roots.all? {{ |root| !Dir[\"{rb-root}/**/compiled/*.zo\"].empty? }}
+  end
+
+  def setup_system_cache
+    system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"
   end
 
   def post_install
-    system bin/\"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"
+    setup_system_cache unless system_cache_populated?
   end
 
   def remove_precompiled_cache
@@ -6737,7 +6829,7 @@ information.
     assert_match \"{version}\", shell_output(\"{rb-bin}/racket -e '(displayln (version))'\"){(if (cfg-with-docs? c) (formula-docs-test-content rb-bin) "")}
     output = shell_output(\"{rb-bin}/racket -e '(require racket/pvector) (displayln (pvector->list (pvector 1 2 3)))'\")
     assert_match \"(1 2 3)\", output
-    assert !Dir[\"{rb-prefix}/var/cache/racket/compiled/**/*.zo\"].empty?, \"system compiled cache is empty\"
+    assert system_cache_populated?, \"system compiled cache is empty\"
 
     empty_home = testpath/\"empty-home\"
     empty_home.mkpath
@@ -9477,11 +9569,16 @@ jobs:
       \"(compiled-file-system-cache-root . \\\"{(ruby-interpolate "var")}/cache/racket/compiled\\\")\",
     ].join(\" \")
     inreplace \"etc/config.rktd\", /\\)\\)\\n$/, \") \" + config_entries + \")\\n\"
+    system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
+    remove_precompiled_cache
   end
 
   def post_install
-    system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
-    remove_precompiled_cache
+    system bin/\"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"
+  end
+
+  def remove_precompiled_cache
+    rm_r Dir[\"#{{prefix}}/**/compiled\"].sort_by(&:length).reverse
   end
 
   test do
@@ -9494,7 +9591,9 @@ end
         (check-true (formula-version-before-sha? content))
         (check-true (string-contains? content f"sha256 \"{test-sha256}\""))
         (check-true (string-contains? content "(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")"))
-        (check-true (string-contains? content "system bin/\"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""))
+        (check-true (string-contains? content "setup_system_cache if build.bottle?"))
+        (check-true (string-contains? content "system_cache_populated?"))
+        (check-true (string-contains? content "system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""))
         (check-false (string-contains? content "#{var}/cache/racket/compiled"))
       ) ; end lambda update formula
       (lambda ()
@@ -9527,12 +9626,15 @@ end
                                  "rhombus --version"
                                  "rhombus -e '1 + 2'"
                                  "compiled-file-cache-roots"
-                                 "(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")"
-                                 "system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\""
-                                 "system bin/\"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
-                                 "remove_precompiled_cache"
-                                 "rm_r Dir[\"#{prefix}/**/compiled\"]"
-                                 "Dir[\"#{prefix}/var/cache/racket/compiled/**/*.zo\"]"
+	                                 "(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")"
+	                                 "system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\""
+	                                 "setup_system_cache if build.bottle?"
+	                                 "system_cache_populated?"
+	                                 "system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
+	                                 "remove_precompiled_cache"
+	                                 "rm_r Dir[\"#{prefix}/**/compiled\"]"
+	                                 "prefix/\"var/cache/racket/compiled#{prefix}/share/racket/collects\""
+	                                 "assert system_cache_populated?"
                                  "brew-empty-home-ok"
                                  "printf 'f\\\"hi\\\""
                                  "refute_match(/no readline support/"
