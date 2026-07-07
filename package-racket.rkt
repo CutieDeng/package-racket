@@ -1357,6 +1357,15 @@ require_staged_system_cache() {{
   fi
 }}
 
+require_staged_rhombus_cache() {{
+  local stage_root=\"$1\"
+  local prefix=\"$2\"
+  local rhombus_ephemeral_cache=\"$stage_root$prefix/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod\"
+  if ! find \"$rhombus_ephemeral_cache\" -path '*/compiled/*.zo' -type f -print -quit 2>/dev/null | grep -q .; then
+    die \"staged Rhombus demod cache is empty: $rhombus_ephemeral_cache\"
+  fi
+}}
+
 escape_config_sed_pattern() {{
   printf '%s\\n' \"$1\" | sed 's/[][\\\\.^$*|]/\\\\&/g'
 }}
@@ -1431,6 +1440,52 @@ normalize_staged_system_cache() {{
   find \"$cache_root\" -type d -empty -delete 2>/dev/null || true
 }}
 
+warm_staged_rhombus_cache() {{
+  local stage_root=\"$1\"
+  local prefix=\"$2\"
+  local config_dir=\"$3\"
+  local racket_bin=\"$4\"
+  local runtime_config_dir=\"/etc/racket\"
+  local runtime_cache_parent=\"/var/cache/racket\"
+  local staged_cache_parent=\"$stage_root$runtime_cache_parent\"
+  local runtime_share_dir=\"$prefix/share/racket\"
+  local runtime_collects_dir=\"$runtime_share_dir/collects\"
+  local runtime_lib_dir=\"$prefix/lib/racket\"
+  local runtime_links=
+  cleanup_runtime_links() {{
+    if [ -n \"${{runtime_links:-}}\" ]; then
+      printf '%s\\n' \"$runtime_links\" | while IFS= read -r runtime_link; do
+        [ -n \"$runtime_link\" ] || continue
+        [ -L \"$runtime_link\" ] && rm -f \"$runtime_link\"
+      done
+    fi
+  }}
+  add_runtime_link() {{
+    local runtime_link_target=\"$1\"
+    local runtime_link_path=\"$2\"
+    if [ -e \"$runtime_link_path\" ] || [ -L \"$runtime_link_path\" ]; then
+      die \"runtime staging link path already exists: $runtime_link_path\"
+    fi
+    mkdir -p \"$(dirname \"$runtime_link_path\")\"
+    ln -s \"$runtime_link_target\" \"$runtime_link_path\"
+    runtime_links=\"$runtime_link_path
+$runtime_links\"
+  }}
+  mkdir -p \"$staged_cache_parent\"
+  trap cleanup_runtime_links EXIT
+  add_runtime_link \"$stage_root$runtime_share_dir\" \"$runtime_share_dir\"
+  add_runtime_link \"$stage_root$runtime_lib_dir\" \"$runtime_lib_dir\"
+  add_runtime_link \"$config_dir\" \"$runtime_config_dir\"
+  add_runtime_link \"$staged_cache_parent\" \"$runtime_cache_parent\"
+  if ! \"$racket_bin\" -X \"$runtime_collects_dir\" -G \"$runtime_config_dir\" -N rhombus -l- rhombus/run.rhm -e 'println(\"package-racket-rhombus-cache\")' >/dev/null; then
+    cleanup_runtime_links
+    trap - EXIT
+    return 1
+  fi
+  cleanup_runtime_links
+  trap - EXIT
+}}
+
 build_staged_system_cache() {{
   local stage_root=\"$1\"
   local prefix=\"$2\"
@@ -1452,8 +1507,12 @@ build_staged_system_cache() {{
   fi
   cp \"$backup\" \"$config_file\"
   rm -f \"$backup\"
+  if ! warm_staged_rhombus_cache \"$stage_root\" \"$prefix\" \"$config_dir\" \"$racket_bin\"; then
+    return 1
+  fi
   normalize_staged_system_cache \"$stage_root\" \"$prefix\"
   require_staged_system_cache \"$stage_root\" \"$prefix\"
+  require_staged_rhombus_cache \"$stage_root\" \"$prefix\"
 }}
 
 reset_output_dir() {{
@@ -1700,6 +1759,12 @@ cat > \"$DEBIAN_DIR/postinst\" <<'POSTINST'
 set -e
 if [ \"$1\" = \"configure\" ]; then
   raco setup --system --no-user --reset-cache -D --no-pkg-deps
+  empty_home=$(mktemp -d)
+  if ! HOME=\"$empty_home\" rhombus -e 'println(\"package-racket-rhombus-cache\")' >/dev/null; then
+    rm -rf \"$empty_home\"
+    exit 1
+  fi
+  rm -rf \"$empty_home\"
 fi
 exit 0
 POSTINST
@@ -1716,9 +1781,15 @@ if [ \"$CACHE_MODE\" = postinstall ]; then
 cat > \"$DEBIAN_DIR/prerm\" <<'PRERM'
 #!/bin/sh
 set -e
+package_present() {{
+  dpkg-query -W -f='${{db:Status-Abbrev}}' \"$1\" 2>/dev/null | grep -q '^i'
+}}
 if [ \"$1\" = \"remove\" ] || [ \"$1\" = \"deconfigure\" ]; then
-  if command -v raco >/dev/null 2>&1; then
-    raco setup --system --delete-cache || true
+  if ! package_present \"{(cached-package-name (cfg-package-name c))}\"; then
+    if command -v raco >/dev/null 2>&1; then
+      raco setup --system --delete-cache || true
+    fi
+    rm -rf /usr/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod
   fi
 fi
 exit 0
@@ -1734,8 +1805,17 @@ chmod 755 \"$DEBIAN_DIR/prerm\"
 cat > \"$DEBIAN_DIR/postrm\" <<'POSTRM'
 #!/bin/sh
 set -e
+package_present() {{
+  dpkg-query -W -f='${{db:Status-Abbrev}}' \"$1\" 2>/dev/null | grep -q '^i'
+}}
+any_racket_package_present() {{
+  package_present \"{(cfg-package-name c)}\" || package_present \"{(cached-package-name (cfg-package-name c))}\"
+}}
 if [ \"$1\" = \"remove\" ] || [ \"$1\" = \"purge\" ]; then
-  rm -rf /var/cache/racket/compiled
+  if ! any_racket_package_present; then
+    rm -rf /var/cache/racket/compiled
+    rm -rf /usr/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod
+  fi
 fi
 exit 0
 POSTRM
@@ -1832,6 +1912,8 @@ postinst_content=$(dpkg-deb --ctrl-tarfile \"$DEB_PATH\" | tar -xOf - ./postinst
 if [ \"$CACHE_MODE\" = postinstall ]; then
   printf '%s\\n' \"$postinst_content\" | grep -F 'raco setup --system --no-user --reset-cache -D --no-pkg-deps' >/dev/null \\
     || die \"DEB postinst does not build the system compiled cache\"
+  printf '%s\\n' \"$postinst_content\" | grep -F 'package-racket-rhombus-cache' >/dev/null \\
+    || die \"DEB postinst does not warm the Rhombus demod cache\"
   if printf '%s\\n' \"$contents\" | grep -E '(^|[[:space:]])\\./var/cache/racket/compiled/.+[.]zo$' >/dev/null; then
     die \"postinstall DEB payload unexpectedly includes system compiled cache .zo files\"
   fi
@@ -1847,11 +1929,16 @@ else
   runtime_pkgs_cache=\"./var/cache/racket/compiled/${{DEFAULT_PREFIX#/}}/share/racket/pkgs\"
   printf '%s\\n' \"$contents\" | grep -F \"$runtime_pkgs_cache/\" | grep -E '[.]zo$' >/dev/null \\
     || die \"cached DEB payload does not include runtime-keyed package cache .zo files\"
+  rhombus_ephemeral_cache=\"./${{DEFAULT_PREFIX#/}}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod\"
+  printf '%s\\n' \"$contents\" | grep -F \"$rhombus_ephemeral_cache/\" | grep -E '[.]zo$' >/dev/null \\
+    || die \"cached DEB payload does not include Rhombus demod cache .zo files\"
 fi
 prerm_content=$(dpkg-deb --ctrl-tarfile \"$DEB_PATH\" | tar -xOf - ./prerm)
 if [ \"$CACHE_MODE\" = postinstall ]; then
   printf '%s\\n' \"$prerm_content\" | grep -F 'raco setup --system --delete-cache' >/dev/null \\
     || die \"DEB prerm does not delete the system compiled cache\"
+  printf '%s\\n' \"$prerm_content\" | grep -F 'package_present' >/dev/null \\
+    || die \"DEB prerm does not guard cache deletion for package replacement\"
 else
   if printf '%s\\n' \"$prerm_content\" | grep -F 'raco setup --system --delete-cache' >/dev/null; then
     die \"cached DEB prerm unexpectedly deletes the system compiled cache through raco\"
@@ -1860,6 +1947,10 @@ fi
 postrm_content=$(dpkg-deb --ctrl-tarfile \"$DEB_PATH\" | tar -xOf - ./postrm)
 printf '%s\\n' \"$postrm_content\" | grep -F 'rm -rf /var/cache/racket/compiled' >/dev/null \\
   || die \"DEB postrm does not purge the system compiled cache directory\"
+printf '%s\\n' \"$postrm_content\" | grep -F 'rhombus-lib/rhombus/private/compiled/ephemeral/demod' >/dev/null \\
+  || die \"DEB postrm does not purge the Rhombus demod cache directory\"
+printf '%s\\n' \"$postrm_content\" | grep -F 'any_racket_package_present' >/dev/null \\
+  || die \"DEB postrm does not guard shared cache deletion for package replacement\"
 printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
 ")
 
@@ -1922,13 +2013,15 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
 	                                      "validate_source_archive"
 	                                      "require_repo_root"
 	                                      "validate_cache_mode"
-	                                      "build_staged_system_cache"
-	                                      "find_staged_collects_dir"
-	                                      "write_staged_config"
-	                                      "normalize_staged_system_cache"
-	                                      "runtime-keyed staged system compiled cache"
-	                                      "runtime-keyed staged package compiled cache"
-	                                      "pkgs-dir"
+		                                      "build_staged_system_cache"
+		                                      "warm_staged_rhombus_cache"
+		                                      "find_staged_collects_dir"
+		                                      "write_staged_config"
+		                                      "normalize_staged_system_cache"
+		                                      "runtime-keyed staged system compiled cache"
+		                                      "runtime-keyed staged package compiled cache"
+		                                      "staged Rhombus demod cache"
+		                                      "pkgs-dir"
 	                                      "racket-compiled-cache.log"
 	                                      "-X \"$collects_dir\" -G \"$config_dir\""
 	                                      "replace_config_value"
@@ -1942,26 +2035,35 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
 	                                      "compiled-file-cache-roots"
 	                                      "--enable-sharezo"
 	                                      "find \"$STAGE_ROOT\" -type d -name compiled ! -path '*/info-domain/compiled'"
-	                                      "--cache-mode"
-	                                      "build_staged_system_cache"
+		                                      "--cache-mode"
+		                                      "build_staged_system_cache"
+		                                      "package-racket-rhombus-cache"
 	                                      "$DEBIAN_DIR/postinst"
 	                                      "raco setup --system --no-user --reset-cache -D --no-pkg-deps"
-                                      "$DEBIAN_DIR/prerm"
-                                      "raco setup --system --delete-cache"
-                                      "$DEBIAN_DIR/postrm"
-                                      "rm -rf /var/cache/racket/compiled"
-                                     "--dry-run"))
+	                                      "$DEBIAN_DIR/prerm"
+	                                      "raco setup --system --delete-cache"
+	                                      "package_present"
+	                                      "any_racket_package_present"
+	                                      "$DEBIAN_DIR/postrm"
+	                                      "rm -rf /var/cache/racket/compiled"
+	                                      "rhombus-lib/rhombus/private/compiled/ephemeral/demod"
+	                                     "--dry-run"))
     (validate-generated-deb-script! c
                                     "verify-deb.sh"
                                     '("dpkg-deb --field"
                                       "dpkg-deb --contents"
                                       "dpkg-deb --ctrl-tarfile"
-	                                      "DEB control archive missing"
-	                                      "DEB postinst does not build the system compiled cache"
-	                                      "cached DEB payload does not include system compiled cache"
-	                                      "cached DEB payload does not include runtime-keyed collects cache"
-	                                      "cached DEB payload does not include runtime-keyed package cache"
-	                                      "racket compiled cache debug log"
+		                                      "DEB control archive missing"
+		                                      "DEB postinst does not build the system compiled cache"
+		                                      "DEB postinst does not warm the Rhombus demod cache"
+		                                      "DEB prerm does not guard cache deletion for package replacement"
+		                                      "cached DEB payload does not include system compiled cache"
+		                                      "cached DEB payload does not include runtime-keyed collects cache"
+		                                      "cached DEB payload does not include runtime-keyed package cache"
+		                                      "cached DEB payload does not include Rhombus demod cache"
+		                                      "DEB postrm does not purge the Rhombus demod cache directory"
+		                                      "DEB postrm does not guard shared cache deletion for package replacement"
+		                                      "racket compiled cache debug log"
 	                                      "--cache-mode"
 	                                      "--dry-run"))
   ) ; end begin validate-deb-spec-scaffold!
@@ -2163,6 +2265,11 @@ add_runtime_link \"$staged_cache_parent\" \"$runtime_cache_parent\"
 if ! \"$racket_bin\" -X \"$runtime_collects_dir\" -G \"$runtime_config_dir\" -N raco -l- raco setup --system --no-user --reset-cache -D --no-pkg-deps --no-launcher; then
   exit 1
 fi
+if ! \"$racket_bin\" -X \"$runtime_collects_dir\" -G \"$runtime_config_dir\" -N rhombus -l- rhombus/run.rhm -e 'println(\"package-racket-rhombus-cache\")' >/dev/null; then
+  exit 1
+fi
+rhombus_ephemeral_cache=\"%{{buildroot}}$runtime_share_dir/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod\"
+find \"$rhombus_ephemeral_cache\" -path '*/compiled/*.zo' -type f -print -quit | grep -q . || {{ echo \"staged Rhombus demod cache is empty: $rhombus_ephemeral_cache\" >&2; exit 1; }}
 cleanup_runtime_links
 trap - EXIT
 move_cache_tree() {{
@@ -2227,18 +2334,30 @@ if [ -n \"$setup_jobs\" ]; then
 else
   raco setup --system --no-user --reset-cache -D --no-pkg-deps
 fi
+empty_home=$(mktemp -d)
+if ! HOME=\"$empty_home\" rhombus -e 'println(\"package-racket-rhombus-cache\")' >/dev/null; then
+  rm -rf \"$empty_home\"
+  exit 1
+fi
+rm -rf \"$empty_home\"
 %endif
 
 %if \"%{{cache_mode}}\" == \"postinstall\"
 %preun
-if [ \"$1\" = \"0\" ] && command -v raco >/dev/null 2>&1; then
+if [ \"$1\" = \"0\" ] && ! rpm -q --quiet %{{cached_package_name}} && command -v raco >/dev/null 2>&1; then
   raco setup --system --delete-cache || :
 fi
 %endif
 
 %postun
-if [ \"$1\" = \"0\" ]; then
+%if \"%{{cache_mode}}\" == \"cached\"
+other_package=\"%{{base_package_name}}\"
+%else
+other_package=\"%{{cached_package_name}}\"
+%endif
+if [ \"$1\" = \"0\" ] && ! rpm -q --quiet \"$other_package\"; then
   rm -rf /var/cache/racket/compiled
+  rm -rf %{{package_prefix}}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod
 fi
 
 %files -f %{{name}}.files
@@ -2290,6 +2409,8 @@ fi
                                  "runtime staging link path already exists"
                                  "-X \"$runtime_collects_dir\" -G \"$runtime_config_dir\""
                                  "--no-launcher"
+                                 "package-racket-rhombus-cache"
+                                 "staged Rhombus demod cache"
                                  "runtime_pkgs_dir"
                                  "move_cache_tree"
                                  "runtime-keyed staged system compiled cache"
@@ -2302,7 +2423,10 @@ fi
                                  "%preun"
                                  "raco setup --system --delete-cache"
                                  "%postun"
+                                 "other_package="
+                                 "rpm -q --quiet \"$other_package\""
                                  "rm -rf /var/cache/racket/compiled"
+                                 "%{package_prefix}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod"
                                  "printf '%s %s\\n' '%%dir' \"$rel\" >> \"$manifest\""
                                  "%files -f %{name}.files"))])
       (unless (string-contains? content needle)
@@ -3296,6 +3420,9 @@ else
   runtime_pkgs_cache=\"/var/cache/racket/compiled/${{DEFAULT_PREFIX#/}}/share/racket/pkgs\"
   printf '%s\\n' \"$payload\" | grep -F \"$runtime_pkgs_cache/\" | grep -E '[.]zo$' >/dev/null \\
     || die \"cached RPM payload does not include runtime-keyed package cache .zo files\"
+  rhombus_ephemeral_cache=\"$DEFAULT_PREFIX/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod\"
+  printf '%s\\n' \"$payload\" | grep -F \"$rhombus_ephemeral_cache/\" | grep -E '[.]zo$' >/dev/null \\
+    || die \"cached RPM payload does not include Rhombus demod cache .zo files\"
 fi
 scripts=$(rpm -qp --scripts \"$RPM_PATH\")
 if [ \"$CACHE_MODE\" = postinstall ]; then
@@ -3303,6 +3430,10 @@ if [ \"$CACHE_MODE\" = postinstall ]; then
     || die \"RPM scriptlets do not build the system compiled cache\"
   printf '%s\\n' \"$scripts\" | grep -F 'raco setup --system --delete-cache' >/dev/null \\
     || die \"RPM scriptlets do not delete the system compiled cache\"
+  printf '%s\\n' \"$scripts\" | grep -F \"rpm -q --quiet $CACHED_PACKAGE_NAME\" >/dev/null \\
+    || die \"RPM preun does not guard cache deletion for package replacement\"
+  printf '%s\\n' \"$scripts\" | grep -F 'package-racket-rhombus-cache' >/dev/null \\
+    || die \"RPM scriptlets do not warm the Rhombus demod cache\"
 else
   if printf '%s\\n' \"$scripts\" | grep -F 'raco setup --system --no-user --reset-cache -D --no-pkg-deps' >/dev/null; then
     die \"cached RPM scriptlets unexpectedly build the system compiled cache\"
@@ -3313,6 +3444,10 @@ else
 fi
 printf '%s\\n' \"$scripts\" | grep -F 'rm -rf /var/cache/racket/compiled' >/dev/null \\
   || die \"RPM scriptlets do not purge the system compiled cache directory\"
+printf '%s\\n' \"$scripts\" | grep -F 'rhombus-lib/rhombus/private/compiled/ephemeral/demod' >/dev/null \\
+  || die \"RPM scriptlets do not purge the Rhombus demod cache directory\"
+printf '%s\\n' \"$scripts\" | grep -F 'rpm -q --quiet \"$other_package\"' >/dev/null \\
+  || die \"RPM postun does not guard shared cache deletion for package replacement\"
 printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
 ")
 
@@ -3459,6 +3594,11 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
                                       "cached RPM payload does not include system compiled cache"
                                       "cached RPM payload does not include runtime-keyed collects cache"
                                       "cached RPM payload does not include runtime-keyed package cache"
+                                      "cached RPM payload does not include Rhombus demod cache"
+                                      "RPM scriptlets do not warm the Rhombus demod cache"
+                                      "RPM preun does not guard cache deletion for package replacement"
+                                      "RPM scriptlets do not purge the Rhombus demod cache directory"
+                                      "RPM postun does not guard shared cache deletion for package replacement"
                                       "racket compiled cache debug log"
                                       "--dry-run"))
   ) ; end begin validate-rpm-spec-scaffold!
@@ -3848,17 +3988,23 @@ jobs:
           [ \"$cache_count\" -gt 0 ] || {{ echo 'system compiled cache is empty after RPM install'; exit 1; }}
           runtime_collects_cache=\"/var/cache/racket/compiled{(cfg-prefix c)}/share/racket/collects\"
           runtime_pkgs_cache=\"/var/cache/racket/compiled{(cfg-prefix c)}/share/racket/pkgs\"
+          rhombus_ephemeral_cache=\"{(cfg-prefix c)}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod\"
           find \"$runtime_collects_cache\" -path '*/compiled/*.zo' -type f -print -quit | grep -q . \\
             || {{ echo \"runtime-keyed collects cache is empty after RPM install: $runtime_collects_cache\"; exit 1; }}
           find \"$runtime_pkgs_cache\" -path '*/compiled/*.zo' -type f -print -quit | grep -q . \\
             || {{ echo \"runtime-keyed package cache is empty after RPM install: $runtime_pkgs_cache\"; exit 1; }}
+          find \"$rhombus_ephemeral_cache\" -path '*/compiled/*.zo' -type f -print -quit | grep -q . \\
+            || {{ echo \"Rhombus demod cache is empty after RPM install: $rhombus_ephemeral_cache\"; exit 1; }}
           racket -e '(displayln (version))' | grep -F \"$PACKAGE_VERSION\"
           racket -e '(displayln f\"rpm-ci-ok\")' | grep -F 'rpm-ci-ok'
           racket -e '(require readline/readline) (displayln f\"rpm-readline-ok\")' | grep -F 'rpm-readline-ok'
           empty_home=$(mktemp -d)
           HOME=\"$empty_home\" racket -e '(require racket/list racket/match racket/file) (displayln f\"rpm-empty-home-ok\")' | grep -F 'rpm-empty-home-ok'
-          HOME=\"$empty_home\" rhombus --version | grep -F 'Rhombus'
-          HOME=\"$empty_home\" rhombus -e 'println(\"rpm-rhombus-ok\")' | grep -F 'rpm-rhombus-ok'
+          HOME=\"$empty_home\" timeout 30s rhombus --version | grep -F 'Rhombus'
+          HOME=\"$empty_home\" timeout 30s rhombus -e 'println(\"rpm-rhombus-ok\")' | grep -F 'rpm-rhombus-ok'
+          rm -rf \"$empty_home\"
+          empty_home=$(mktemp -d)
+          HOME=\"$empty_home\" timeout 30s rhombus -e 'println(\"rpm-rhombus-fresh-home-ok\")' | grep -F 'rpm-rhombus-fresh-home-ok'
           rm -rf \"$empty_home\"
           raco pkg show --all >/tmp/raco-pkgs.txt
           rpm -e \"$PACKAGE_NAME\"
@@ -3984,9 +4130,11 @@ jobs:
                                  "system compiled cache is empty after RPM install"
                                  "runtime-keyed collects cache is empty after RPM install"
                                  "runtime-keyed package cache is empty after RPM install"
+                                 "Rhombus demod cache is empty after RPM install"
                                  "rpm-empty-home-ok"
-                                 "rhombus --version"
+                                 "timeout 30s rhombus --version"
                                  "rpm-rhombus-ok"
+                                 "rpm-rhombus-fresh-home-ok"
                                  "system compiled cache remains after RPM erase"
                                  "racket -e '(displayln f\"rpm-ci-ok\")'"
                                  "racket -e '(require readline/readline) (displayln f\"rpm-readline-ok\")'"
@@ -4342,17 +4490,23 @@ jobs:
           [ \"$cache_count\" -gt 0 ] || {{ echo 'system compiled cache is empty after DEB install'; exit 1; }}
           runtime_collects_cache=\"/var/cache/racket/compiled{(cfg-prefix c)}/share/racket/collects\"
           runtime_pkgs_cache=\"/var/cache/racket/compiled{(cfg-prefix c)}/share/racket/pkgs\"
+          rhombus_ephemeral_cache=\"{(cfg-prefix c)}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod\"
           find \"$runtime_collects_cache\" -path '*/compiled/*.zo' -type f -print -quit 2>/dev/null | grep -q . \\
             || {{ echo \"runtime-keyed collects cache is empty after DEB install: $runtime_collects_cache\"; exit 1; }}
           find \"$runtime_pkgs_cache\" -path '*/compiled/*.zo' -type f -print -quit 2>/dev/null | grep -q . \\
             || {{ echo \"runtime-keyed package cache is empty after DEB install: $runtime_pkgs_cache\"; exit 1; }}
+          find \"$rhombus_ephemeral_cache\" -path '*/compiled/*.zo' -type f -print -quit 2>/dev/null | grep -q . \\
+            || {{ echo \"Rhombus demod cache is empty after DEB install: $rhombus_ephemeral_cache\"; exit 1; }}
           racket -e '(displayln (version))' | grep -F \"$PACKAGE_VERSION\"
           racket -e '(displayln f\"deb-ci-ok\")' | grep -F 'deb-ci-ok'
           racket -e '(require readline/readline) (displayln f\"deb-readline-ok\")' | grep -F 'deb-readline-ok'
           empty_home=$(mktemp -d)
           HOME=\"$empty_home\" racket -e '(require racket/list racket/match racket/file) (displayln f\"deb-empty-home-ok\")' | grep -F 'deb-empty-home-ok'
-          HOME=\"$empty_home\" rhombus --version | grep -F 'Rhombus'
-          HOME=\"$empty_home\" rhombus -e 'println(\"deb-rhombus-ok\")' | grep -F 'deb-rhombus-ok'
+          HOME=\"$empty_home\" timeout 30s rhombus --version | grep -F 'Rhombus'
+          HOME=\"$empty_home\" timeout 30s rhombus -e 'println(\"deb-rhombus-ok\")' | grep -F 'deb-rhombus-ok'
+          rm -rf \"$empty_home\"
+          empty_home=$(mktemp -d)
+          HOME=\"$empty_home\" timeout 30s rhombus -e 'println(\"deb-rhombus-fresh-home-ok\")' | grep -F 'deb-rhombus-fresh-home-ok'
           rm -rf \"$empty_home\"
           raco pkg show --all >/tmp/raco-pkgs.txt
           apt-get purge -y \"$PACKAGE_NAME\"
@@ -4470,9 +4624,11 @@ jobs:
                                  "system compiled cache is empty after DEB install"
                                  "runtime-keyed collects cache is empty after DEB install"
                                  "runtime-keyed package cache is empty after DEB install"
+                                 "Rhombus demod cache is empty after DEB install"
                                  "deb-empty-home-ok"
-                                 "rhombus --version"
+                                 "timeout 30s rhombus --version"
                                  "deb-rhombus-ok"
+                                 "deb-rhombus-fresh-home-ok"
                                  "system compiled cache remains after DEB purge"
                                  "Downloaded DEB files"
                                  "Release assets before upload"
@@ -5212,6 +5368,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) {{
             exit $LASTEXITCODE
           }}
+          if (Test-Path -LiteralPath $racketExe) {{
+            & $racketExe -N rhombus -l- rhombus/run.rhm -e 'println(\"package-racket-rhombus-cache\")'
+            if ($LASTEXITCODE -ne 0) {{
+              exit $LASTEXITCODE
+            }}
+            $rhombusCache = Join-Path $InstallRoot 'share\\racket\\pkgs\\rhombus-lib\\rhombus\\private\\compiled\\ephemeral\\demod'
+            if (!(Get-ChildItem -LiteralPath $rhombusCache -Recurse -Filter *.zo -ErrorAction SilentlyContinue | Select-Object -First 1)) {{
+              throw \"Rhombus demod cache is empty: $rhombusCache\"
+            }}
+          }}
           '@ | Set-Content -Path (Join-Path $portableRoot \"installer-configure.ps1\") -Encoding UTF8
 
           $outputBase = [IO.Path]::GetFileNameWithoutExtension($env:EXE_NAME)
@@ -5406,9 +5572,11 @@ jobs:
                                  "choco install innosetup"
                                  "ISCC.exe"
                                  "Build Inno Setup installer"
-                                 "/CACHEPATH"
-                                 "raco setup --system --no-user --reset-cache -D --no-pkg-deps"
-                                 "RegDeleteKeyIncludingSubkeys"
+	                                 "/CACHEPATH"
+	                                 "raco setup --system --no-user --reset-cache -D --no-pkg-deps"
+	                                 "package-racket-rhombus-cache"
+	                                 "Rhombus demod cache is empty"
+	                                 "RegDeleteKeyIncludingSubkeys"
                                  "windows-portable-ok"
                                  "actions/upload-artifact@v6"
                                  zip-name
@@ -6449,10 +6617,12 @@ information.
                                  "depends_on \"openssl@3\""
                                  "depends_on \"ncurses\""
                                  "(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")"
-                                 "setup_system_cache if build.bottle?"
-                                 "system_cache_populated?"
-                                 "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""
-                                 "system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
+	                                 "setup_system_cache if build.bottle?"
+	                                 "system_cache_populated?"
+	                                 "rhombus_demod_cache_populated?"
+	                                 "package-racket-rhombus-cache"
+	                                 "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""
+	                                 "system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
                                  "test do"
                                  f"assert_match \"{(cfg-source-version c)}\""))])
       (unless (string-contains? content needle)
@@ -6663,18 +6833,47 @@ information.
                       "    assert !Dir[\"#{prefix}/var/cache/racket/compiled/**/*.zo\"].empty?, \"system compiled cache is empty\""
                       "    assert system_cache_populated?, \"system compiled cache is empty\"")
     ) ; end define with-cache-test
-    (define with-homebrew-style
-      (string-replace
-       (string-replace with-cache-test
-                       "var/cache/racket/compiled#{prefix}/share"
-                       "var/cache/racket/compiled#{share}")
-       "    system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
-       "    system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
-           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"")
-    ) ; end define with-homebrew-style
-    (write-text-file!
-     formula-path
-     with-homebrew-style)
+	    (define with-homebrew-style
+	      (string-replace
+	       (string-replace with-cache-test
+	                       "var/cache/racket/compiled#{prefix}/share"
+	                       "var/cache/racket/compiled#{share}")
+	       "    system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
+	       "    system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
+	           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"")
+	    ) ; end define with-homebrew-style
+	    (define with-rhombus-cache-methods
+	      (if (string-contains? with-homebrew-style "rhombus_demod_cache_populated?")
+	          with-homebrew-style
+	          (string-replace
+	           (string-replace with-homebrew-style
+	                           "    system_cache_roots.all? { |root| !Dir[\"#{root}/**/compiled/*.zo\"].empty? }"
+	                           (string-append
+	                            "    system_cache_roots.all? { |root| !Dir[\"#{root}/**/compiled/*.zo\"].empty? } &&\n"
+	                            "      rhombus_demod_cache_populated?"))
+	           "  def setup_system_cache"
+	           (string-append
+	            "  def rhombus_demod_cache\n"
+	            "    prefix/\"share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod\"\n"
+	            "  end\n\n"
+	            "  def rhombus_demod_cache_populated?\n"
+	            "    !Dir[\"#{rhombus_demod_cache}/**/compiled/*.zo\"].empty?\n"
+	            "  end\n\n"
+	            "  def setup_system_cache")))
+	    ) ; end define with-rhombus-cache-methods
+	    (define with-rhombus-cache-setup
+	      (if (string-contains? with-rhombus-cache-methods "package-racket-rhombus-cache")
+	          with-rhombus-cache-methods
+	          (string-replace with-rhombus-cache-methods
+	                          "           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
+	                          (string-append
+	                           "           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"\n"
+	                           "    system bin/\"racket\", \"-N\", \"rhombus\", \"-l-\", \"rhombus/run.rhm\",\n"
+	                           "           \"-e\", \"println(\\\"package-racket-rhombus-cache\\\")\"")))
+	    ) ; end define with-rhombus-cache-setup
+	    (write-text-file!
+	     formula-path
+	     with-rhombus-cache-setup)
     (ensure-formula-docs-test! c formula-path)
     (validate-formula-file! c formula-path)
   ) ; end begin set-formula-source!
@@ -6810,12 +7009,23 @@ information.
   end
 
   def system_cache_populated?
-    system_cache_roots.all? {{ |root| !Dir[\"{rb-root}/**/compiled/*.zo\"].empty? }}
+    system_cache_roots.all? {{ |root| !Dir[\"{rb-root}/**/compiled/*.zo\"].empty? }} &&
+      rhombus_demod_cache_populated?
+  end
+
+  def rhombus_demod_cache
+    prefix/\"share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod\"
+  end
+
+  def rhombus_demod_cache_populated?
+    !Dir[\"#{{rhombus_demod_cache}}/**/compiled/*.zo\"].empty?
   end
 
   def setup_system_cache
     system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
            \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"
+    system bin/\"racket\", \"-N\", \"rhombus\", \"-l-\", \"rhombus/run.rhm\",
+           \"-e\", \"println(\\\"package-racket-rhombus-cache\\\")\"
   end
 
   def post_install
@@ -6846,6 +7056,7 @@ information.
     output = shell_output(\"{rb-bin}/racket -e '(require racket/pvector) (displayln (pvector->list (pvector 1 2 3)))'\")
     assert_match \"(1 2 3)\", output
     assert system_cache_populated?, \"system compiled cache is empty\"
+    assert rhombus_demod_cache_populated?, \"Rhombus demod cache is empty\"
 
     empty_home = testpath/\"empty-home\"
     empty_home.mkpath
@@ -9609,10 +9820,12 @@ end
         (check-true (formula-version-before-sha? content))
         (check-true (string-contains? content f"sha256 \"{test-sha256}\""))
         (check-true (string-contains? content "(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")"))
-        (check-true (string-contains? content "setup_system_cache if build.bottle?"))
-        (check-true (string-contains? content "system_cache_populated?"))
-        (check-true (string-contains? content "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""))
-        (check-true (string-contains? content "system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""))
+	        (check-true (string-contains? content "setup_system_cache if build.bottle?"))
+	        (check-true (string-contains? content "system_cache_populated?"))
+	        (check-true (string-contains? content "rhombus_demod_cache_populated?"))
+	        (check-true (string-contains? content "package-racket-rhombus-cache"))
+	        (check-true (string-contains? content "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""))
+	        (check-true (string-contains? content "system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""))
         (check-false (string-contains? content "var/cache/racket/compiled#{prefix}/share"))
         (check-false (string-contains? content "#{var}/cache/racket/compiled"))
       ) ; end lambda update formula
@@ -9648,13 +9861,17 @@ end
                                  "compiled-file-cache-roots"
                                  "(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")"
                                  "system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\""
-                                 "setup_system_cache if build.bottle?"
-                                 "system_cache_populated?"
-                                 "system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
-                                 "remove_precompiled_cache"
+	                                 "setup_system_cache if build.bottle?"
+	                                 "system_cache_populated?"
+	                                 "rhombus_demod_cache_populated?"
+	                                 "package-racket-rhombus-cache"
+	                                 "system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
+	                                 "system bin/\"racket\", \"-N\", \"rhombus\", \"-l-\", \"rhombus/run.rhm\""
+	                                 "remove_precompiled_cache"
                                  "rm_r Dir[\"#{prefix}/**/compiled\"]"
                                  "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""
-                                 "assert system_cache_populated?"
+	                                 "assert system_cache_populated?"
+	                                 "assert rhombus_demod_cache_populated?"
                                  "brew-empty-home-ok"
                                  "printf 'f\\\"hi\\\""
                                  "refute_match(/no readline support/"
@@ -9700,7 +9917,7 @@ end
     ) ; end define el9
     (check-true (and el9 #t))
     (define el9-packages (hash-ref el9 'setup-packages))
-    (check-false (member "coreutils" el9-packages string=?))
+    (check-true (and (member "coreutils" el9-packages string=?) #t))
     (check-false (member "curl" el9-packages string=?))
     (check-true (and (member "findutils" el9-packages string=?) #t))
     (check-true (and (member "rpm-build" el9-packages string=?) #t))

@@ -4,13 +4,14 @@
       (create-release . #t)
       (targets . (#hash((id . "el9-x86_64")
                         (rpm-system . "el9")
-                        (rpm-release . "4")
+                        (rpm-release . "6")
                         (rpm-arch . "x86_64")
                         (runner . "ubuntu-24.04")
                         (container . "quay.io/centos/centos:stream9")
                         (jobs . 2)
-                        (setup-packages . ("bash"
-                                           "diffutils"
+	                        (setup-packages . ("bash"
+	                                           "coreutils"
+	                                           "diffutils"
                                            "file"
                                            "findutils"
                                            "gcc"
@@ -30,7 +31,7 @@
                                            "zlib-devel")))
                   #hash((id . "fc40-x86_64")
                         (rpm-system . "fc40")
-                        (rpm-release . "4")
+                        (rpm-release . "6")
                         (rpm-arch . "x86_64")
                         (runner . "ubuntu-24.04")
                         (container . "fedora:40")
@@ -58,7 +59,7 @@
                                            "zlib-devel")))
                   #hash((id . "fc43-x86_64")
                         (rpm-system . "fc43")
-                        (rpm-release . "4")
+                        (rpm-release . "6")
                         (rpm-arch . "x86_64")
                         (runner . "ubuntu-24.04")
                         (container . "fedora:43")
@@ -86,7 +87,7 @@
                                            "zlib-devel")))
                   #hash((id . "fc44-x86_64")
                         (rpm-system . "fc44")
-                        (rpm-release . "4")
+                        (rpm-release . "6")
                         (rpm-arch . "x86_64")
                         (runner . "ubuntu-24.04")
                         (container . "fedora:44")
@@ -114,7 +115,7 @@
                                            "zlib-devel")))
                   #hash((id . "openeuler2203-aarch64")
                         (rpm-system . "openeuler2203")
-                        (rpm-release . "4")
+                        (rpm-release . "6")
                         (rpm-arch . "aarch64")
                         (runner . "ubuntu-24.04-arm")
                         (container . "openeuler/openeuler:22.03-lts")
@@ -142,7 +143,7 @@
                                            "zlib-devel")))
                   #hash((id . "openeuler2203-x86_64")
                         (rpm-system . "openeuler2203")
-                        (rpm-release . "4")
+                        (rpm-release . "6")
                         (rpm-arch . "x86_64")
                         (runner . "ubuntu-24.04")
                         (container . "openeuler/openeuler:22.03-lts")
@@ -170,7 +171,7 @@
                                            "zlib-devel")))
                   #hash((id . "openeuler2403-aarch64")
                         (rpm-system . "openeuler2403")
-                        (rpm-release . "4")
+                        (rpm-release . "6")
                         (rpm-arch . "aarch64")
                         (runner . "ubuntu-24.04-arm")
                         (container . "openeuler/openeuler:24.03-lts")
@@ -198,7 +199,7 @@
                                            "zlib-devel")))
                   #hash((id . "openeuler2403-x86_64")
                         (rpm-system . "openeuler2403")
-                        (rpm-release . "4")
+                        (rpm-release . "6")
                         (rpm-arch . "x86_64")
                         (runner . "ubuntu-24.04")
                         (container . "openeuler/openeuler:24.03-lts")
