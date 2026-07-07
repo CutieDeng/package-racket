@@ -1506,7 +1506,7 @@ build_staged_system_cache() {{
   cp \"$config_file\" \"$backup\"
   write_staged_config \"$config_file\" \"$stage_root\" \"$prefix\" \"$runtime_cache_root\" \"$staged_cache_root\"
   mkdir -p \"$staged_cache_root\"
-  if ! \"$racket_bin\" -X \"$collects_dir\" -G \"$config_dir\" -N raco -l- raco setup --system --no-user --reset-cache -D --no-pkg-deps; then
+  if ! \"$racket_bin\" -X \"$collects_dir\" -G \"$config_dir\" -N raco -l- raco setup --system --no-user --reset-cache -D --no-pkg-deps --no-launcher; then
     cp \"$backup\" \"$config_file\"
     rm -f \"$backup\"
     return 1
@@ -1764,7 +1764,7 @@ cat > \"$DEBIAN_DIR/postinst\" <<'POSTINST'
 #!/bin/sh
 set -e
 if [ \"$1\" = \"configure\" ]; then
-  raco setup --system --no-user --reset-cache -D --no-pkg-deps
+  raco setup --system --no-user --reset-cache -D --no-pkg-deps --no-launcher
   compiled_cache_root=\"/var/cache/racket/compiled\"
   mkdir -p \"$compiled_cache_root\"
   empty_home=$(mktemp -d)
@@ -1926,7 +1926,7 @@ for script in ./postinst ./prerm ./postrm; do
 done
 postinst_content=$(dpkg-deb --ctrl-tarfile \"$DEB_PATH\" | tar -xOf - ./postinst)
 if [ \"$CACHE_MODE\" = postinstall ]; then
-  printf '%s\\n' \"$postinst_content\" | grep -F 'raco setup --system --no-user --reset-cache -D --no-pkg-deps' >/dev/null \\
+  printf '%s\\n' \"$postinst_content\" | grep -F 'raco setup --system --no-user --reset-cache -D --no-pkg-deps --no-launcher' >/dev/null \\
     || die \"DEB postinst does not build the system compiled cache\"
   printf '%s\\n' \"$postinst_content\" | grep -F 'package-racket-rhombus-cache' >/dev/null \\
     || die \"DEB postinst does not warm the Rhombus demod cache\"
@@ -2054,6 +2054,7 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
 		                                      "pkgs-dir"
 	                                      "racket-compiled-cache.log"
 	                                      "-X \"$collects_dir\" -G \"$config_dir\""
+	                                      "raco setup --system --no-user --reset-cache -D --no-pkg-deps --no-launcher"
 	                                      "-U -R \"$runtime_cache_root\""
 	                                      "replace_config_value"
 	                                      "racket9-cached"
@@ -2071,7 +2072,7 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
 	                                      "racket -U -R \"$compiled_cache_root\""
 	                                      "package-racket-rhombus-cache"
 	                                      "$DEBIAN_DIR/postinst"
-	                                      "raco setup --system --no-user --reset-cache -D --no-pkg-deps"
+	                                      "raco setup --system --no-user --reset-cache -D --no-pkg-deps --no-launcher"
 	                                      "$DEBIAN_DIR/prerm"
 	                                      "raco setup --system --delete-cache"
 	                                      "package_present"
@@ -4551,43 +4552,62 @@ jobs:
           PACKAGE_VERSION: {(yaml-single-quote (cfg-source-version c))}
         run: |
           set -euo pipefail
+          smoke_step() {{ printf 'DEB smoke: %s\\n' \"$1\"; }}
           mapfile -t deb_files < <(find \"$GITHUB_WORKSPACE/artifacts\" -maxdepth 1 -name '*.deb' -type f | sort)
           if [ \"{deb-files-count}\" -ne 1 ]; then
             printf 'Expected exactly one DEB, got %s\\n' \"{deb-files-count}\"
             printf '  %s\\n' {deb-files-array}
             exit 1
           fi
+          smoke_step 'apt install package'
           apt-get install -y \"${{deb_files[0]}}\"
+          smoke_step 'dpkg package status'
           dpkg -s \"$PACKAGE_NAME\" >/dev/null
+          smoke_step 'system compiled cache count'
           cache_count=$(find /var/cache/racket/compiled -path '*/compiled/*.zo' 2>/dev/null | wc -l)
           [ \"$cache_count\" -gt 0 ] || {{ echo 'system compiled cache is empty after DEB install'; exit 1; }}
           runtime_collects_cache=\"/var/cache/racket/compiled{(cfg-prefix c)}/share/racket/collects\"
           runtime_pkgs_cache=\"/var/cache/racket/compiled{(cfg-prefix c)}/share/racket/pkgs\"
           rhombus_ephemeral_cache=\"{(cfg-prefix c)}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod\"
+          smoke_step 'runtime-keyed collects cache'
           find \"$runtime_collects_cache\" -path '*/compiled/*.zo' -type f -print -quit 2>/dev/null | grep -q . \\
             || {{ echo \"runtime-keyed collects cache is empty after DEB install: $runtime_collects_cache\"; exit 1; }}
+          smoke_step 'runtime-keyed package cache'
           find \"$runtime_pkgs_cache\" -path '*/compiled/*.zo' -type f -print -quit 2>/dev/null | grep -q . \\
             || {{ echo \"runtime-keyed package cache is empty after DEB install: $runtime_pkgs_cache\"; exit 1; }}
+          smoke_step 'Rhombus demod cache'
           find \"$rhombus_ephemeral_cache\" -path '*/compiled/*.zo' -type f -print -quit 2>/dev/null | grep -q . \\
             || {{ echo \"Rhombus demod cache is empty after DEB install: $rhombus_ephemeral_cache\"; exit 1; }}
+          smoke_step 'racket version'
           racket -e '(displayln (version))' | grep -F \"$PACKAGE_VERSION\"
+          smoke_step 'racket f-string'
           racket -e '(displayln f\"deb-ci-ok\")' | grep -F 'deb-ci-ok'
+          smoke_step 'readline package'
           racket -e '(require readline/readline) (displayln f\"deb-readline-ok\")' | grep -F 'deb-readline-ok'
+          smoke_step 'fresh HOME racket libraries'
           empty_home=$(mktemp -d)
           HOME=\"$empty_home\" racket -e '(require racket/list racket/match racket/file) (displayln f\"deb-empty-home-ok\")' | grep -F 'deb-empty-home-ok'
+          smoke_step 'Rhombus version'
           HOME=\"$empty_home\" timeout 30s rhombus --version | grep -F 'Rhombus'
+          smoke_step 'Rhombus expression'
           HOME=\"$empty_home\" timeout 30s rhombus -e 'println(\"deb-rhombus-ok\")' | grep -F 'deb-rhombus-ok'
           rm -rf \"$empty_home\"
+          smoke_step 'Rhombus fresh HOME expression'
           empty_home=$(mktemp -d)
           HOME=\"$empty_home\" timeout 30s rhombus -e 'println(\"deb-rhombus-fresh-home-ok\")' | grep -F 'deb-rhombus-fresh-home-ok'
           rm -rf \"$empty_home\"
+          smoke_step 'raco package database'
           raco pkg show --all >/tmp/raco-pkgs.txt
+          smoke_step 'apt purge package'
           apt-get purge -y \"$PACKAGE_NAME\"
+          smoke_step 'dpkg package absent after purge'
           if dpkg -s \"$PACKAGE_NAME\" >/dev/null 2>&1; then
             echo \"Package still installed after apt-get purge: $PACKAGE_NAME\"
+            dpkg -s \"$PACKAGE_NAME\" || true
             exit 1
           fi
-          [ ! -d /var/cache/racket/compiled ] || {{ echo 'system compiled cache remains after DEB purge'; exit 1; }}
+          smoke_step 'system compiled cache removed after purge'
+          [ ! -d /var/cache/racket/compiled ] || {{ echo 'system compiled cache remains after DEB purge'; find /var/cache/racket/compiled -maxdepth 5 -print; exit 1; }}
 
       - name: Upload DEB artifact
         uses: actions/upload-artifact@v6
@@ -4693,6 +4713,9 @@ jobs:
                                  "GH_REPO:"
                                  "gh release upload"
                                  "--repo \"$GITHUB_REPOSITORY\""
+                                 "smoke_step()"
+                                 "DEB smoke: %s"
+                                 "smoke_step 'apt install package'"
                                  "apt-get install -y \"${deb_files[0]}\""
                                  "system compiled cache is empty after DEB install"
                                  "runtime-keyed collects cache is empty after DEB install"
