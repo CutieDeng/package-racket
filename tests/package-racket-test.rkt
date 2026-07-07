@@ -613,7 +613,7 @@ actual output:
        (check-contains spec-content "%files -f %{name}.files")
        (check-contains spec-content "%postun")
        (check-contains spec-content "other_package=")
-       (check-contains spec-content "rpm -q --quiet \"$other_package\"")
+       (check-contains spec-content "rpm -q --quiet \"$other_package\" >/dev/null 2>&1")
        (check-contains spec-content "rm -rf /var/cache/racket/compiled")
        (check-contains spec-content "%{package_prefix}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod")
        (check-contains spec-content "rmdir %{package_prefix}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral")
