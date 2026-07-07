@@ -6689,16 +6689,16 @@ information.
                                  f"version \"{(cfg-formula-version c)}\""
                                  "depends_on \"openssl@3\""
                                  "depends_on \"ncurses\""
-                                 "(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")"
-	                                 "setup_system_cache"
-	                                 "preserve_compiled_cache_dir?"
-	                                 "system_cache_populated?"
-	                                 "rhombus_demod_cache_populated?"
-	                                 "package-racket-rhombus-cache"
-	                                 "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""
-	                                 "system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
-                                 "test do"
-                                 f"assert_match \"{(cfg-source-version c)}\""))])
+	                                 "(compiled-file-system-cache-root . \\\"#{system_cache_root}\\\")"
+		                                 "setup_system_cache"
+		                                 "preserve_compiled_cache_dir?"
+		                                 "system_cache_populated?"
+		                                 "rhombus_demod_cache_populated?"
+		                                 "package-racket-rhombus-cache"
+		                                 "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""
+		                                 "system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
+	                                 "test do"
+	                                 f"assert_match \"{(cfg-source-version c)}\""))])
       (unless (string-contains? content needle)
         (raise-user-error 'validate-formula-file!
                           f"formula is missing expected content: {needle}")
@@ -6959,19 +6959,96 @@ information.
 	            "  end\n\n"
 	            "  def setup_system_cache")))
 	    ) ; end define with-rhombus-cache-methods
-	    (define with-rhombus-cache-setup
-	      (if (string-contains? with-rhombus-cache-methods "package-racket-rhombus-cache")
-	          with-rhombus-cache-methods
-	          (string-replace with-rhombus-cache-methods
+	(define with-rhombus-cache-setup
+	  (if (string-contains? with-rhombus-cache-methods "package-racket-rhombus-cache")
+	      with-rhombus-cache-methods
+	      (string-replace with-rhombus-cache-methods
 	                          "           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
 	                          (string-append
-	                           "           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"\n"
-	                           "    system bin/\"racket\", \"-N\", \"rhombus\", \"-l-\", \"rhombus/run.rhm\",\n"
-	                           "           \"-e\", \"println(\\\"package-racket-rhombus-cache\\\")\"")))
-	    ) ; end define with-rhombus-cache-setup
-	    (write-text-file!
-	     formula-path
-	     with-rhombus-cache-setup)
+	                       "           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"\n"
+	                       "    system bin/\"racket\", \"-N\", \"rhombus\", \"-l-\", \"rhombus/run.rhm\",\n"
+	                       "           \"-e\", \"println(\\\"package-racket-rhombus-cache\\\")\"")))
+	) ; end define with-rhombus-cache-setup
+	(define without-source-configure
+	  (string-replace
+	   (string-replace with-rhombus-cache-setup
+	                   "    # Configure racket's package tool (raco) to use installation scope.
+    config_entries = [
+      \"(default-scope . \\\"installation\\\")\",
+      \"(compiled-file-cache-roots . (user system))\",
+      \"(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")\",
+    ].join(\" \")
+    inreplace \"etc/config.rktd\", /\\)\\)\\n$/, \") \" + config_entries + \")\\n\"
+
+"
+	                   "")
+	   "    config_entries = [
+      \"(default-scope . \\\"installation\\\")\",
+      \"(compiled-file-cache-roots . (user system))\",
+      \"(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")\",
+    ].join(\" \")
+    inreplace \"etc/config.rktd\", /\\)\\)\\n$/, \") \" + config_entries + \")\\n\"
+"
+	   "")
+	) ; end define without-source-configure
+	(define with-installed-configure-call
+	  (string-replace without-source-configure
+	                  "    system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
+    if build.bottle?"
+	                  "    system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
+    configure_racket
+    if build.bottle?")
+	) ; end define with-installed-configure-call
+	(define with-configure-method
+	  (if (string-contains? with-installed-configure-call "def configure_racket")
+	      with-installed-configure-call
+	      (string-replace with-installed-configure-call
+	                      "  def system_cache_root
+    prefix/\"var/cache/racket/compiled\"
+  end"
+	                      "  def system_cache_root
+    prefix/\"var/cache/racket/compiled\"
+  end
+
+  def configure_racket
+    # Configure racket's package tool (raco) to use installation scope.
+    config_entries = [
+      \"(default-scope . \\\"installation\\\")\",
+      \"(compiled-file-cache-roots . (user system))\",
+      \"(compiled-file-system-cache-root . \\\"#{system_cache_root}\\\")\",
+    ].join(\" \")
+    inreplace racket_config, /\\)\\)\\n$/, \") \" + config_entries + \")\\n\"
+  end"))
+	) ; end define with-configure-method
+	(define with-forced-raco-cache-root
+	  (string-replace with-configure-method
+	                  "    system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
+           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
+	                  "    system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
+           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"")
+	) ; end define with-forced-raco-cache-root
+	(define with-cache-root-directory
+	  (if (string-contains? with-forced-raco-cache-root "system_cache_root.mkpath")
+	      with-forced-raco-cache-root
+	      (string-replace with-forced-raco-cache-root
+	                      "  def setup_system_cache
+"
+	                      "  def setup_system_cache
+    system_cache_root.mkpath
+"))
+	) ; end define with-cache-root-directory
+	(define with-forced-rhombus-cache-root
+	  (string-replace with-cache-root-directory
+	                  "    system bin/\"racket\", \"-N\", \"rhombus\", \"-l-\", \"rhombus/run.rhm\",
+           \"-e\", \"println(\\\"package-racket-rhombus-cache\\\")\""
+	                  "    system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"rhombus\",
+           \"-l-\", \"rhombus/run.rhm\", \"--version\"
+    system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"rhombus\",
+           \"-l-\", \"rhombus/run.rhm\", \"-e\", \"println(\\\"package-racket-rhombus-cache\\\")\"")
+	) ; end define with-forced-rhombus-cache-root
+	(write-text-file!
+	 formula-path
+	 with-forced-rhombus-cache-root)
     (ensure-formula-docs-test! c formula-path)
     (validate-formula-file! c formula-path)
   ) ; end begin set-formula-source!
@@ -7047,15 +7124,21 @@ information.
     etc/\"racket/config.rktd\"
   end
 
-  def install
+  def system_cache_root
+    prefix/\"var/cache/racket/compiled\"
+  end
+
+  def configure_racket
     # Configure racket's package tool (raco) to use installation scope.
     config_entries = [
       \"(default-scope . \\\"installation\\\")\",
       \"(compiled-file-cache-roots . (user system))\",
-      \"(compiled-file-system-cache-root . \\\"{rb-prefix}/var/cache/racket/compiled\\\")\",
+      \"(compiled-file-system-cache-root . \\\"#{{system_cache_root}}\\\")\",
     ].join(\" \")
-    inreplace \"etc/config.rktd\", /\\)\\)\\n$/, \") \" + config_entries + \")\\n\"
+    inreplace racket_config, /\\)\\)\\n$/, \") \" + config_entries + \")\\n\"
+  end
 
+  def install
     # Prefer Homebrew OpenSSL 3 over older OpenSSL variants.
     inreplace %w[libssl.rkt libcrypto.rkt].map {{ |file| buildpath/\"collects/openssl\"/file }},
               '\"1.1\"', '\"3\"'
@@ -7095,14 +7178,11 @@ information.
     end
 
     system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
+    configure_racket
     if build.bottle?
       setup_system_cache
       remove_precompiled_cache
     end
-  end
-
-  def system_cache_root
-    prefix/\"var/cache/racket/compiled\"
   end
 
   def system_cache_roots
@@ -7126,10 +7206,13 @@ information.
   end
 
   def setup_system_cache
-    system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
+    system_cache_root.mkpath
+    system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
            \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"
-    system bin/\"racket\", \"-N\", \"rhombus\", \"-l-\", \"rhombus/run.rhm\",
-           \"-e\", \"println(\\\"package-racket-rhombus-cache\\\")\"
+    system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"rhombus\",
+           \"-l-\", \"rhombus/run.rhm\", \"--version\"
+    system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"rhombus\",
+           \"-l-\", \"rhombus/run.rhm\", \"-e\", \"println(\\\"package-racket-rhombus-cache\\\")\"
   end
 
   def post_install
@@ -9936,14 +10019,18 @@ end
         (define content (file->string formula-path))
         (check-true (formula-version-before-sha? content))
         (check-true (string-contains? content f"sha256 \"{test-sha256}\""))
-        (check-true (string-contains? content "(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")"))
+        (check-true (string-contains? content "(compiled-file-system-cache-root . \\\"#{system_cache_root}\\\")"))
+        (check-true (string-contains? content "inreplace racket_config"))
+        (check-true (string-contains? content "system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"\n    configure_racket"))
+        (check-false (string-contains? content "inreplace \"etc/config.rktd\""))
 	        (check-true (string-contains? content "if build.bottle?"))
 	        (check-true (string-contains? content "preserve_compiled_cache_dir?"))
 	        (check-true (string-contains? content "system_cache_populated?"))
 	        (check-true (string-contains? content "rhombus_demod_cache_populated?"))
 	        (check-true (string-contains? content "package-racket-rhombus-cache"))
 	        (check-true (string-contains? content "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""))
-	        (check-true (string-contains? content "system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""))
+	        (check-true (string-contains? content "system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""))
+	        (check-true (string-contains? content "\"-l-\", \"rhombus/run.rhm\", \"--version\""))
         (check-false (string-contains? content "var/cache/racket/compiled#{prefix}/share"))
         (check-false (string-contains? content "#{var}/cache/racket/compiled"))
       ) ; end lambda update formula
@@ -9974,18 +10061,20 @@ end
                                  "require racket/pvector"
                                  "interactive-packages-ok"
                                  "rhombus-lang-ok"
-                                 "rhombus --version"
-                                 "rhombus -e '1 + 2'"
-                                 "compiled-file-cache-roots"
-                                 "(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")"
-                                 "system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\""
-	                                 "if build.bottle?"
-	                                 "system_cache_populated?"
-	                                 "rhombus_demod_cache_populated?"
-	                                 "package-racket-rhombus-cache"
-	                                 "system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
-	                                 "system bin/\"racket\", \"-N\", \"rhombus\", \"-l-\", \"rhombus/run.rhm\""
-	                                 "remove_precompiled_cache"
+	                                 "rhombus --version"
+	                                 "rhombus -e '1 + 2'"
+	                                 "compiled-file-cache-roots"
+	                                 "(compiled-file-system-cache-root . \\\"#{system_cache_root}\\\")"
+	                                 "system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"\n    configure_racket"
+		                                 "if build.bottle?"
+		                                 "system_cache_populated?"
+		                                 "rhombus_demod_cache_populated?"
+		                                 "package-racket-rhombus-cache"
+		                                 "system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
+		                                 "system_cache_root.mkpath"
+		                                 "system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"rhombus\""
+		                                 "\"-l-\", \"rhombus/run.rhm\", \"--version\""
+		                                 "remove_precompiled_cache"
                                  "preserve_compiled_cache_dir?"
                                  "Dir[\"#{prefix}/**/compiled\"].sort_by(&:length).reverse_each"
                                  "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""
@@ -10000,6 +10089,8 @@ end
     ) ; end for formula needle
     (check-true (formula-version-before-sha? content))
     (check-false (string-contains? content "inreplace racket_config, prefix, opt_prefix"))
+    (check-true (string-contains? content "inreplace racket_config"))
+    (check-false (string-contains? content "inreplace \"etc/config.rktd\""))
     (check-false (string-contains? content "Fixing up Cellar references"))
     (check-false (string-contains? content "Formula[\"openssl@3\"].opt_lib"))
     (check-false (string-contains? content "#{var}/cache/racket/compiled"))
