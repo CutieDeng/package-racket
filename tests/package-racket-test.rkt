@@ -401,10 +401,12 @@ actual output:
 {text}"))
 
 (module+ test
-  (test-case "homebrew formula removes nested compiled dirs deepest first"
+  (test-case "homebrew formula preserves system cache while pruning ordinary compiled dirs"
     (check-contains (file->string package-script)
-                    "rm_r Dir[\\\"{rb-prefix}/**/compiled\\\"].sort_by(&:length).reverse")
-  ) ; end test-case homebrew compiled cleanup order
+                    "preserve_compiled_cache_dir?")
+    (check-contains (file->string package-script)
+                    "Dir[\\\"{rb-prefix}/**/compiled\\\"].sort_by(&:length).reverse_each")
+  ) ; end test-case homebrew compiled cleanup preserves cache
 
   (test-case "apt dry-run is isolated from apt-release config and writes no artifacts"
     (with-temp-dir
@@ -595,6 +597,8 @@ actual output:
        (check-contains spec-content "runtime staging link path already exists")
        (check-contains spec-content "-X \"$runtime_collects_dir\" -G \"$runtime_config_dir\"")
        (check-contains spec-content "--no-launcher")
+       (check-contains spec-content "-N rhombus -l- rhombus/run.rhm --version")
+       (check-contains spec-content "HOME=\"$empty_home\" rhombus --version")
        (check-contains spec-content "package-racket-rhombus-cache")
        (check-contains spec-content "staged Rhombus demod cache")
        (check-contains spec-content "runtime_pkgs_dir")
@@ -617,7 +621,9 @@ actual output:
        (check-contains (file->string build-path*) "--source-archive")
        (check-not-contains (file->string build-path*) "--racket-root")
        (check-contains (file->string build-path*) "rpmbuild -bb")
+       (check-contains (file->string build-path*) "--define \"_sysconfdir /etc\"")
        (check-contains (file->string srpm-path) "rpmbuild -bs")
+       (check-contains (file->string srpm-path) "--define \"_sysconfdir /etc\"")
        (check-contains (file->string verify-path) "rpm -qip")
        (check-contains (file->string verify-path) "cached RPM payload does not include runtime-keyed collects cache")
        (check-contains (file->string verify-path) "cached RPM payload does not include runtime-keyed package cache")
@@ -918,11 +924,13 @@ actual output:
        (check-contains workflow-content "EXPECTED_RPM_COUNT: 16")
        (check-contains workflow-content "cache_mode: 'postinstall'")
        (check-contains workflow-content "cache_mode: 'cached'")
+       (check-contains workflow-content "dnf-command(config-manager)")
+       (check-contains workflow-content "config-manager --set-enabled crb")
        (check-contains workflow-content "package_name: 'racket9-cached'")
        (check-contains workflow-content "artifact_name: 'rpm-openeuler2403-aarch64-cached'")
        (check-contains workflow-content "--cache-mode \"${{ matrix.cache_mode }}\"")
        (check-contains workflow-content "$pm -y install \"${rpm_files[0]}\"")
-       (check-contains workflow-content "rpm -q libedit >/dev/null")
+       (check-contains workflow-content "rpm -qa | grep -Ei")
        (check-contains workflow-content "system compiled cache is empty after RPM install")
        (check-contains workflow-content "runtime-keyed collects cache is empty after RPM install")
        (check-contains workflow-content "runtime-keyed package cache is empty after RPM install")

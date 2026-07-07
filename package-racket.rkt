@@ -2280,6 +2280,9 @@ add_runtime_link \"$staged_cache_parent\" \"$runtime_cache_parent\"
 if ! \"$racket_bin\" -X \"$runtime_collects_dir\" -G \"$runtime_config_dir\" -N raco -l- raco setup --system --no-user --reset-cache -D --no-pkg-deps --no-launcher; then
   exit 1
 fi
+if ! \"$racket_bin\" -X \"$runtime_collects_dir\" -G \"$runtime_config_dir\" -N rhombus -l- rhombus/run.rhm --version >/dev/null; then
+  exit 1
+fi
 if ! \"$racket_bin\" -X \"$runtime_collects_dir\" -G \"$runtime_config_dir\" -N rhombus -l- rhombus/run.rhm -e 'println(\"package-racket-rhombus-cache\")' >/dev/null; then
   exit 1
 fi
@@ -2350,6 +2353,10 @@ else
   raco setup --system --no-user --reset-cache -D --no-pkg-deps
 fi
 empty_home=$(mktemp -d)
+if ! HOME=\"$empty_home\" rhombus --version >/dev/null; then
+  rm -rf \"$empty_home\"
+  exit 1
+fi
 if ! HOME=\"$empty_home\" rhombus -e 'println(\"package-racket-rhombus-cache\")' >/dev/null; then
   rm -rf \"$empty_home\"
   exit 1
@@ -2424,6 +2431,7 @@ fi
                                  "runtime staging link path already exists"
                                  "-X \"$runtime_collects_dir\" -G \"$runtime_config_dir\""
                                  "--no-launcher"
+                                 "-N rhombus -l- rhombus/run.rhm --version"
                                  "package-racket-rhombus-cache"
                                  "staged Rhombus demod cache"
                                  "runtime_pkgs_dir"
@@ -2637,6 +2645,7 @@ fi
                 "--target" (cfg-rpm-arch c)
                 "--define" f"_topdir {(clean-path-string rpm-root)}"
                 "--define" "_build_id_links none"
+                "--define" "_sysconfdir /etc"
                 "--define" f"package_prefix {(cfg-prefix c)}"
                 "--define" f"package_name {(cfg-package-name c)}"
                 "--define" "cache_mode postinstall"
@@ -3194,6 +3203,7 @@ if [ \"${{#RPMBUILD_ARGS[@]}}\" -gt 0 ]; then
   run_cmd \"$DRY_RUN\" rpmbuild -bb --target \"$NORMALIZED_ARCH\" \\
     --define \"_topdir $RPMBUILD_ROOT\" \\
     --define \"_build_id_links none\" \\
+    --define \"_sysconfdir /etc\" \\
     --define \"package_prefix $PREFIX\" \\
     --define \"package_name $RPM_PACKAGE_NAME\" \\
     --define \"cache_mode $CACHE_MODE\" \\
@@ -3206,6 +3216,7 @@ else
   run_cmd \"$DRY_RUN\" rpmbuild -bb --target \"$NORMALIZED_ARCH\" \\
     --define \"_topdir $RPMBUILD_ROOT\" \\
     --define \"_build_id_links none\" \\
+    --define \"_sysconfdir /etc\" \\
     --define \"package_prefix $PREFIX\" \\
     --define \"package_name $RPM_PACKAGE_NAME\" \\
     --define \"cache_mode $CACHE_MODE\" \\
@@ -3321,6 +3332,7 @@ prepare_source_archive \"$DRY_RUN\" \"$SOURCE_ARCHIVE\" \"$SOURCE_URL\" \"$SOURC
 if [ \"${{#RPMBUILD_ARGS[@]}}\" -gt 0 ]; then
   run_cmd \"$DRY_RUN\" rpmbuild -bs --target \"$NORMALIZED_ARCH\" \\
     --define \"_topdir $RPMBUILD_ROOT\" \\
+    --define \"_sysconfdir /etc\" \\
     --define \"package_prefix $PREFIX\" \\
     --define \"package_system $RPM_SYSTEM\" \\
     --define \"package_release $RPM_RELEASE\" \\
@@ -3330,6 +3342,7 @@ if [ \"${{#RPMBUILD_ARGS[@]}}\" -gt 0 ]; then
 else
   run_cmd \"$DRY_RUN\" rpmbuild -bs --target \"$NORMALIZED_ARCH\" \\
     --define \"_topdir $RPMBUILD_ROOT\" \\
+    --define \"_sysconfdir /etc\" \\
     --define \"package_prefix $PREFIX\" \\
     --define \"package_system $RPM_SYSTEM\" \\
     --define \"package_release $RPM_RELEASE\" \\
@@ -3592,6 +3605,7 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
                                     "build-rpm.sh"
                                     '("Usage: scripts/build-rpm.sh"
                                       "rpmbuild -bb"
+                                      "--define \"_sysconfdir /etc\""
                                       "--cache-mode"
                                       "cache_mode $CACHE_MODE"
                                       "--dry-run"))
@@ -3599,6 +3613,7 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
                                     "build-srpm.sh"
                                     '("Usage: scripts/build-srpm.sh"
                                       "rpmbuild -bs"
+                                      "--define \"_sysconfdir /etc\""
                                       "--dry-run"))
     (validate-generated-rpm-script! c
                                     "verify-rpm.sh"
@@ -3958,6 +3973,12 @@ jobs:
             echo 'dnf or yum is required in the build container'
             exit 1
           fi
+          if [ \"{matrix-system}\" = \"el9\" ]; then
+            $pm -y install 'dnf-command(config-manager)' || $pm -y install dnf-plugins-core || true
+            if command -v dnf >/dev/null 2>&1; then
+              dnf config-manager --set-enabled crb || true
+            fi
+          fi
           $pm -y install $packages
 
       - name: Build RPM
@@ -3998,7 +4019,7 @@ jobs:
             exit 1
           fi
           $pm -y install \"${{rpm_files[0]}}\"
-          rpm -q libedit >/dev/null
+          rpm -qa | grep -Ei '^(libedit|libedit-devel|editline)' || true
           cache_count=$(find /var/cache/racket/compiled -path '*/compiled/*.zo' 2>/dev/null | wc -l)
           [ \"$cache_count\" -gt 0 ] || {{ echo 'system compiled cache is empty after RPM install'; exit 1; }}
           runtime_collects_cache=\"/var/cache/racket/compiled{(cfg-prefix c)}/share/racket/collects\"
@@ -4140,8 +4161,10 @@ jobs:
                                  "Downloaded RPM files"
                                  "Release assets before upload"
                                  "Release assets after upload"
+                                 "dnf-command(config-manager)"
+                                 "config-manager --set-enabled crb"
                                  "$pm -y install \"${rpm_files[0]}\""
-                                 "rpm -q libedit >/dev/null"
+                                 "rpm -qa | grep -Ei"
                                  "system compiled cache is empty after RPM install"
                                  "runtime-keyed collects cache is empty after RPM install"
                                  "runtime-keyed package cache is empty after RPM install"
@@ -6632,7 +6655,8 @@ information.
                                  "depends_on \"openssl@3\""
                                  "depends_on \"ncurses\""
                                  "(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")"
-	                                 "setup_system_cache if build.bottle?"
+	                                 "setup_system_cache"
+	                                 "preserve_compiled_cache_dir?"
 	                                 "system_cache_populated?"
 	                                 "rhombus_demod_cache_populated?"
 	                                 "package-racket-rhombus-cache"
@@ -6782,7 +6806,11 @@ information.
   def remove_precompiled_cache
     rm_r Dir[\"#{prefix}/**/compiled\"].sort_by(&:length).reverse
   end"
-                      "  def system_cache_roots
+                      "  def system_cache_root
+    prefix/\"var/cache/racket/compiled\"
+  end
+
+  def system_cache_roots
     [
       prefix/\"var/cache/racket/compiled#{share}/racket/collects\",
       prefix/\"var/cache/racket/compiled#{share}/racket/pkgs\",
@@ -6800,10 +6828,23 @@ information.
 
   def post_install
     setup_system_cache unless system_cache_populated?
+    remove_precompiled_cache
+  end
+
+  def preserve_compiled_cache_dir?(path)
+    path = Pathname(path).cleanpath
+    preserved_roots = [system_cache_root, rhombus_demod_cache].map(&:cleanpath)
+    preserved_roots.any? do |root|
+      path == root || path.to_s.start_with?(\"#{root}/\") || root.to_s.start_with?(\"#{path}/\")
+    end
   end
 
   def remove_precompiled_cache
-    rm_r Dir[\"#{prefix}/**/compiled\"].sort_by(&:length).reverse
+    Dir[\"#{prefix}/**/compiled\"].sort_by(&:length).reverse_each do |dir|
+      next if preserve_compiled_cache_dir?(dir)
+
+      rm_r dir
+    end
   end")
     ) ; end define with-system-cache-methods
     (define with-system-cache-methods/fallback
@@ -6813,7 +6854,11 @@ information.
                           "  def post_install
     system bin/\"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"
   end"
-                          "  def system_cache_roots
+                          "  def system_cache_root
+    prefix/\"var/cache/racket/compiled\"
+  end
+
+  def system_cache_roots
     [
       prefix/\"var/cache/racket/compiled#{share}/racket/collects\",
       prefix/\"var/cache/racket/compiled#{share}/racket/pkgs\",
@@ -6831,6 +6876,7 @@ information.
 
   def post_install
     setup_system_cache unless system_cache_populated?
+    remove_precompiled_cache
   end"))
     ) ; end define with-system-cache-methods/fallback
     (define with-bottle-cache-setup
@@ -6839,8 +6885,10 @@ information.
     remove_precompiled_cache
   end"
                       "    system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
-    remove_precompiled_cache
-    setup_system_cache if build.bottle?
+    if build.bottle?
+      setup_system_cache
+      remove_precompiled_cache
+    end
   end")
     ) ; end define with-bottle-cache-setup
     (define with-cache-test
@@ -7012,8 +7060,14 @@ information.
     end
 
     system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
-    remove_precompiled_cache
-    setup_system_cache if build.bottle?
+    if build.bottle?
+      setup_system_cache
+      remove_precompiled_cache
+    end
+  end
+
+  def system_cache_root
+    prefix/\"var/cache/racket/compiled\"
   end
 
   def system_cache_roots
@@ -7045,10 +7099,23 @@ information.
 
   def post_install
     setup_system_cache unless system_cache_populated?
+    remove_precompiled_cache
+  end
+
+  def preserve_compiled_cache_dir?(path)
+    path = Pathname(path).cleanpath
+    preserved_roots = [system_cache_root, rhombus_demod_cache].map(&:cleanpath)
+    preserved_roots.any? do |root|
+      path == root || path.to_s.start_with?(\"#{{root}}/\") || root.to_s.start_with?(\"#{{path}}/\")
+    end
   end
 
   def remove_precompiled_cache
-    rm_r Dir[\"{rb-prefix}/**/compiled\"].sort_by(&:length).reverse
+    Dir[\"{rb-prefix}/**/compiled\"].sort_by(&:length).reverse_each do |dir|
+      next if preserve_compiled_cache_dir?(dir)
+
+      rm_r dir
+    end
   end
 
   def caveats
@@ -9835,7 +9902,8 @@ end
         (check-true (formula-version-before-sha? content))
         (check-true (string-contains? content f"sha256 \"{test-sha256}\""))
         (check-true (string-contains? content "(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")"))
-	        (check-true (string-contains? content "setup_system_cache if build.bottle?"))
+	        (check-true (string-contains? content "if build.bottle?"))
+	        (check-true (string-contains? content "preserve_compiled_cache_dir?"))
 	        (check-true (string-contains? content "system_cache_populated?"))
 	        (check-true (string-contains? content "rhombus_demod_cache_populated?"))
 	        (check-true (string-contains? content "package-racket-rhombus-cache"))
@@ -9876,14 +9944,15 @@ end
                                  "compiled-file-cache-roots"
                                  "(compiled-file-system-cache-root . \\\"#{prefix}/var/cache/racket/compiled\\\")"
                                  "system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\""
-	                                 "setup_system_cache if build.bottle?"
+	                                 "if build.bottle?"
 	                                 "system_cache_populated?"
 	                                 "rhombus_demod_cache_populated?"
 	                                 "package-racket-rhombus-cache"
 	                                 "system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
 	                                 "system bin/\"racket\", \"-N\", \"rhombus\", \"-l-\", \"rhombus/run.rhm\""
 	                                 "remove_precompiled_cache"
-                                 "rm_r Dir[\"#{prefix}/**/compiled\"]"
+                                 "preserve_compiled_cache_dir?"
+                                 "Dir[\"#{prefix}/**/compiled\"].sort_by(&:length).reverse_each"
                                  "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""
 	                                 "assert system_cache_populated?"
 	                                 "assert rhombus_demod_cache_populated?"
@@ -9933,7 +10002,7 @@ end
     (check-true (and el9 #t))
     (define el9-packages (hash-ref el9 'setup-packages))
     (check-true (and (member "coreutils" el9-packages string=?) #t))
-    (check-false (member "curl" el9-packages string=?))
+    (check-true (and (member "curl" el9-packages string=?) #t))
     (check-true (and (member "findutils" el9-packages string=?) #t))
     (check-true (and (member "rpm-build" el9-packages string=?) #t))
   ) ; end test-case real rpm CI config el9

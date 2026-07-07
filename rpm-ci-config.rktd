@@ -11,6 +11,7 @@
                         (jobs . 2)
 	                        (setup-packages . ("bash"
 	                                           "coreutils"
+	                                           "curl"
 	                                           "diffutils"
                                            "file"
                                            "findutils"
