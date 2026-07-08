@@ -6852,7 +6852,7 @@ information.
 			                                 "rhombus_demod_cache_populated?"
 			                                 "package-racket-rhombus-cache"
 			                                 "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""
-			                                 "system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\""
+				                                 "system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"-j\", \"1\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\""
 	                                 "test do"
 	                                 f"assert_match \"{(cfg-source-version c)}\""))])
       (unless (string-contains? content needle)
@@ -7130,13 +7130,12 @@ information.
     ) ; end define with-cache-test
 	    (define with-homebrew-style
 	      (string-replace
-	       (string-replace with-cache-test
-	                       "var/cache/racket/compiled#{prefix}/share"
-	                       "var/cache/racket/compiled#{share}")
-	       "    system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
-	       "    system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
-	           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"")
-	    ) ; end define with-homebrew-style
+		       (string-replace with-cache-test
+		                       "var/cache/racket/compiled#{prefix}/share"
+		                       "var/cache/racket/compiled#{share}")
+		       "    system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
+		       "    system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"")
+		    ) ; end define with-homebrew-style
 	    (define with-rhombus-cache-methods
 	      (if (string-contains? with-homebrew-style "rhombus_demod_cache_populated?")
 	          with-homebrew-style
@@ -7218,20 +7217,27 @@ information.
 
 " brew-configure-racket-method)))
 		) ; end define with-configure-method
-	(define with-forced-raco-cache-root
-	  (string-replace with-configure-method
-	                  "    system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
-           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
-	                  "    system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
-           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"")
-	) ; end define with-forced-raco-cache-root
-	(define with-cache-root-directory
-	  (if (string-contains? with-forced-raco-cache-root "system_cache_root.mkpath")
-	      with-forced-raco-cache-root
-	      (string-replace with-forced-raco-cache-root
-	                      "  def setup_system_cache
-"
-	                      "  def setup_system_cache
+		(define with-forced-raco-cache-root
+		  (regexp-replace*
+		   #px"    system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
+[[:space:]]*\"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
+		   with-configure-method
+		   "    system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"")
+		) ; end define with-forced-raco-cache-root
+		(define with-serial-raco-cache-setup
+		  (regexp-replace*
+		   #px"    system bin/\"racket\", \"-U\", \"-R\", system_cache_root\\.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
+[[:space:]]*(?:\"-j\", \"1\", )?\"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
+		   with-forced-raco-cache-root
+		   "    system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"-j\", \"1\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"")
+		) ; end define with-serial-raco-cache-setup
+		(define with-cache-root-directory
+		  (if (string-contains? with-serial-raco-cache-setup "system_cache_root.mkpath")
+		      with-serial-raco-cache-setup
+		      (string-replace with-serial-raco-cache-setup
+		                      "  def setup_system_cache
+	"
+		                      "  def setup_system_cache
     system_cache_root.mkpath
 "))
 	) ; end define with-cache-root-directory
@@ -7420,7 +7426,7 @@ information.
   def setup_system_cache
     system_cache_root.mkpath
     system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
-           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\"
+           \"-j\", \"1\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\"
     system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"rhombus\",
            \"-l-\", \"rhombus/run.rhm\", \"--version\"
     system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"rhombus\",
@@ -10246,7 +10252,7 @@ end
 	        (check-true (string-contains? content "rhombus_demod_cache_populated?"))
 	        (check-true (string-contains? content "package-racket-rhombus-cache"))
 	        (check-true (string-contains? content "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""))
-		        (check-true (string-contains? content "system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\""))
+			        (check-true (string-contains? content "system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"-j\", \"1\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\""))
 	        (check-true (string-contains? content "\"-l-\", \"rhombus/run.rhm\", \"--version\""))
         (check-false (string-contains? content "var/cache/racket/compiled#{prefix}/share"))
         (check-false (string-contains? content "#{var}/cache/racket/compiled"))
@@ -10288,7 +10294,7 @@ end
 		                                 "system_cache_populated?"
 		                                 "rhombus_demod_cache_populated?"
 		                                 "package-racket-rhombus-cache"
-			                                 "system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\""
+				                                 "system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"-j\", \"1\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\""
 		                                 "system_cache_root.mkpath"
 		                                 "system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"rhombus\""
 		                                 "\"-l-\", \"rhombus/run.rhm\", \"--version\""
