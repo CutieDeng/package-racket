@@ -6842,7 +6842,10 @@ information.
                                  f"url \"{(formula-source-url c)}\""
                                  f"version \"{(cfg-formula-version c)}\""
 	                                 "depends_on \"openssl@3\""
-	                                 "depends_on \"ncurses\""
+		                                 "depends_on \"ncurses\""
+		                                 "source_racket_config"
+		                                 "configure_racket source_racket_config"
+		                                 "config_path.atomic_write content"
 		                                 "(compiled-file-system-cache-root . \\\"#{system_cache_root}\\\")"
 		                                 "content.sub!(/\\)\\s*\\z/"
 			                                 "setup_system_cache"
@@ -6939,13 +6942,17 @@ information.
 ) ; end define set-formula-bottle-root-url!
 
 (define brew-configure-racket-method
-"  def configure_racket
+"  def source_racket_config
+    buildpath/\"etc/config.rktd\"
+  end
+
+  def configure_racket(config_path)
     config_entries = [
       \"(default-scope . \\\"installation\\\")\",
       \"(compiled-file-cache-roots . (user system))\",
       \"(compiled-file-system-cache-root . \\\"#{system_cache_root}\\\")\",
     ].join(\" \")
-    content = racket_config.read
+    content = config_path.read
     %w[
       default-scope
       compiled-file-cache-roots
@@ -6955,12 +6962,14 @@ information.
     end
     raise \"could not append Racket config entries\" unless content.sub!(/\\)\\s*\\z/, \" #{config_entries})\\n\")
 
-    racket_config.write content
+    config_path.atomic_write content
   end")
 
 (define (replace-brew-configure-racket-method content)
   (begin
-    (define start-match (regexp-match-positions #px"  def configure_racket\n" content))
+    (define start-match
+      (or (regexp-match-positions #px"  def source_racket_config\n" content)
+          (regexp-match-positions #px"  def configure_racket" content)))
     (unless start-match
       (raise-user-error 'set-formula-source! "formula has no configure_racket method to replace")
     ) ; end unless start match
@@ -7187,18 +7196,32 @@ information.
 "
 	   "")
 	) ; end define without-source-configure
-	(define with-installed-configure-call
+	(define without-source-configure-call
 	  (string-replace without-source-configure
-	                  "    system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
-    if build.bottle?"
+	                  "    configure_racket source_racket_config
+
+"
+	                  "")
+	) ; end define without-source-configure-call
+	(define with-source-configure-call
+	  (string-replace without-source-configure-call
+	                  "    cd \"src\" do"
+	                  "    configure_racket source_racket_config
+
+    cd \"src\" do")
+	) ; end define with-source-configure-call
+	(define without-installed-configure-call
+	  (string-replace with-source-configure-call
 	                  "    system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
     configure_racket
+    if build.bottle?"
+	                  "    system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
     if build.bottle?")
-	) ; end define with-installed-configure-call
+	) ; end define without-installed-configure-call
 		(define with-configure-method
-		  (if (string-contains? with-installed-configure-call "def configure_racket")
-		      (replace-brew-configure-racket-method with-installed-configure-call)
-		      (string-replace with-installed-configure-call
+		  (if (string-contains? without-installed-configure-call "def configure_racket")
+		      (replace-brew-configure-racket-method without-installed-configure-call)
+		      (string-replace without-installed-configure-call
 		                      "  def system_cache_root
     prefix/\"var/cache/racket/compiled\"
   end"
@@ -7321,13 +7344,17 @@ information.
     prefix/\"var/cache/racket/compiled\"
   end
 
-  def configure_racket
+  def source_racket_config
+    buildpath/\"etc/config.rktd\"
+  end
+
+  def configure_racket(config_path)
     config_entries = [
       \"(default-scope . \\\"installation\\\")\",
       \"(compiled-file-cache-roots . (user system))\",
       \"(compiled-file-system-cache-root . \\\"#{{system_cache_root}}\\\")\",
     ].join(\" \")
-    content = racket_config.read
+    content = config_path.read
     %w[
       default-scope
       compiled-file-cache-roots
@@ -7337,13 +7364,15 @@ information.
     end
     raise \"could not append Racket config entries\" unless content.sub!(/\\)\\s*\\z/, \" #{{config_entries}})\\n\")
 
-    racket_config.write content
+    config_path.atomic_write content
   end
 
   def install
     # Prefer Homebrew OpenSSL 3 over older OpenSSL variants.
     inreplace %w[libssl.rkt libcrypto.rkt].map {{ |file| buildpath/\"collects/openssl\"/file }},
               '\"1.1\"', '\"3\"'
+
+    configure_racket source_racket_config
 
     cd \"src\" do
       args = %W[
@@ -7380,7 +7409,6 @@ information.
     end
 
     system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
-    configure_racket
     if build.bottle?
       setup_system_cache
       remove_precompiled_cache
@@ -10223,9 +10251,13 @@ end
         (check-true (string-contains? content f"sha256 \"{test-sha256}\""))
         (check-true (string-contains? content "(compiled-file-system-cache-root . \\\"#{system_cache_root}\\\")"))
         (check-true (string-contains? content "content.sub!(/\\)\\s*\\z/"))
-	        (check-true (string-contains? content "system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"\n    configure_racket"))
+	        (check-true (string-contains? content "configure_racket source_racket_config\n\n    cd \"src\" do"))
+	        (check-equal? (regexp-match-count #px"configure_racket source_racket_config" content) 1)
+	        (check-true (string-contains? content "config_path.atomic_write content"))
 	        (check-false (string-contains? content "inreplace racket_config"))
 	        (check-false (string-contains? content "inreplace \"etc/config.rktd\""))
+	        (check-false (string-contains? content "racket_config.write"))
+	        (check-false (string-contains? content "system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"\n    configure_racket"))
 	        (check-true (string-contains? content "if build.bottle?"))
 	        (check-true (string-contains? content "preserve_compiled_cache_dir?"))
 	        (check-true (string-contains? content "system_cache_populated?"))
@@ -10268,7 +10300,8 @@ end
 	                                 "rhombus -e '1 + 2'"
 	                                 "compiled-file-cache-roots"
 	                                 "(compiled-file-system-cache-root . \\\"#{system_cache_root}\\\")"
-	                                 "system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"\n    configure_racket"
+		                                 "configure_racket source_racket_config"
+		                                 "config_path.atomic_write content"
 		                                 "if build.bottle?"
 		                                 "system_cache_populated?"
 		                                 "rhombus_demod_cache_populated?"
