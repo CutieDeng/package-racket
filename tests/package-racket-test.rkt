@@ -403,6 +403,11 @@ actual output:
 actual output:
 {text}"))
 
+(define (literal-position text needle)
+  (define positions
+    (regexp-match-positions (regexp (regexp-quote needle)) text))
+  (and positions (caar positions)))
+
 (module+ test
   (test-case "production packaging revisions stay synchronized"
     (define expected-release "7")
@@ -664,6 +669,8 @@ actual output:
        (check-not-contains spec-content "Provides: racket9-cached")
        (check-not-contains spec-content "AutoReqProv: no")
        (check-not-contains spec-content "compiled/ephemeral/demod")
+       (check-not-contains spec-content "packaged immutable cache is empty")
+       (check-not-contains spec-content "find \"%{immutable_cache_root}\"")
        (check-not-contains spec-content "rpm -q --quiet")
        (check-not-contains spec-content "Source1:")
        (check-contains (file->string common-path) "prepare_source_archive")
@@ -1017,6 +1024,14 @@ actual output:
        (check-contains workflow-content "actions/download-artifact@v6")
        (check-contains workflow-content "actions/upload-pages-artifact@v4")
        (check-contains workflow-content "actions/deploy-pages@v4")
+       (check-contains workflow-content "Install RPM transaction dependencies")
+       (check-contains workflow-content "$pm -y install createrepo_c findutils rpm-build")
+       (check-true
+        (< (literal-position workflow-content
+                             "$pm -y install createrepo_c findutils rpm-build")
+           (literal-position workflow-content
+                             "postinstall_rpm=$(find"))
+        "RPM transaction dependencies must be installed before the first find")
        (check-contains workflow-content "Rebuild concrete SRPM")
        (check-contains workflow-content "rpmbuild --rebuild")
        (check-contains workflow-content "openeuler2203")

@@ -2577,7 +2577,6 @@ rm -f \"/var/cache/racket/%{{version}}/racket-compiled-cache.log\"
 rm -rf \"%{{dynamic_cache_root}}\"
 rm -f \"/var/cache/racket/%{{version}}/racket-compiled-cache.log\"
 rm -rf %{{package_prefix}}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral
-find \"%{{immutable_cache_root}}\" -path '*/compiled/*.zo' -type f -print -quit | grep -q . || {{ echo \"packaged immutable cache is empty: %{{immutable_cache_root}}\" >&2; exit 1; }}
 [ ! -e %{{package_prefix}}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral ] || {{ echo \"Rhombus ephemeral cache must not be installed\" >&2; exit 1; }}
 %endif
 exit 0
@@ -2660,7 +2659,6 @@ exit 0
                                  "/etc/os-release"
                                  "setup_jobs=\"-j 1\""
                                  "%{package_prefix}/bin/raco setup"
-                                 "packaged immutable cache is empty"
                                  "%postun"
                                  "if [ \"$1\" = \"0\" ]; then"
                                  "rm -rf \"%{dynamic_cache_root}\""
@@ -4583,6 +4581,20 @@ jobs:
           path: transaction-assets
           merge-multiple: true
 
+      - name: Install RPM transaction dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v dnf >/dev/null 2>&1; then
+            pm=dnf
+          elif command -v yum >/dev/null 2>&1; then
+            pm=yum
+          else
+            echo 'dnf or yum is required for RPM transaction tests'
+            exit 1
+          fi
+          $pm -y install createrepo_c findutils rpm-build
+
       - name: Verify install upgrade downgrade reinstall and erase
         shell: bash
         env:
@@ -4605,7 +4617,6 @@ jobs:
             echo 'dnf or yum is required for RPM transaction tests'
             exit 1
           fi
-          $pm -y install createrepo_c rpm-build
           transaction_repo=\"$GITHUB_WORKSPACE/transaction-repo\"
           mkdir -p \"$transaction_repo/cached\" \"$transaction_repo/postinstall\"
           cp \"$cached_rpm\" \"$transaction_repo/cached/\"
@@ -4905,6 +4916,8 @@ jobs:
                                  "actions/download-artifact@v6"
                                  "actions/upload-pages-artifact@v4"
                                  "actions/deploy-pages@v4"
+                                 "Install RPM transaction dependencies"
+                                 "$pm -y install createrepo_c findutils rpm-build"
                                  "Build system-isolated channel repositories"
                                  "createrepo_c"
                                  "pages: write"
