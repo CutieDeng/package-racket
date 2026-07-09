@@ -6846,13 +6846,15 @@ information.
 		                                 "racket_config.atomic_write content"
 		                                 "(compiled-file-system-cache-root . \\\"#{system_cache_root}\\\")"
 		                                 "content.sub!(/\\)\\s*\\z/"
-			                                 "setup_system_cache"
+				                                 "setup_system_cache"
+				                                 "with_setup_bootstrap_config"
+				                                 "could not prepare Racket setup bootstrap config"
 			                                 "preserve_compiled_cache_dir?"
 			                                 "system_cache_populated?"
 			                                 "rhombus_demod_cache_populated?"
 			                                 "package-racket-rhombus-cache"
 			                                 "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""
-				                                 "system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"-j\", \"1\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\""
+					                                 "system bin/\"racket\", \"-U\", \"-G\", config_dir.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n             \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\""
 	                                 "test do"
 	                                 f"assert_match \"{(cfg-source-version c)}\""))])
       (unless (string-contains? content needle)
@@ -6878,11 +6880,15 @@ information.
                         f"formula must contain exactly one version line: {(clean-path-string formula-path)}")
     ) ; end unless one formula version
     (validate-formula-version-before-sha! 'validate-formula-file! content formula-path)
-    (when (> (regexp-match-count #px"(?m:^    root_url \"[^\"]+\")" content) 1)
-      (raise-user-error 'validate-formula-file!
-                        f"formula must contain at most one bottle root_url line: {(clean-path-string formula-path)}")
-    ) ; end when too many root_url lines
-    (formula-sha256 formula-path)
+	    (when (> (regexp-match-count #px"(?m:^    root_url \"[^\"]+\")" content) 1)
+	      (raise-user-error 'validate-formula-file!
+	                        f"formula must contain at most one bottle root_url line: {(clean-path-string formula-path)}")
+	    ) ; end when too many root_url lines
+	    (when (string-contains? content "end, \"--no-launcher\"")
+	      (raise-user-error 'validate-formula-file!
+	                        f"formula has stale no-launcher text after a Ruby block: {(clean-path-string formula-path)}")
+	    ) ; end when stale no-launcher text
+	    (formula-sha256 formula-path)
     (void)
   ) ; end begin validate-formula-file!
 ) ; end define validate-formula-file!
@@ -6958,6 +6964,44 @@ information.
 
     racket_config.atomic_write content
   end")
+
+(define brew-setup-bootstrap-config-method
+"  def with_setup_bootstrap_config
+    require \"tmpdir\"
+
+    Dir.mktmpdir(\"racket-setup-bootstrap-config\") do |dir|
+      config_dir = Pathname(dir)
+      content = racket_config.read.gsub(/\\s*\\(compiled-file-cache-roots\\s+\\.\\s+\\([^)]*\\)\\)/, \"\")
+      unless content.include?(\"compiled-file-system-cache-root\")
+        raise \"could not prepare Racket setup bootstrap config\"
+      end
+
+      (config_dir/\"config.rktd\").write content
+      yield config_dir
+    end
+  end")
+
+(define (replace-brew-setup-bootstrap-config-method content)
+  (begin
+    (define start-match
+      (regexp-match-positions #px"  def with_setup_bootstrap_config\n" content))
+    (define setup-match
+      (regexp-match-positions #px"\n  def setup_system_cache\n" content))
+    (unless setup-match
+      (raise-user-error 'set-formula-source! "formula has no setup_system_cache method")
+    ) ; end unless setup method
+    (define setup-start (add1 (car (car setup-match))))
+    (if start-match
+        (string-append (substring content 0 (car (car start-match)))
+                       brew-setup-bootstrap-config-method
+                       "\n\n"
+                       (substring content setup-start))
+        (string-append (substring content 0 setup-start)
+	                       brew-setup-bootstrap-config-method
+	                       "\n\n"
+	                       (substring content setup-start)))
+  ) ; end begin replace-brew-setup-bootstrap-config-method
+) ; end define replace-brew-setup-bootstrap-config-method
 
 (define (replace-brew-configure-racket-method content)
   (begin
@@ -7220,29 +7264,32 @@ information.
 		(define with-forced-raco-cache-root
 		  (regexp-replace*
 		   #px"    system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
-[[:space:]]*\"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
+[[:space:]]*\"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"(?:, \"--no-launcher\")*"
 		   with-configure-method
 		   "    system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"")
 		) ; end define with-forced-raco-cache-root
-		(define with-serial-raco-cache-setup
+		(define with-bootstrap-raco-cache-setup
 		  (regexp-replace*
 		   #px"    system bin/\"racket\", \"-U\", \"-R\", system_cache_root\\.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
-[[:space:]]*(?:\"-j\", \"1\", )?\"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
+[[:space:]]*(?:\"-j\", \"1\", )?\"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"(?:, \"--no-launcher\")*"
 		   with-forced-raco-cache-root
-		   "    system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"-j\", \"1\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"")
-		) ; end define with-serial-raco-cache-setup
+		   "    with_setup_bootstrap_config do |config_dir|\n      system bin/\"racket\", \"-U\", \"-G\", config_dir.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n             \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"\n    end")
+		) ; end define with-bootstrap-raco-cache-setup
 		(define with-cache-root-directory
-		  (if (string-contains? with-serial-raco-cache-setup "system_cache_root.mkpath")
-		      with-serial-raco-cache-setup
-		      (string-replace with-serial-raco-cache-setup
+		  (if (string-contains? with-bootstrap-raco-cache-setup "system_cache_root.mkpath")
+		      with-bootstrap-raco-cache-setup
+		      (string-replace with-bootstrap-raco-cache-setup
 		                      "  def setup_system_cache
 	"
 		                      "  def setup_system_cache
     system_cache_root.mkpath
 "))
-	) ; end define with-cache-root-directory
+		) ; end define with-cache-root-directory
+		(define with-setup-bootstrap-config-method
+		  (replace-brew-setup-bootstrap-config-method with-cache-root-directory)
+		) ; end define with-setup-bootstrap-config-method
 	(define with-forced-rhombus-cache-root
-	  (string-replace with-cache-root-directory
+	  (string-replace with-setup-bootstrap-config-method
 		                  "    system bin/\"racket\", \"-N\", \"rhombus\", \"-l-\", \"rhombus/run.rhm\",
 	           \"-e\", \"println(\\\"package-racket-rhombus-cache\\\")\""
 		                  "    system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"rhombus\",
@@ -7250,14 +7297,19 @@ information.
 	    system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"rhombus\",
 	           \"-l-\", \"rhombus/run.rhm\", \"-e\", \"println(\\\"package-racket-rhombus-cache\\\")\"")
 		) ; end define with-forced-rhombus-cache-root
-		(define with-no-launcher-cache-setup
-		  (regexp-replace* #px"\"--no-pkg-deps\"(?:, \"--no-launcher\")*"
-		                   with-forced-rhombus-cache-root
-		                   "\"--no-pkg-deps\", \"--no-launcher\"")
-		) ; end define with-no-launcher-cache-setup
-		(write-text-file!
-		 formula-path
-		 with-no-launcher-cache-setup)
+			(define with-no-launcher-cache-setup
+			  (regexp-replace* #px"\"--no-pkg-deps\"(?:, \"--no-launcher\")*"
+			                   with-forced-rhombus-cache-root
+			                   "\"--no-pkg-deps\", \"--no-launcher\"")
+			) ; end define with-no-launcher-cache-setup
+			(define without-stale-block-no-launcher
+			  (regexp-replace* #px"(?m:^    end(?:, \"--no-launcher\")+$)"
+			                   with-no-launcher-cache-setup
+			                   "    end")
+			) ; end define without-stale-block-no-launcher
+			(write-text-file!
+			 formula-path
+			 without-stale-block-no-launcher)
     (ensure-formula-docs-test! c formula-path)
     (validate-formula-file! c formula-path)
   ) ; end begin set-formula-source!
@@ -7423,10 +7475,27 @@ information.
     !Dir[\"#{{rhombus_demod_cache}}/**/compiled/*.zo\"].empty?
   end
 
+  def with_setup_bootstrap_config
+    require \"tmpdir\"
+
+    Dir.mktmpdir(\"racket-setup-bootstrap-config\") do |dir|
+      config_dir = Pathname(dir)
+      content = racket_config.read.gsub(/\\s*\\(compiled-file-cache-roots\\s+\\.\\s+\\([^)]*\\)\\)/, \"\")
+      unless content.include?(\"compiled-file-system-cache-root\")
+        raise \"could not prepare Racket setup bootstrap config\"
+      end
+
+      (config_dir/\"config.rktd\").write content
+      yield config_dir
+    end
+  end
+
   def setup_system_cache
     system_cache_root.mkpath
-    system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
-           \"-j\", \"1\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\"
+    with_setup_bootstrap_config do |config_dir|
+      system bin/\"racket\", \"-U\", \"-G\", config_dir.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
+             \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\"
+    end
     system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"rhombus\",
            \"-l-\", \"rhombus/run.rhm\", \"--version\"
     system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"rhombus\",
@@ -10249,10 +10318,12 @@ end
 	        (check-true (string-contains? content "if build.bottle?"))
 	        (check-true (string-contains? content "preserve_compiled_cache_dir?"))
 	        (check-true (string-contains? content "system_cache_populated?"))
-	        (check-true (string-contains? content "rhombus_demod_cache_populated?"))
-	        (check-true (string-contains? content "package-racket-rhombus-cache"))
-	        (check-true (string-contains? content "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""))
-			        (check-true (string-contains? content "system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"-j\", \"1\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\""))
+		        (check-true (string-contains? content "rhombus_demod_cache_populated?"))
+		        (check-true (string-contains? content "package-racket-rhombus-cache"))
+		        (check-true (string-contains? content "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""))
+		        (check-true (string-contains? content "with_setup_bootstrap_config"))
+		        (check-true (string-contains? content "could not prepare Racket setup bootstrap config"))
+				        (check-true (string-contains? content "system bin/\"racket\", \"-U\", \"-G\", config_dir.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n             \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\""))
 	        (check-true (string-contains? content "\"-l-\", \"rhombus/run.rhm\", \"--version\""))
         (check-false (string-contains? content "var/cache/racket/compiled#{prefix}/share"))
         (check-false (string-contains? content "#{var}/cache/racket/compiled"))
@@ -10292,9 +10363,11 @@ end
 		                                 "racket_config.atomic_write content"
 		                                 "if build.bottle?"
 		                                 "system_cache_populated?"
-		                                 "rhombus_demod_cache_populated?"
-		                                 "package-racket-rhombus-cache"
-				                                 "system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n           \"-j\", \"1\", \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\""
+			                                 "rhombus_demod_cache_populated?"
+			                                 "package-racket-rhombus-cache"
+			                                 "with_setup_bootstrap_config"
+			                                 "could not prepare Racket setup bootstrap config"
+					                                 "system bin/\"racket\", \"-U\", \"-G\", config_dir.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n             \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\""
 		                                 "system_cache_root.mkpath"
 		                                 "system bin/\"racket\", \"-U\", \"-R\", system_cache_root.to_s, \"-N\", \"rhombus\""
 		                                 "\"-l-\", \"rhombus/run.rhm\", \"--version\""
