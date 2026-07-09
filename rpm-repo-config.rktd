@@ -1,6 +1,6 @@
 #hash((rpm-repo-root . "/Users/cutiedeng/Y2026/M06/D22/rpm-racket")
       (rpm-repo-id . "cutiedeng-racket")
       (rpm-repo-name . "CutieDeng Racket RPM Repository")
-      (rpm-repo-baseurl . "https://raw.githubusercontent.com/CutieDeng/rpm-racket/main/repo/$basearch")
+      (rpm-repo-baseurl . "https://cutiedeng.github.io/rpm-racket/repo")
       (rpm-repo-enabled . #t)
       (rpm-repo-gpgcheck . #f))

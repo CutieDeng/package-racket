@@ -126,28 +126,29 @@ workflow YAML by hand.
 `package-config.rktd` contains the explicit package-manager version:
 
 ```racket
-#hash((source-version . "9.2.1")
-      (formula-version . "9.2.1.5"))
+#hash((source-version . "9.2.2")
+      (formula-version . "9.2.2.7"))
 ```
 
 `formula-version` drives the Homebrew Formula `version`, the Homebrew bottle
 version, and the direct `apt` target `.deb` package version and filename. Bump
-it to a four-level value such as `9.2.1.5` when those package managers need
-users to see an update even though the Racket runtime still reports `9.2.1`.
+it to a four-level value such as `9.2.2.7` when those package managers need
+users to see an update even though the Racket runtime still reports `9.2.2`.
 
 The direct `apt` target produces filenames such as
-`racket9_9.2.1.5-1_amd64.deb`, where `1` is `--release`. The generated
+`racket9_9.2.2.7-1_amd64.deb`, where `1` is `--release`. The generated
 `deb-racket` scripts use the same source-version plus release model as RPM:
 the Debian upstream version stays equal to `source-version`, while the Debian
 revision is derived from explicit `deb-release` and `deb-system` fields, such
-as `racket9_9.2.1-5.ubuntu2404_amd64.deb`.
+as `racket9_9.2.2-7.ubuntu2404_amd64.deb`.
 
 RPM uses the same release-oriented model. The RPM `Version:` field stays equal
 to `source-version`, while the RPM `Release:` field is derived from explicit
-`--rpm-release` and `--rpm-system` fields. For example, source version `9.2.1`
-with `--rpm-release 5` and `--rpm-system el9` produces
-`racket9-9.2.1-5.el9.<arch>.rpm`, not
-`racket9-9.2.1.5-5.<arch>.rpm`.
+`--rpm-release`, cache mode, and `--rpm-system` fields. For example, source
+version `9.2.2` with `--rpm-release 7` and `--rpm-system el9` produces
+`racket9-9.2.2-7.2.cached.el9.<arch>.rpm` or
+`racket9-9.2.2-7.1.postinstall.el9.<arch>.rpm`, not a package whose RPM
+`Version:` is `9.2.2.7`.
 
 The Racket source/runtime version is read from
 `racket/src/version/racket_version.h` in `--racket-root`, and must match
@@ -419,7 +420,7 @@ chmod 600 secret/ghtoken.rktd
 The stable Debian package release settings live in `apt-release-config.rktd`.
 The release tag is configured there, while the asset defaults to the `.deb`
 basename generated from `formula-version`, `--release`, and `--deb-arch`, for
-example `racket9_9.2.1.5-1_amd64.deb`.
+example `racket9_9.2.2.7-1_amd64.deb`.
 
 For `brew`, `--formula` means the final tap formula path. When omitted, it is
 derived from the explicit `--homebrew-tap` as `Formula/racket@9.rb`.
@@ -548,7 +549,7 @@ The default DEB repository config is `deb-repo-config.rktd`; it explicitly sets
 `deb-repo-root` to `/Users/cutiedeng/Y2026/M06/D23/deb-racket`, plus the
 default `deb-system`, `deb-release`, and `deb-arch` used for local scaffold
 validation. With `source-version` `9.2.1`, `deb-release` `5`, and `deb-system`
-`ubuntu2404`, the generated Debian package version is `9.2.1-5.ubuntu2404`.
+`ubuntu2404`, the generated Debian package version is `9.2.2-7.ubuntu2404`.
 Supported generated DEB systems are `debian12` and `ubuntu2404`.
 Supported DEB architecture spellings are `amd64`, `x86_64`, `x64`, `arm64`,
 and `aarch64`; they normalize to Debian's `amd64` or `arm64`.
@@ -600,7 +601,7 @@ racket package-racket.rkt \
   --target rpm-spec \
   --prefix /usr \
   --rpm-system openeuler2403 \
-  --rpm-release 3 \
+  --rpm-release 7 \
   --rpm-arch arm64 \
   --rpm-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-repo-config.rktd
 ```
@@ -623,38 +624,56 @@ racket package-racket.rkt \
   --target rpm-ci \
   --prefix /usr \
   --rpm-system openeuler2403 \
-  --rpm-release 3 \
+  --rpm-release 7 \
   --rpm-arch arm64 \
   --rpm-repo-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-repo-config.rktd \
   --rpm-ci-config /Users/cutiedeng/Y2026/M06/D21/package-racket/rpm-ci-config.rktd
 ```
 
-`rpm-spec` writes only `.gitignore`, README, `SPECS/`, `SOURCES/`, and
-`scripts/` in the configured `rpm-racket` root. It must not create `repo/` or
-`racket9.repo`.
+`rpm-spec` writes `.gitignore`, README, `SPECS/racket9-cached.spec`,
+`SPECS/racket9-postinstall.spec`, `SOURCES/`, `scripts/`, and the
+system-specific `racket9-SYSTEM.repo` client configurations. It preserves
+channel metadata already maintained below `repo/`.
 
 `rpm-ci` writes only `.github/workflows/build-rpm.yml` in the same
 `rpm-racket` root. The matrix lives in `rpm-ci-config.rktd`; each target
 explicitly names `rpm-system`, `rpm-release`, `rpm-arch`, GitHub runner,
 container image, dependency package list, and job count. The generated workflow
 runs on push to `main` and manual dispatch, expands every target into
-`postinstall` and `cached` cache modes, installs and uninstalls each package
-inside its target container, uploads Actions artifacts, then publishes the RPM
-files to the configured GitHub Release with `--clobber`.
+`cached` and `postinstall` cache modes, exercises fresh installs plus
+same-name upgrade/downgrade/reinstall/erase transactions, rebuilds representative
+SRPMs, uploads Actions artifacts, publishes an immutable exact RPM asset set,
+builds system-isolated repository metadata, and deploys that metadata to
+GitHub Pages. RPM payloads remain Release assets; Pages contains metadata only.
+Set the `rpm-racket` repository's Pages source to **GitHub Actions** before the
+first deployment.
 
-The `postinstall` mode emits the normal `racket9` package and builds the system
-compiled cache after install. The `cached` mode emits `racket9-cached`, embeds
-the generated system compiled cache in the package payload, and skips install
-time cache generation.
+Both modes have RPM `Name: racket9`. Their distinct Release values are
+`BASE.2.cached.SYSTEM` and `BASE.1.postinstall.SYSTEM`; cached is the default
+channel and postinstall is optional. The cached package owns an immutable,
+versioned cache under `/usr/lib/racket/VERSION/compiled-cache`. The
+postinstall package builds a mutable, versioned cache under
+`/var/cache/racket/VERSION/compiled` in `%posttrans`.
 
-When writing `SPECS/racket9.spec`, `package-racket` resolves the `Source0`
+The generated repository layout is `repo/cached/SYSTEM/$basearch` and
+`repo/postinstall/SYSTEM/$basearch`. Install only the matching
+`racket9-SYSTEM.repo`; it enables cached and disables postinstall by default.
+After changing the enabled channel, converge with:
+
+```sh
+dnf --refresh distro-sync racket9
+```
+
+When writing the two concrete specs, `package-racket` resolves the `Source0`
 sha256 in this order:
 
-- use the local `artifacts/racket-minimal-9.2.1-src.tgz` when it was just built;
+- use the local `artifacts/racket-minimal-9.2.2-src.tgz` when it was just built;
 - otherwise read the GitHub Release asset digest for the generated `Source0`;
 - otherwise download `Source0` into `.build/rpm-source/` and calculate sha256.
 
-That sha is written into the generated `.spec` as `%global source_sha256`.
+That sha is written into both generated specs as `%global source_sha256`.
+The build scripts materialize mode, release, system, and prefix before
+`rpmbuild -ba`, so rebuilding either SRPM does not require hidden macros.
 
 Generate or refresh the Windows portable CI workflow:
 

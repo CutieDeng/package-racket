@@ -2298,11 +2298,43 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
 (define (rpm-version c)
   (cfg-source-version c))
 
-(define (rpm-release c)
-  (rpm-full-release (cfg-rpm-release c) (cfg-rpm-system c)))
+(define rpm-cache-modes
+  '("cached" "postinstall"))
 
-(define (rpm-spec-default-macro name value)
-  (string-append "%{!?" name ":%global " name " " value "}"))
+(define rpm-default-cache-mode
+  "cached")
+
+(define (validate-rpm-cache-mode who cache-mode)
+  (unless (member cache-mode rpm-cache-modes)
+    (raise-arguments-error who
+                           "unsupported RPM cache mode"
+                           "cache mode" cache-mode
+                           "supported modes" rpm-cache-modes))
+  cache-mode)
+
+(define (rpm-cache-mode-rank cache-mode)
+  (begin
+    (validate-rpm-cache-mode 'rpm-cache-mode-rank cache-mode)
+    (if (string=? cache-mode "cached") "2" "1")
+  ) ; end begin rpm cache mode rank
+)
+
+(define (rpm-cache-mode-capability c cache-mode)
+  (begin
+    (validate-rpm-cache-mode 'rpm-cache-mode-capability cache-mode)
+    f"{(cfg-package-name c)}(cache-mode-{cache-mode})"
+  ) ; end begin rpm cache mode capability
+)
+
+(define (rpm-flavor-release c cache-mode)
+  (begin
+    (validate-rpm-cache-mode 'rpm-flavor-release cache-mode)
+    f"{(cfg-rpm-release c)}.{(rpm-cache-mode-rank cache-mode)}.{cache-mode}.{(cfg-rpm-system c)}"
+  ) ; end begin rpm flavor release
+)
+
+(define (rpm-release c [cache-mode rpm-default-cache-mode])
+  (rpm-flavor-release c cache-mode))
 
 (define (rpm-shared-directory-shell-pattern)
   (string-join rpm-shared-directories "|"))
@@ -2319,34 +2351,40 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
 ) ; end define rpm-source-sha256/local
 
 (define (rpm-spec-content c [source-url (formula-source-url c)]
-                          [source-sha256 (rpm-source-sha256/local c)])
-  f"%{{!?package_name:%global package_name {(cfg-package-name c)}}}
-%{{!?cache_mode:%global cache_mode postinstall}}
-%global base_package_name {(cfg-package-name c)}
-%global cached_package_name {(cached-package-name (cfg-package-name c))}
-Name: %{{package_name}}
+                          [source-sha256 (rpm-source-sha256/local c)]
+                          [cache-mode rpm-default-cache-mode])
+  (begin
+    (validate-rpm-cache-mode 'rpm-spec-content cache-mode)
+    f"%global cache_mode {cache-mode}
+Name: {(cfg-package-name c)}
 Version: {(rpm-version c)}
-{(rpm-spec-default-macro "package_system" (cfg-rpm-system c))}
-{(rpm-spec-default-macro "package_release" (cfg-rpm-release c))}
-Release: %{{package_release}}.%{{package_system}}
+%global package_system {(cfg-rpm-system c)}
+%global package_release {(cfg-rpm-release c)}
+Release: %{{package_release}}.{(rpm-cache-mode-rank cache-mode)}.{cache-mode}.%{{package_system}}
 Summary: {(cfg-summary c)}
 License: {(cfg-license c)}
 URL: {(cfg-url c)}
 Source0: {source-url}
-AutoReqProv: no
+BuildRequires: gcc
+BuildRequires: libffi-devel
+BuildRequires: make
+BuildRequires: ncurses-devel
+BuildRequires: openssl-devel
+BuildRequires: perl
+BuildRequires: sqlite-devel
+BuildRequires: zlib-devel
 Requires: libedit
-%if \"%{{cache_mode}}\" == \"cached\"
-Provides: %{{base_package_name}} = %{{version}}-%{{release}}
-Conflicts: %{{base_package_name}}
-%else
-Conflicts: %{{cached_package_name}}
-%endif
+Provides: {(rpm-cache-mode-capability c cache-mode)} = %{{version}}-%{{release}}
+# Bounded migration from the previously published split-name cached package.
+Obsoletes: {(cached-package-name (cfg-package-name c))} < %{{version}}-%{{package_release}}
 # Racket CS stores its boot image in the .rackboot ELF section. RPM debuginfo
 # extraction removes that section on openEuler, so the package must keep debug
 # data in the main executables.
 %global debug_package %{{nil}}
 %global __brp_compress %{{nil}}
 %global package_prefix {(cfg-prefix c)}
+%global immutable_cache_root %{{package_prefix}}/lib/racket/%{{version}}/compiled-cache
+%global dynamic_cache_root /var/cache/racket/%{{version}}/compiled
 %global source_sha256 {source-sha256}
 
 %description
@@ -2370,7 +2408,7 @@ fi
 %setup -q -n racket-{(cfg-source-version c)}
 
 %build
-sed -i 's|))$|) (default-scope . \"installation\") (compiled-file-cache-roots . (user system)) (compiled-file-system-cache-root . \"/var/cache/racket/compiled\"))|' etc/config.rktd
+sed -i 's|))$|) (default-scope . \"installation\") (compiled-file-cache-roots . (user system \"%{{immutable_cache_root}}\")) (compiled-file-system-cache-root . \"%{{dynamic_cache_root}}\"))|' etc/config.rktd
 sed -i 's/\"1[.]1\"/\"3\"/g' collects/openssl/libssl.rkt collects/openssl/libcrypto.rkt
 cd src
 ./configure \\
@@ -2392,10 +2430,9 @@ find \"%{{buildroot}}\" -type d -name compiled ! -path '*/info-domain/compiled' 
 %if \"%{{cache_mode}}\" == \"cached\"
 config_dir=\"%{{buildroot}}%{{_sysconfdir}}/racket\"
 config_file=\"$config_dir/config.rktd\"
+config_backup=\"$config_file.package-racket-final\"
 runtime_config_dir=\"%{{_sysconfdir}}/racket\"
-runtime_cache_parent=\"/var/cache/racket\"
-runtime_cache_root=\"/var/cache/racket/compiled\"
-staged_cache_parent=\"%{{buildroot}}$runtime_cache_parent\"
+runtime_cache_root=\"%{{immutable_cache_root}}\"
 staged_cache_root=\"%{{buildroot}}$runtime_cache_root\"
 racket_bin=\"%{{buildroot}}%{{package_prefix}}/bin/racket\"
 runtime_share_dir=\"%{{package_prefix}}/share/racket\"
@@ -2414,6 +2451,12 @@ cleanup_runtime_links() {{
     done
   fi
 }}
+cleanup_staging() {{
+  cleanup_runtime_links
+  if [ -f \"$config_backup\" ]; then
+    mv -f \"$config_backup\" \"$config_file\"
+  fi
+}}
 add_runtime_link() {{
   runtime_link_target=\"$1\"
   runtime_link_path=\"$2\"
@@ -2426,13 +2469,15 @@ add_runtime_link() {{
   runtime_links=\"$runtime_link_path
 $runtime_links\"
 }}
-mkdir -p \"$staged_cache_parent\"
-trap cleanup_runtime_links EXIT
+cp \"$config_file\" \"$config_backup\"
+sed -i 's|compiled-file-system-cache-root . \"%{{dynamic_cache_root}}\"|compiled-file-system-cache-root . \"%{{immutable_cache_root}}\"|' \"$config_file\"
+grep -F '(compiled-file-system-cache-root . \"%{{immutable_cache_root}}\")' \"$config_file\" >/dev/null || {{ echo \"failed to select immutable build cache root\" >&2; exit 1; }}
+mkdir -p \"$staged_cache_root\"
+trap cleanup_staging EXIT
 add_runtime_link \"%{{buildroot}}$runtime_share_dir\" \"$runtime_share_dir\"
 add_runtime_link \"%{{buildroot}}$runtime_lib_dir\" \"$runtime_lib_dir\"
 add_runtime_link \"$config_dir\" \"$runtime_config_dir\"
-add_runtime_link \"$staged_cache_parent\" \"$runtime_cache_parent\"
-if ! \"$racket_bin\" -X \"$runtime_collects_dir\" -G \"$runtime_config_dir\" -N raco -l- raco setup --system --no-user --reset-cache -D --no-pkg-deps --no-launcher; then
+if ! \"$racket_bin\" -X \"$runtime_collects_dir\" -G \"$runtime_config_dir\" -N raco -l- raco setup --system --no-user --reset-cache --unsafe-delete-all -D --no-pkg-deps --no-launcher; then
   exit 1
 fi
 if ! \"$racket_bin\" -U -R \"$runtime_cache_root\" -X \"$runtime_collects_dir\" -G \"$runtime_config_dir\" -N rhombus -l- rhombus/run.rhm --version >/dev/null; then
@@ -2441,9 +2486,9 @@ fi
 if ! \"$racket_bin\" -U -R \"$runtime_cache_root\" -X \"$runtime_collects_dir\" -G \"$runtime_config_dir\" -N rhombus -l- rhombus/run.rhm -e 'println(\"package-racket-rhombus-cache\")' >/dev/null; then
   exit 1
 fi
-rhombus_ephemeral_cache=\"%{{buildroot}}$runtime_share_dir/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod\"
-find \"$rhombus_ephemeral_cache\" -path '*/compiled/*.zo' -type f -print -quit | grep -q . || {{ echo \"staged Rhombus demod cache is empty: $rhombus_ephemeral_cache\" >&2; exit 1; }}
-cleanup_runtime_links
+rhombus_ephemeral_root=\"%{{buildroot}}$runtime_share_dir/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral\"
+rm -rf \"$rhombus_ephemeral_root\"
+cleanup_staging
 trap - EXIT
 move_cache_tree() {{
   from_source=\"$1\"
@@ -2464,12 +2509,13 @@ runtime_collects_dir=\"%{{package_prefix}}/share/racket/collects\"
 runtime_pkgs_dir=\"%{{package_prefix}}/share/racket/pkgs\"
 move_cache_tree \"%{{buildroot}}$runtime_collects_dir\" \"$runtime_collects_dir\"
 move_cache_tree \"%{{buildroot}}$runtime_pkgs_dir\" \"$runtime_pkgs_dir\"
-rm -f \"%{{buildroot}}/var/cache/racket/racket-compiled-cache.log\"
+rm -f \"%{{buildroot}}%{{package_prefix}}/lib/racket/%{{version}}/racket-compiled-cache.log\"
 find \"$staged_cache_root\" -type d -empty -delete 2>/dev/null || :
 runtime_collects_cache=\"$staged_cache_root/${{runtime_collects_dir#/}}\"
 runtime_pkgs_cache=\"$staged_cache_root/${{runtime_pkgs_dir#/}}\"
 find \"$runtime_collects_cache\" -path '*/compiled/*.zo' -type f -print -quit | grep -q . || {{ echo \"runtime-keyed staged system compiled cache is empty: $runtime_collects_cache\" >&2; exit 1; }}
 find \"$runtime_pkgs_cache\" -path '*/compiled/*.zo' -type f -print -quit | grep -q . || {{ echo \"runtime-keyed staged package compiled cache is empty: $runtime_pkgs_cache\" >&2; exit 1; }}
+[ ! -e \"$rhombus_ephemeral_root\" ] || {{ echo \"Rhombus ephemeral cache must not be packaged: $rhombus_ephemeral_root\" >&2; exit 1; }}
 %endif
 
 manifest=\"%{{name}}.files\"
@@ -2493,8 +2539,10 @@ while IFS= read -r path; do
 done < \"$paths\"
 grep -Eq '^(%dir )?({(rpm-shared-directory-egrep-pattern)})$' \"$manifest\" && exit 1
 
-%if \"%{{cache_mode}}\" == \"postinstall\"
 %posttrans
+rm -rf /var/cache/racket/compiled
+rm -f /var/cache/racket/racket-compiled-cache.log
+%if \"%{{cache_mode}}\" == \"postinstall\"
 setup_jobs=
 if [ -r /etc/os-release ]; then
   . /etc/os-release
@@ -2503,82 +2551,91 @@ if [ -r /etc/os-release ]; then
   fi
 fi
 if [ -n \"$setup_jobs\" ]; then
-  raco setup $setup_jobs --system --no-user --reset-cache -D --no-pkg-deps
+  if ! %{{package_prefix}}/bin/raco setup $setup_jobs --system --no-user --reset-cache --unsafe-delete-all -D --no-pkg-deps --no-launcher; then
+    exit 1
+  fi
 else
-  raco setup --system --no-user --reset-cache -D --no-pkg-deps
+  if ! %{{package_prefix}}/bin/raco setup --system --no-user --reset-cache --unsafe-delete-all -D --no-pkg-deps --no-launcher; then
+    exit 1
+  fi
 fi
-compiled_cache_root=\"/var/cache/racket/compiled\"
+compiled_cache_root=\"%{{dynamic_cache_root}}\"
 mkdir -p \"$compiled_cache_root\"
 empty_home=$(mktemp -d)
-if ! HOME=\"$empty_home\" racket -U -R \"$compiled_cache_root\" -N rhombus -l- rhombus/run.rhm --version >/dev/null; then
+if ! HOME=\"$empty_home\" %{{package_prefix}}/bin/racket -U -R \"$compiled_cache_root\" -N rhombus -l- rhombus/run.rhm --version >/dev/null; then
   rm -rf \"$empty_home\"
   exit 1
 fi
-if ! HOME=\"$empty_home\" racket -U -R \"$compiled_cache_root\" -N rhombus -l- rhombus/run.rhm -e 'println(\"package-racket-rhombus-cache\")' >/dev/null; then
+if ! HOME=\"$empty_home\" %{{package_prefix}}/bin/racket -U -R \"$compiled_cache_root\" -N rhombus -l- rhombus/run.rhm -e 'println(\"package-racket-rhombus-cache\")' >/dev/null; then
   rm -rf \"$empty_home\"
   exit 1
 fi
 rm -rf \"$empty_home\"
+rm -rf %{{package_prefix}}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral
+rm -f \"/var/cache/racket/%{{version}}/racket-compiled-cache.log\"
+%else
+rm -rf \"%{{dynamic_cache_root}}\"
+rm -f \"/var/cache/racket/%{{version}}/racket-compiled-cache.log\"
+rm -rf %{{package_prefix}}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral
+find \"%{{immutable_cache_root}}\" -path '*/compiled/*.zo' -type f -print -quit | grep -q . || {{ echo \"packaged immutable cache is empty: %{{immutable_cache_root}}\" >&2; exit 1; }}
+[ ! -e %{{package_prefix}}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral ] || {{ echo \"Rhombus ephemeral cache must not be installed\" >&2; exit 1; }}
 %endif
-
-%if \"%{{cache_mode}}\" == \"postinstall\"
-%preun
-if [ \"$1\" = \"0\" ] && ! rpm -q --quiet %{{cached_package_name}} >/dev/null 2>&1 && command -v raco >/dev/null 2>&1; then
-  raco setup --system --delete-cache || :
-fi
-%endif
+exit 0
 
 %postun
-%if \"%{{cache_mode}}\" == \"cached\"
-other_package=\"%{{base_package_name}}\"
-%else
-other_package=\"%{{cached_package_name}}\"
-%endif
-if [ \"$1\" = \"0\" ] && ! rpm -q --quiet \"$other_package\" >/dev/null 2>&1; then
+if [ \"$1\" = \"0\" ]; then
   rm -rf /var/cache/racket/compiled
-  rm -rf %{{package_prefix}}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod
-  rmdir %{{package_prefix}}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral %{{package_prefix}}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled 2>/dev/null || :
+  rm -f /var/cache/racket/racket-compiled-cache.log
+  rm -rf \"%{{dynamic_cache_root}}\"
+  rm -f \"/var/cache/racket/%{{version}}/racket-compiled-cache.log\"
+  rmdir \"/var/cache/racket/%{{version}}\" /var/cache/racket 2>/dev/null || :
 fi
+exit 0
 
 %files -f %{{name}}.files
 %defattr(-,root,root,-)
-")
+") ; end begin rpm spec content
+) ; end define rpm-spec-content
 
 (define (write-rpm-spec! c spec-path [source-url (formula-source-url c)]
-                         [source-sha256 (resolve-rpm-source-sha256! c source-url)])
+                         [source-sha256 (resolve-rpm-source-sha256! c source-url)]
+                         [cache-mode rpm-default-cache-mode])
   (begin
-    (write-text-file! spec-path (rpm-spec-content c source-url source-sha256))
-    (validate-rpm-spec! c spec-path source-url)
+    (write-text-file! spec-path (rpm-spec-content c source-url source-sha256 cache-mode))
+    (validate-rpm-spec! c spec-path source-url cache-mode)
   ) ; end begin write-rpm-spec!
 ) ; end define write-rpm-spec!
 
-(define (validate-rpm-spec! c spec-path source-url)
+(define (validate-rpm-spec! c spec-path source-url [cache-mode rpm-default-cache-mode])
   (begin
+    (validate-rpm-cache-mode 'validate-rpm-spec! cache-mode)
     (assert-nonempty-file 'validate-rpm-spec! spec-path)
     (define content (file->string spec-path))
-    (for ([needle (in-list (list f"%{{!?package_name:%global package_name {(cfg-package-name c)}}}"
-                                 "%{!?cache_mode:%global cache_mode postinstall}"
-                                 f"%global base_package_name {(cfg-package-name c)}"
-                                 f"%global cached_package_name {(cached-package-name (cfg-package-name c))}"
-                                 "Name: %{package_name}"
+    (for ([needle (in-list (list f"%global cache_mode {cache-mode}"
+                                 f"Name: {(cfg-package-name c)}"
                                  f"Version: {(rpm-version c)}"
-                                 (rpm-spec-default-macro "package_system" (cfg-rpm-system c))
-                                 (rpm-spec-default-macro "package_release" (cfg-rpm-release c))
-                                 "Release: %{package_release}.%{package_system}"
+                                 f"%global package_system {(cfg-rpm-system c)}"
+                                 f"%global package_release {(cfg-rpm-release c)}"
+                                 f"Release: %{{package_release}}.{(rpm-cache-mode-rank cache-mode)}.{cache-mode}.%{{package_system}}"
                                  f"Source0: {source-url}"
+                                 "BuildRequires: gcc"
+                                 "BuildRequires: libffi-devel"
+                                 "BuildRequires: make"
+                                 "BuildRequires: openssl-devel"
                                  "Requires: libedit"
-                                 "%if \"%{cache_mode}\" == \"cached\""
-                                 "Provides: %{base_package_name} = %{version}-%{release}"
-                                 "Conflicts: %{base_package_name}"
-                                 "Conflicts: %{cached_package_name}"
+                                 f"Provides: {(rpm-cache-mode-capability c cache-mode)} = %{{version}}-%{{release}}"
+                                 f"Obsoletes: {(cached-package-name (cfg-package-name c))} < %{{version}}-%{{package_release}}"
                                  "%global __brp_compress %{nil}"
                                  "%global debug_package %{nil}"
                                  ".rackboot ELF section"
                                  "%global package_prefix"
+                                 "%global immutable_cache_root %{package_prefix}/lib/racket/%{version}/compiled-cache"
+                                 "%global dynamic_cache_root /var/cache/racket/%{version}/compiled"
                                  "%global source_sha256"
                                  "Source0 sha256 mismatch"
                                  "%setup -q -n racket-"
-                                 "compiled-file-cache-roots"
+                                 "compiled-file-cache-roots . (user system \"%{immutable_cache_root}\")"
+                                 "compiled-file-system-cache-root . \"%{dynamic_cache_root}\""
                                  "--enable-sharezo"
                                  "./configure"
                                  "make install DESTDIR=%{buildroot}"
@@ -2586,14 +2643,14 @@ fi
                                  "missing staged collects"
                                  "runtime_config_dir=\"%{_sysconfdir}/racket\""
                                  "add_runtime_link"
-	                                 "runtime staging link path already exists"
-	                                 "-X \"$runtime_collects_dir\" -G \"$runtime_config_dir\""
-	                                 "-U -R \"$runtime_cache_root\""
-	                                 "--no-launcher"
-	                                 "-N rhombus -l- rhombus/run.rhm --version"
-	                                 "racket -U -R \"$compiled_cache_root\""
-	                                 "package-racket-rhombus-cache"
-                                 "staged Rhombus demod cache"
+                                 "runtime staging link path already exists"
+                                 "-X \"$runtime_collects_dir\" -G \"$runtime_config_dir\""
+                                 "-U -R \"$runtime_cache_root\""
+                                 "--reset-cache --unsafe-delete-all"
+                                 "--no-launcher"
+                                 "-N rhombus -l- rhombus/run.rhm --version"
+                                 "package-racket-rhombus-cache"
+                                 "Rhombus ephemeral cache must not be packaged"
                                  "runtime_pkgs_dir"
                                  "move_cache_tree"
                                  "runtime-keyed staged system compiled cache"
@@ -2602,16 +2659,13 @@ fi
                                  "%posttrans"
                                  "/etc/os-release"
                                  "setup_jobs=\"-j 1\""
-                                 "raco setup --system --no-user --reset-cache -D --no-pkg-deps"
-                                 "%preun"
-                                 "raco setup --system --delete-cache"
+                                 "%{package_prefix}/bin/raco setup"
+                                 "packaged immutable cache is empty"
                                  "%postun"
-                                 "other_package="
-	                                 "rpm -q --quiet \"$other_package\" >/dev/null 2>&1"
-	                                 "rm -rf /var/cache/racket/compiled"
-	                                 "%{package_prefix}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod"
-	                                 "rmdir %{package_prefix}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral"
-	                                 "printf '%s %s\\n' '%%dir' \"$rel\" >> \"$manifest\""
+                                 "if [ \"$1\" = \"0\" ]; then"
+                                 "rm -rf \"%{dynamic_cache_root}\""
+                                 "rmdir \"/var/cache/racket/%{version}\" /var/cache/racket"
+                                 "printf '%s %s\\n' '%%dir' \"$rel\" >> \"$manifest\""
                                  "%files -f %{name}.files"))])
       (unless (string-contains? content needle)
         (raise-user-error 'validate-rpm-spec!
@@ -2626,18 +2680,32 @@ fi
       (raise-user-error 'validate-rpm-spec!
                         "generated RPM spec must not claim the shared /usr directory")
     ) ; end when owns /usr
+    (for ([forbidden (in-list (list "AutoReqProv: no"
+                                    "Conflicts:"
+                                    f"Provides: {(cached-package-name (cfg-package-name c))}"
+                                    "%preun"
+                                    "other_package="
+                                    "rpm -q --quiet"
+                                    "compiled-file-system-cache-root . \"/var/cache/racket/compiled\""
+                                    "compiled/ephemeral/demod"))])
+      (when (string-contains? content forbidden)
+        (raise-user-error 'validate-rpm-spec!
+                          f"generated RPM spec contains obsolete contract: {forbidden}")
+      ) ; end when forbidden contract present
+    ) ; end for forbidden contract
   ) ; end begin validate-rpm-spec!
 ) ; end define validate-rpm-spec!
 
-(define (validate-rpm! c rpm-path)
+(define (validate-rpm! c rpm-path [cache-mode rpm-default-cache-mode])
   (begin
+    (validate-rpm-cache-mode 'validate-rpm! cache-mode)
     (assert-nonempty-file 'validate-rpm! rpm-path)
     (define metadata
       (capture! 'validate-rpm! (cfg-rpm-bin c) (list "-qip" (clean-path-string rpm-path)))
     ) ; end define metadata
     (for ([needle (in-list (list f"Name        : {(cfg-package-name c)}"
                                  f"Version     : {(rpm-version c)}"
-                                 f"Release     : {(rpm-release c)}"
+                                 f"Release     : {(rpm-release c cache-mode)}"
                                  f"Architecture: {(cfg-rpm-arch c)}"))])
       (unless (string-contains? metadata needle)
         (raise-user-error 'validate-rpm!
@@ -2647,26 +2715,37 @@ fi
     (define scripts
       (capture! 'validate-rpm! (cfg-rpm-bin c) (list "-qp" "--scripts" (clean-path-string rpm-path)))
     ) ; end define scripts
-    (for ([needle (in-list (list "raco setup --system --no-user --reset-cache -D --no-pkg-deps"
-                                 "raco setup --system --delete-cache"
-                                 "rm -rf /var/cache/racket/compiled"))])
+    (for ([needle (in-list (list f"rm -rf \"/var/cache/racket/{(rpm-version c)}/compiled\""
+                                 "if [ \"$1\" = \"0\" ]"))])
       (unless (string-contains? scripts needle)
         (raise-user-error 'validate-rpm!
                           f"RPM scriptlets are missing: {needle}")
       ) ; end unless scripts contains needle
     ) ; end for scriptlet needle
-    (println/flush f"Validated .rpm: {(clean-path-string rpm-path)}")
+    (if (string=? cache-mode "postinstall")
+        (unless (string-contains? scripts "raco setup")
+          (raise-user-error 'validate-rpm! "postinstall RPM does not build the dynamic cache"))
+        (when (string-contains? scripts "raco setup")
+          (raise-user-error 'validate-rpm! "cached RPM unexpectedly builds the dynamic cache")))
+    (when (or (string-contains? scripts "rpm -q --quiet")
+              (string-contains? scripts "racket9-cached"))
+      (raise-user-error 'validate-rpm! "RPM scriptlets retain cross-package lifecycle logic"))
+    (println/flush f"Validated .rpm ({cache-mode}): {(clean-path-string rpm-path)}")
   ) ; end begin validate-rpm!
 ) ; end define validate-rpm!
 
-(define (rpm-package-name c)
-  f"{(cfg-package-name c)}-{(rpm-version c)}-{(rpm-release c)}.{(cfg-rpm-arch c)}.rpm")
+(define (rpm-package-name c [cache-mode rpm-default-cache-mode])
+  f"{(cfg-package-name c)}-{(rpm-version c)}-{(rpm-release c cache-mode)}.{(cfg-rpm-arch c)}.rpm")
 
-(define (rpm-package-path c)
-  (build-path (cfg-artifact-dir c) (rpm-package-name c)))
+(define (rpm-package-path c [cache-mode rpm-default-cache-mode])
+  (build-path (cfg-artifact-dir c) (rpm-package-name c cache-mode)))
 
-(define (rpm-build-root c)
-  (build-path (cfg-work-dir c) "rpm"))
+(define (rpm-build-root c [cache-mode #f])
+  (if cache-mode
+      (begin
+        (validate-rpm-cache-mode 'rpm-build-root cache-mode)
+        (build-path (cfg-work-dir c) "rpm" cache-mode))
+      (build-path (cfg-work-dir c) "rpm")))
 
 (define (rpm-build-source-path c rpm-root)
   (build-path rpm-root "SOURCES" (rpm-source-archive-name c)))
@@ -2739,10 +2818,10 @@ fi
       "<none>"
       (string-join (map clean-path-string paths) ", ")))
 
-(define (copy-built-rpm! c rpm-root)
+(define (copy-built-rpm! c rpm-root [cache-mode rpm-default-cache-mode])
   (begin
     (define rpms-dir (build-path rpm-root "RPMS"))
-    (define expected-name (rpm-package-name c))
+    (define expected-name (rpm-package-name c cache-mode))
     (define rpms
       (sort (find-files (lambda (p)
                           (and (file-exists? p)
@@ -2759,22 +2838,23 @@ fi
       (raise-user-error 'build-rpm!
                         f"expected exactly one rpmbuild output named {expected-name}; observed: {(rpm-path-list-summary rpms)}")
     ) ; end unless exactly one expected rpm
-    (define dest (rpm-package-path c))
+    (define dest (rpm-package-path c cache-mode))
     (copy-file (car matches) dest #t)
-    (validate-rpm! c dest)
+    (validate-rpm! c dest cache-mode)
     (println/flush f"RPM package: {(clean-path-string dest)}")
   ) ; end begin copy-built-rpm!
 ) ; end define copy-built-rpm!
 
-(define (build-rpm! c)
+(define (build-one-rpm! c cache-mode)
   (begin
-    (define rpm-root (rpm-build-root c))
+    (validate-rpm-cache-mode 'build-one-rpm! cache-mode)
+    (define rpm-root (rpm-build-root c cache-mode))
     (define sources-dir (build-path rpm-root "SOURCES"))
     (define specs-dir (build-path rpm-root "SPECS"))
-    (define spec-path (build-path specs-dir f"{(cfg-package-name c)}.spec"))
+    (define spec-path (build-path specs-dir f"{(cfg-package-name c)}-{cache-mode}.spec"))
     (define source-url (formula-source-url c))
     (define source-path (rpm-build-source-path c rpm-root))
-    (define rpm-path (rpm-package-path c))
+    (define rpm-path (rpm-package-path c cache-mode))
     (println/flush f"RPM spec: {(clean-path-string spec-path)}")
     (println/flush f"RPM source archive: {source-url}")
     (println/flush f"RPM package: {(clean-path-string rpm-path)}")
@@ -2796,20 +2876,18 @@ fi
           (println/flush f"Would prepare RPM Source0: {(clean-path-string source-path)}")
         ) ; end begin dry-run rpm source
         (begin
-          (write-rpm-spec! c spec-path source-url source-sha256)
+          (write-rpm-spec! c spec-path source-url source-sha256 cache-mode)
           (prepare-rpm-source-archive! c source-path source-url source-sha256)
         ) ; end begin materialize rpm source
     ) ; end if dry-run write source
     (run! 'build-rpm!
           (cfg-rpmbuild-bin c)
-          (list "-bb"
+          (list "-ba"
                 "--target" (cfg-rpm-arch c)
                 "--define" f"_topdir {(clean-path-string rpm-root)}"
                 "--define" "_build_id_links none"
                 "--define" "_sysconfdir /etc"
                 "--define" f"package_prefix {(cfg-prefix c)}"
-                "--define" f"package_name {(cfg-package-name c)}"
-                "--define" "cache_mode postinstall"
                 "--define" f"package_system {(cfg-rpm-system c)}"
                 "--define" f"package_release {(cfg-rpm-release c)}"
                 "--define" f"_smp_mflags -j{(cfg-jobs c)}"
@@ -2817,8 +2895,14 @@ fi
           #:dry-run? (cfg-dry-run? c))
     (if (cfg-dry-run? c)
         (println/flush f"Would copy RPM artifact to: {(clean-path-string rpm-path)}")
-        (copy-built-rpm! c rpm-root))
-  ) ; end begin build-rpm!
+        (copy-built-rpm! c rpm-root cache-mode))
+  ) ; end begin build one rpm
+) ; end define build-one-rpm!
+
+(define (build-rpm! c)
+  (for ([cache-mode (in-list rpm-cache-modes)])
+    (build-one-rpm! c cache-mode)
+  ) ; end for rpm cache modes
 ) ; end define build-rpm!
 
 (define rpm-repo-supported-arches
@@ -2839,7 +2923,17 @@ fi
 (define (rpm-scripts-dir c)
   (build-path (cfg-rpm-repo-root c) "scripts"))
 
-(define (rpm-definition-spec-path c)
+(define (rpm-spec-file-name c cache-mode)
+  (begin
+    (validate-rpm-cache-mode 'rpm-spec-file-name cache-mode)
+    f"{(cfg-package-name c)}-{cache-mode}.spec"
+  ) ; end begin rpm spec file name
+)
+
+(define (rpm-definition-spec-path c [cache-mode rpm-default-cache-mode])
+  (build-path (rpm-spec-dir c) (rpm-spec-file-name c cache-mode)))
+
+(define (rpm-legacy-definition-spec-path c)
   (build-path (rpm-spec-dir c) f"{(cfg-package-name c)}.spec"))
 
 (define (rpm-definition-source-keep-path c)
@@ -2848,14 +2942,81 @@ fi
 (define (rpm-script-path c name)
   (build-path (rpm-scripts-dir c) name))
 
-(define (rpm-repo-arch-root c [arch (cfg-rpm-arch c)])
-  (build-path (cfg-rpm-repo-root c) "repo" arch))
+(define (rpm-repo-arch-root c [arch (cfg-rpm-arch c)]
+                            [cache-mode rpm-default-cache-mode]
+                            [system (cfg-rpm-system c)])
+  (begin
+    (validate-rpm-cache-mode 'rpm-repo-arch-root cache-mode)
+    (assert-rpm-system system)
+    (build-path (cfg-rpm-repo-root c) "repo" cache-mode system arch)
+  ) ; end begin rpm repo arch root
+)
 
-(define (rpm-repo-packages-dir c [arch (cfg-rpm-arch c)])
-  (build-path (rpm-repo-arch-root c arch) "Packages"))
+(define (rpm-repo-packages-dir c [arch (cfg-rpm-arch c)]
+                                [cache-mode rpm-default-cache-mode]
+                                [system (cfg-rpm-system c)])
+  (build-path (rpm-repo-arch-root c arch cache-mode system) "Packages"))
 
-(define (rpm-repository-file-path c)
-  (build-path (cfg-rpm-repo-root c) f"{(cfg-package-name c)}.repo"))
+(define (rpm-repository-file-name c system)
+  (begin
+    (assert-rpm-system system)
+    f"{(cfg-package-name c)}-{system}.repo"
+  ) ; end begin rpm repository file name
+)
+
+(define (rpm-repository-file-path c [system (cfg-rpm-system c)])
+  (build-path (cfg-rpm-repo-root c) (rpm-repository-file-name c system)))
+
+(define (rpm-channel-baseurl c cache-mode [system (cfg-rpm-system c)])
+  (begin
+    (validate-rpm-cache-mode 'rpm-channel-baseurl cache-mode)
+    (assert-rpm-system system)
+    (define baseurl (string-trim (cfg-rpm-repo-baseurl c) "/" #:left? #f))
+    (if (regexp-match? #px"/\\$basearch$" baseurl)
+        (regexp-replace #px"/\\$basearch$"
+                        baseurl
+                        f"/{cache-mode}/{system}/$basearch")
+        f"{baseurl}/{cache-mode}/{system}/$basearch")
+  ) ; end begin rpm channel baseurl
+)
+
+(define (rpm-repository-content c [system (cfg-rpm-system c)])
+  (assert-rpm-system system)
+  f"# {generated-rpm-repository-notice-marker}
+# Source of truth: package-racket
+
+[{(cfg-rpm-repo-id c)}-{system}-cached]
+name={(cfg-rpm-repo-name c)} ({system}, cached, default)
+baseurl={(rpm-channel-baseurl c "cached" system)}
+enabled={(if (cfg-rpm-repo-enabled? c) "1" "0")}
+gpgcheck={(if (cfg-rpm-repo-gpgcheck? c) "1" "0")}
+
+[{(cfg-rpm-repo-id c)}-{system}-postinstall]
+name={(cfg-rpm-repo-name c)} ({system}, postinstall, optional)
+baseurl={(rpm-channel-baseurl c "postinstall" system)}
+enabled=0
+gpgcheck={(if (cfg-rpm-repo-gpgcheck? c) "1" "0")}
+")
+
+(define (validate-rpm-repository-file! c system)
+  (begin
+    (assert-rpm-system system)
+    (define path (rpm-repository-file-path c system))
+    (assert-nonempty-file 'validate-rpm-repository-file! path)
+    (define content (file->string path))
+    (for ([needle (in-list (list generated-rpm-repository-notice-marker
+                                 f"[{(cfg-rpm-repo-id c)}-{system}-cached]"
+                                 f"baseurl={(rpm-channel-baseurl c "cached" system)}"
+                                 f"enabled={(if (cfg-rpm-repo-enabled? c) "1" "0")}"
+                                 f"[{(cfg-rpm-repo-id c)}-{system}-postinstall]"
+                                 f"baseurl={(rpm-channel-baseurl c "postinstall" system)}"
+                                 "enabled=0"))])
+      (unless (string-contains? content needle)
+        (raise-user-error 'validate-rpm-repository-file!
+                          f"generated RPM repository file is missing: {needle}"))
+    ) ; end for repo file needle
+  ) ; end begin validate rpm repository file
+) ; end define validate-rpm-repository-file!
 
 (define (rpm-repo-readme-path c)
   (build-path (cfg-rpm-repo-root c) "README.md"))
@@ -2868,20 +3029,27 @@ fi
 
 {generated-rpm-repo-notice-marker}
 
-This repository is the RPM SPEC and build-script repository generated by
-`package-racket`. It is not an RPM artifact repository. Treat `SPECS/`,
-`SOURCES/`, `scripts/`, `.github/workflows/`, and `README.md` as outputs from
-`package-racket`; do not hand-edit them for production changes. Change the
-package-racket configuration and regenerate instead.
+This repository is the generated RPM packaging and two-channel repository.
+Treat `SPECS/`, `SOURCES/`, `scripts/`, `.github/workflows/`,
+`{(cfg-package-name c)}-SYSTEM.repo`, and `README.md` as outputs from
+`package-racket`; do not hand-edit them for production changes. The
+`rpm-repo` target maintains system-isolated trees below `repo/cached/` and
+`repo/postinstall/`.
 
-The generated build script supports two cache modes: `postinstall` builds the
-default `{(cfg-package-name c)}` package and generates the system compiled cache
-during package installation; `cached` builds `{(cached-package-name (cfg-package-name c))}`
-and embeds the system compiled cache in the RPM payload.
+Both cache modes use the RPM package name `{(cfg-package-name c)}`. `cached` is
+the default channel and embeds a versioned immutable compiled cache;
+`postinstall` is the optional channel and builds a versioned dynamic cache in
+`%posttrans`. Their Release values are ordered and distinct:
+`RELEASE.2.cached.SYSTEM` and `RELEASE.1.postinstall.SYSTEM`.
+Both carry a bounded `Obsoletes: {(cached-package-name (cfg-package-name c))}`
+rule so installations of the old split-name cached package migrate in one
+transaction; no cross-name lifecycle checks remain in scriptlets.
 
 ## Layout
 
-- `SPECS/{(cfg-package-name c)}.spec`: RPM build definition.
+- `SPECS/{(rpm-spec-file-name c "cached")}`: concrete cached build definition.
+- `SPECS/{(rpm-spec-file-name c "postinstall")}`: concrete postinstall build
+  definition.
 - `SOURCES/.gitkeep`: source placeholder; build scripts copy or download the
   stable source archive into their explicit work directory.
 - `scripts/rpm-common.sh`: shared safety checks and staging helpers.
@@ -2890,8 +3058,16 @@ and embeds the system compiled cache in the RPM payload.
   archive.
 - `scripts/verify-rpm.sh`: validates RPM name, metadata, arch, and payload
   ownership boundaries.
+- `{(cfg-package-name c)}-SYSTEM.repo`: one client file per supported RPM
+  system; each enables cached by default and leaves postinstall disabled.
+- `repo/cached/SYSTEM/$basearch`: default cached metadata and packages.
+- `repo/postinstall/SYSTEM/$basearch`: optional postinstall metadata and
+  packages. System isolation prevents DNF from comparing incompatible distro
+  builds as upgrade candidates.
 - `.github/workflows/build-rpm.yml`: builds configured RPM targets with GitHub
-  Actions and uploads release assets after every target succeeds.
+  Actions, uploads immutable release assets, and deploys metadata-only channel
+  repositories through GitHub Pages. Configure the repository's Pages source
+  to `GitHub Actions` before the first deployment.
 
 ## Regenerate
 
@@ -2917,6 +3093,20 @@ racket package-racket.rkt \\
   --rpm-ci-config {(clean-path-string (cfg-rpm-ci-config c))}
 ```
 
+On a supported Linux builder, build both flavors and update both repository
+channels:
+
+```sh
+racket package-racket.rkt \\
+  --target rpm \\
+  --target rpm-repo \\
+  --prefix /usr \\
+  --rpm-system {(cfg-rpm-system c)} \\
+  --rpm-release {(cfg-rpm-release c)} \\
+  --rpm-arch arm64 \\
+  --rpm-repo-config {(clean-path-string (cfg-rpm-repo-config c))}
+```
+
 ## Build
 
 Build a binary RPM on a target Linux host from the generated GitHub Release
@@ -2929,7 +3119,7 @@ scripts/build-rpm.sh \\
   --rpm-system {(cfg-rpm-system c)} \\
   --rpm-release {(cfg-rpm-release c)} \\
   --rpm-arch arm64 \\
-  --cache-mode postinstall \\
+  --cache-mode cached \\
   --prefix /usr
 ```
 
@@ -2943,7 +3133,7 @@ scripts/build-rpm.sh \\
   --rpm-system {(cfg-rpm-system c)} \\
   --rpm-release {(cfg-rpm-release c)} \\
   --rpm-arch arm64 \\
-  --cache-mode cached \\
+  --cache-mode postinstall \\
   --prefix /usr
 ```
 
@@ -2971,6 +3161,7 @@ scripts/build-srpm.sh \\
   --rpm-system {(cfg-rpm-system c)} \\
   --rpm-release {(cfg-rpm-release c)} \\
   --rpm-arch arm64 \\
+  --cache-mode cached \\
   --prefix /usr
 ```
 
@@ -2984,6 +3175,7 @@ scripts/build-srpm.sh \\
   --rpm-system {(cfg-rpm-system c)} \\
   --rpm-release {(cfg-rpm-release c)} \\
   --rpm-arch arm64 \\
+  --cache-mode postinstall \\
   --prefix /usr
 ```
 
@@ -2991,11 +3183,35 @@ Validate an existing RPM:
 
 ```sh
 scripts/verify-rpm.sh \\
-  --rpm /path/to/artifacts/{(cfg-package-name c)}-{(rpm-version c)}-{(rpm-release c)}.aarch64.rpm \\
+  --rpm /path/to/artifacts/{(cfg-package-name c)}-{(rpm-version c)}-{(rpm-release c "cached")}.aarch64.rpm \\
   --rpm-system {(cfg-rpm-system c)} \\
   --rpm-release {(cfg-rpm-release c)} \\
   --rpm-arch arm64 \\
-  --cache-mode postinstall
+  --cache-mode cached
+```
+
+## Select a channel
+
+Install only the matching `{(rpm-repository-file-name c (cfg-rpm-system c))}`
+into `/etc/yum.repos.d/`. Exactly one channel should be enabled. This
+one-shot command switches to the optional postinstall channel and converges the
+installed package:
+
+```sh
+dnf --disablerepo={(cfg-rpm-repo-id c)}-{(cfg-rpm-system c)}-cached \\
+    --enablerepo={(cfg-rpm-repo-id c)}-{(cfg-rpm-system c)}-postinstall \\
+    --refresh distro-sync {(cfg-package-name c)}
+```
+
+For a persistent switch, reverse the two `enabled` values in the installed
+repo file. Switch back by enabling cached, disabling postinstall, and running
+the same `dnf --refresh distro-sync` command.
+
+Inspect the installed identity and selected flavor:
+
+```sh
+rpm -q --qf '%{{NAME}} %{{VERSION}}-%{{RELEASE}}\\n' {(cfg-package-name c)}
+rpm -q --provides {(cfg-package-name c)} | grep 'cache-mode-'
 ```
 ")
 
@@ -3008,6 +3224,9 @@ scripts/verify-rpm.sh \\
 .build/
 artifacts/
 *.rpm
+!repo/
+!repo/**/
+!repo/**/*.rpm
 ")
 
 (define (rpm-script-header name)
@@ -3021,19 +3240,16 @@ set -euo pipefail
 
 (define (rpm-common-script-content c [source-sha256 (rpm-source-sha256/local c)])
   f"{(rpm-script-header "rpm-common.sh")}BASE_PACKAGE_NAME={(shell-single-quoted (cfg-package-name c))}
-CACHED_PACKAGE_NAME={(shell-single-quoted (cached-package-name (cfg-package-name c)))}
 PACKAGE_NAME=\"$BASE_PACKAGE_NAME\"
 PACKAGE_VERSION={(shell-single-quoted (rpm-version c))}
 PACKAGE_SOURCE_VERSION={(shell-single-quoted (cfg-source-version c))}
 DEFAULT_RPM_SYSTEM={(shell-single-quoted (cfg-rpm-system c))}
 DEFAULT_RPM_RELEASE={(shell-single-quoted (cfg-rpm-release c))}
 DEFAULT_PREFIX={(shell-single-quoted (cfg-prefix c))}
-DEFAULT_CACHE_MODE=postinstall
+DEFAULT_CACHE_MODE=cached
 SOURCE_ARCHIVE_NAME={(shell-single-quoted (rpm-source-archive-name c))}
 DEFAULT_SOURCE_URL={(shell-single-quoted (formula-source-url c))}
 SOURCE_SHA256={(shell-single-quoted source-sha256)}
-SPEC_NAME={(shell-single-quoted (string-append (cfg-package-name c) ".spec"))}
-
 die() {{
   printf 'ERROR: %s\\n' \"$*\" >&2
   exit 1
@@ -3052,7 +3268,8 @@ repo_root_from_script() {{
 require_repo_root() {{
   local root=\"$1\"
   [ -d \"$root\" ] || die \"repository root does not exist: $root\"
-  [ -f \"$root/SPECS/$SPEC_NAME\" ] || die \"missing spec file: $root/SPECS/$SPEC_NAME\"
+  [ -f \"$root/SPECS/{(rpm-spec-file-name c "cached")}\" ] || die \"missing spec file: $root/SPECS/{(rpm-spec-file-name c "cached")}\"
+  [ -f \"$root/SPECS/{(rpm-spec-file-name c "postinstall")}\" ] || die \"missing spec file: $root/SPECS/{(rpm-spec-file-name c "postinstall")}\"
   [ -f \"$root/scripts/rpm-common.sh\" ] || die \"missing common script: $root/scripts/rpm-common.sh\"
 }}
 
@@ -3146,16 +3363,29 @@ validate_cache_mode() {{
 package_name_for_cache_mode() {{
   local mode=\"$1\"
   validate_cache_mode \"$mode\"
+  printf '%s\\n' \"$BASE_PACKAGE_NAME\"
+}}
+
+cache_mode_rank() {{
+  local mode=\"$1\"
+  validate_cache_mode \"$mode\"
   case \"$mode\" in
-    postinstall) printf '%s\\n' \"$BASE_PACKAGE_NAME\" ;;
-    cached) printf '%s\\n' \"$CACHED_PACKAGE_NAME\" ;;
+    postinstall) printf '1\\n' ;;
+    cached) printf '2\\n' ;;
   esac
+}}
+
+spec_name_for_cache_mode() {{
+  local mode=\"$1\"
+  validate_cache_mode \"$mode\"
+  printf '%s-%s.spec\\n' \"$BASE_PACKAGE_NAME\" \"$mode\"
 }}
 
 rpm_full_release() {{
   local release=\"$1\"
   local system=\"$2\"
-  printf '%s.%s\\n' \"$release\" \"$system\"
+  local mode=\"${{3:-$DEFAULT_CACHE_MODE}}\"
+  printf '%s.%s.%s.%s\\n' \"$release\" \"$(cache_mode_rank \"$mode\")\" \"$mode\" \"$system\"
 }}
 
 rpm_name_for_arch() {{
@@ -3165,13 +3395,35 @@ rpm_name_for_arch() {{
   local mode=\"${{4:-$DEFAULT_CACHE_MODE}}\"
   local package_name
   package_name=$(package_name_for_cache_mode \"$mode\")
-  printf '%s-%s-%s.%s.rpm\\n' \"$package_name\" \"$PACKAGE_VERSION\" \"$(rpm_full_release \"$release\" \"$system\")\" \"$arch\"
+  printf '%s-%s-%s.%s.rpm\\n' \"$package_name\" \"$PACKAGE_VERSION\" \"$(rpm_full_release \"$release\" \"$system\" \"$mode\")\" \"$arch\"
 }}
 
 srpm_name() {{
   local release=\"$1\"
   local system=\"$2\"
-  printf '%s-%s-%s.src.rpm\\n' \"$PACKAGE_NAME\" \"$PACKAGE_VERSION\" \"$(rpm_full_release \"$release\" \"$system\")\"
+  local mode=\"${{3:-$DEFAULT_CACHE_MODE}}\"
+  printf '%s-%s-%s.src.rpm\\n' \"$PACKAGE_NAME\" \"$PACKAGE_VERSION\" \"$(rpm_full_release \"$release\" \"$system\" \"$mode\")\"
+}}
+
+materialize_spec() {{
+  local source_spec=\"$1\"
+  local dest_spec=\"$2\"
+  local mode=\"$3\"
+  local release=\"$4\"
+  local system=\"$5\"
+  local prefix=\"$6\"
+  validate_cache_mode \"$mode\"
+  awk -v mode=\"$mode\" -v release=\"$release\" -v target_system=\"$system\" -v prefix=\"$prefix\" '
+$1 == \"%global\" && $2 == \"cache_mode\" {{ print \"%global cache_mode \" mode; next }}
+$1 == \"%global\" && $2 == \"package_release\" {{ print \"%global package_release \" release; next }}
+$1 == \"%global\" && $2 == \"package_system\" {{ print \"%global package_system \" target_system; next }}
+$1 == \"%global\" && $2 == \"package_prefix\" {{ print \"%global package_prefix \" prefix; next }}
+{{ print }}
+' \"$source_spec\" > \"$dest_spec\"
+  grep -Fx \"%global cache_mode $mode\" \"$dest_spec\" >/dev/null || die \"failed to materialize cache mode in spec\"
+  grep -Fx \"%global package_release $release\" \"$dest_spec\" >/dev/null || die \"failed to materialize release in spec\"
+  grep -Fx \"%global package_system $system\" \"$dest_spec\" >/dev/null || die \"failed to materialize system in spec\"
+  grep -Fx \"%global package_prefix $prefix\" \"$dest_spec\" >/dev/null || die \"failed to materialize prefix in spec\"
 }}
 
 reset_output_dir() {{
@@ -3267,7 +3519,7 @@ usage() {{
   cat <<'USAGE'
 Usage: scripts/build-rpm.sh --artifact-dir PATH --work-dir PATH --rpm-system SYSTEM --rpm-release RELEASE --rpm-arch ARCH [options]
 
-Build a binary RPM from SPECS/racket9.spec and a stable source archive. All
+Build a binary RPM and matching SRPM from the selected concrete spec. All
 mutable paths are named.
 
 Options:
@@ -3277,7 +3529,7 @@ Options:
   --work-dir PATH        Build work directory for rpmbuild.
   --rpm-system SYSTEM    el9, fc40, fc43, fc44, openeuler2203, or openeuler2403.
   --rpm-release RELEASE  Package release base, for example 1. The system suffix is appended separately.
-  --cache-mode MODE      postinstall or cached. Defaults to postinstall.
+  --cache-mode MODE      cached or postinstall. Defaults to cached.
   --prefix PATH          Install prefix inside the package. Defaults to generated /usr.
   --rpm-arch ARCH        x86_64, amd64, x64, aarch64, or arm64.
   --jobs N               Parallel jobs passed to rpmbuild through _smp_mflags.
@@ -3336,15 +3588,19 @@ if [ -n \"$SOURCE_ARCHIVE\" ] && [ \"$SOURCE_URL_EXPLICIT\" = 1 ]; then
 fi
 
 maybe_require_exe \"$DRY_RUN\" tar
+maybe_require_exe \"$DRY_RUN\" awk
 maybe_require_exe \"$DRY_RUN\" rpm
 maybe_require_exe \"$DRY_RUN\" rpmbuild
 
 RPMBUILD_ROOT=\"$WORK_DIR/rpmbuild\"
-SPEC_PATH=\"$RPMBUILD_ROOT/SPECS/$SPEC_NAME\"
+SOURCE_SPEC_NAME=$(spec_name_for_cache_mode \"$CACHE_MODE\")
+SPEC_PATH=\"$RPMBUILD_ROOT/SPECS/$BASE_PACKAGE_NAME.spec\"
 SOURCE_PATH=\"$RPMBUILD_ROOT/SOURCES/$SOURCE_ARCHIVE_NAME\"
-RPM_FULL_RELEASE=$(rpm_full_release \"$RPM_RELEASE\" \"$RPM_SYSTEM\")
+RPM_FULL_RELEASE=$(rpm_full_release \"$RPM_RELEASE\" \"$RPM_SYSTEM\" \"$CACHE_MODE\")
 RPM_NAME=$(rpm_name_for_arch \"$NORMALIZED_ARCH\" \"$RPM_RELEASE\" \"$RPM_SYSTEM\" \"$CACHE_MODE\")
 RPM_OUTPUT=\"$RPMBUILD_ROOT/RPMS/$NORMALIZED_ARCH/$RPM_NAME\"
+SRPM_NAME=$(srpm_name \"$RPM_RELEASE\" \"$RPM_SYSTEM\" \"$CACHE_MODE\")
+SRPM_OUTPUT=\"$RPMBUILD_ROOT/SRPMS/$SRPM_NAME\"
 
 printf 'Repository root: %s\\n' \"$REPO_ROOT\"
 printf 'RPM system: %s\\n' \"$RPM_SYSTEM\"
@@ -3357,32 +3613,24 @@ printf 'RPM output: %s\\n' \"$ARTIFACT_DIR/$RPM_NAME\"
 
 prepare_rpmbuild_tree \"$DRY_RUN\" \"$RPMBUILD_ROOT\"
 if [ \"$DRY_RUN\" = 0 ]; then
-  cp \"$REPO_ROOT/SPECS/$SPEC_NAME\" \"$SPEC_PATH\"
+  materialize_spec \"$REPO_ROOT/SPECS/$SOURCE_SPEC_NAME\" \"$SPEC_PATH\" \"$CACHE_MODE\" \"$RPM_RELEASE\" \"$RPM_SYSTEM\" \"$PREFIX\"
 fi
 prepare_source_archive \"$DRY_RUN\" \"$SOURCE_ARCHIVE\" \"$SOURCE_URL\" \"$SOURCE_PATH\"
 if [ \"${{#RPMBUILD_ARGS[@]}}\" -gt 0 ]; then
-  run_cmd \"$DRY_RUN\" rpmbuild -bb --target \"$NORMALIZED_ARCH\" \\
+  run_cmd \"$DRY_RUN\" rpmbuild -ba --target \"$NORMALIZED_ARCH\" \\
     --define \"_topdir $RPMBUILD_ROOT\" \\
     --define \"_build_id_links none\" \\
     --define \"_sysconfdir /etc\" \\
     --define \"package_prefix $PREFIX\" \\
-    --define \"package_name $RPM_PACKAGE_NAME\" \\
-    --define \"cache_mode $CACHE_MODE\" \\
-    --define \"package_system $RPM_SYSTEM\" \\
-    --define \"package_release $RPM_RELEASE\" \\
     --define \"_smp_mflags -j$JOBS\" \\
     \"${{RPMBUILD_ARGS[@]}}\" \\
     \"$SPEC_PATH\"
 else
-  run_cmd \"$DRY_RUN\" rpmbuild -bb --target \"$NORMALIZED_ARCH\" \\
+  run_cmd \"$DRY_RUN\" rpmbuild -ba --target \"$NORMALIZED_ARCH\" \\
     --define \"_topdir $RPMBUILD_ROOT\" \\
     --define \"_build_id_links none\" \\
     --define \"_sysconfdir /etc\" \\
     --define \"package_prefix $PREFIX\" \\
-    --define \"package_name $RPM_PACKAGE_NAME\" \\
-    --define \"cache_mode $CACHE_MODE\" \\
-    --define \"package_system $RPM_SYSTEM\" \\
-    --define \"package_release $RPM_RELEASE\" \\
     --define \"_smp_mflags -j$JOBS\" \\
     \"$SPEC_PATH\"
 fi
@@ -3391,9 +3639,10 @@ if [ \"$DRY_RUN\" = 1 ]; then
   printf 'Would copy RPM artifact: %s -> %s\\n' \"$RPM_OUTPUT\" \"$ARTIFACT_DIR/$RPM_NAME\"
 else
   require_nonempty_file \"$RPM_OUTPUT\"
+  require_nonempty_file \"$SRPM_OUTPUT\"
   mkdir -p \"$ARTIFACT_DIR\"
   cp \"$RPM_OUTPUT\" \"$ARTIFACT_DIR/$RPM_NAME\"
-  \"$REPO_ROOT/scripts/verify-rpm.sh\" --rpm \"$ARTIFACT_DIR/$RPM_NAME\" --rpm-system \"$RPM_SYSTEM\" --rpm-release \"$RPM_RELEASE\" --rpm-arch \"$NORMALIZED_ARCH\" --cache-mode \"$CACHE_MODE\"
+  \"$REPO_ROOT/scripts/verify-rpm.sh\" --rpm \"$ARTIFACT_DIR/$RPM_NAME\" --rpm-system \"$RPM_SYSTEM\" --rpm-release \"$RPM_RELEASE\" --rpm-arch \"$NORMALIZED_ARCH\" --cache-mode \"$CACHE_MODE\" --prefix \"$PREFIX\"
   printf 'RPM package: %s\\n' \"$ARTIFACT_DIR/$RPM_NAME\"
 fi
 ")
@@ -3406,7 +3655,7 @@ usage() {{
   cat <<'USAGE'
 Usage: scripts/build-srpm.sh --artifact-dir PATH --work-dir PATH --rpm-system SYSTEM --rpm-release RELEASE --rpm-arch ARCH [options]
 
-Build a source RPM from SPECS/racket9.spec and a stable source archive.
+Build a source RPM from the selected concrete flavor spec.
 
 Options:
   --source-archive PATH  Local {(rpm-source-archive-name c)} to copy into rpmbuild.
@@ -3415,6 +3664,7 @@ Options:
   --work-dir PATH        Build work directory for rpmbuild.
   --rpm-system SYSTEM    el9, fc40, fc43, fc44, openeuler2203, or openeuler2403.
   --rpm-release RELEASE  Package release base, for example 1. The system suffix is appended separately.
+  --cache-mode MODE      cached or postinstall. Defaults to cached.
   --prefix PATH          Install prefix inside the package. Defaults to generated /usr.
   --rpm-arch ARCH        x86_64, amd64, x64, aarch64, or arm64.
   --jobs N               Parallel jobs recorded in generated build macros.
@@ -3434,6 +3684,7 @@ RPM_RELEASE=
 RPM_ARCH=
 JOBS=1
 PREFIX=\"$DEFAULT_PREFIX\"
+CACHE_MODE=\"$DEFAULT_CACHE_MODE\"
 RPMBUILD_ARGS=()
 
 while [ $# -gt 0 ]; do
@@ -3444,6 +3695,7 @@ while [ $# -gt 0 ]; do
     --work-dir) [ $# -ge 2 ] || usage_error \"missing value for --work-dir\"; WORK_DIR=\"$2\"; shift 2 ;;
     --rpm-system) [ $# -ge 2 ] || usage_error \"missing value for --rpm-system\"; RPM_SYSTEM=\"$2\"; shift 2 ;;
     --rpm-release) [ $# -ge 2 ] || usage_error \"missing value for --rpm-release\"; RPM_RELEASE=\"$2\"; shift 2 ;;
+    --cache-mode) [ $# -ge 2 ] || usage_error \"missing value for --cache-mode\"; CACHE_MODE=\"$2\"; shift 2 ;;
     --prefix) [ $# -ge 2 ] || usage_error \"missing value for --prefix\"; PREFIX=\"$2\"; shift 2 ;;
     --rpm-arch) [ $# -ge 2 ] || usage_error \"missing value for --rpm-arch\"; RPM_ARCH=\"$2\"; shift 2 ;;
     --jobs) [ $# -ge 2 ] || usage_error \"missing value for --jobs\"; JOBS=\"$2\"; shift 2 ;;
@@ -3463,31 +3715,35 @@ require_repo_root \"$REPO_ROOT\"
 [ -n \"$RPM_ARCH\" ] || usage_error \"--rpm-arch is required\"
 validate_rpm_system \"$RPM_SYSTEM\"
 validate_rpm_release \"$RPM_RELEASE\"
+validate_cache_mode \"$CACHE_MODE\"
 NORMALIZED_ARCH=$(normalize_arch \"$RPM_ARCH\")
 if [ -n \"$SOURCE_ARCHIVE\" ] && [ \"$SOURCE_URL_EXPLICIT\" = 1 ]; then
   usage_error \"use either --source-archive or --source-url, not both\"
 fi
 
 maybe_require_exe \"$DRY_RUN\" tar
+maybe_require_exe \"$DRY_RUN\" awk
 maybe_require_exe \"$DRY_RUN\" rpmbuild
 
 RPMBUILD_ROOT=\"$WORK_DIR/rpmbuild-srpm\"
-SPEC_PATH=\"$RPMBUILD_ROOT/SPECS/$SPEC_NAME\"
+SOURCE_SPEC_NAME=$(spec_name_for_cache_mode \"$CACHE_MODE\")
+SPEC_PATH=\"$RPMBUILD_ROOT/SPECS/$BASE_PACKAGE_NAME.spec\"
 SOURCE_PATH=\"$RPMBUILD_ROOT/SOURCES/$SOURCE_ARCHIVE_NAME\"
-RPM_FULL_RELEASE=$(rpm_full_release \"$RPM_RELEASE\" \"$RPM_SYSTEM\")
-SRPM_NAME=$(srpm_name \"$RPM_RELEASE\" \"$RPM_SYSTEM\")
+RPM_FULL_RELEASE=$(rpm_full_release \"$RPM_RELEASE\" \"$RPM_SYSTEM\" \"$CACHE_MODE\")
+SRPM_NAME=$(srpm_name \"$RPM_RELEASE\" \"$RPM_SYSTEM\" \"$CACHE_MODE\")
 SRPM_OUTPUT=\"$RPMBUILD_ROOT/SRPMS/$SRPM_NAME\"
 
 printf 'Repository root: %s\\n' \"$REPO_ROOT\"
 printf 'RPM system: %s\\n' \"$RPM_SYSTEM\"
 printf 'RPM release: %s\\n' \"$RPM_RELEASE\"
 printf 'RPM full release: %s\\n' \"$RPM_FULL_RELEASE\"
+printf 'RPM cache mode: %s\\n' \"$CACHE_MODE\"
 printf 'Source archive: %s\\n' \"${{SOURCE_ARCHIVE:-$SOURCE_URL}}\"
 printf 'SRPM output: %s\\n' \"$ARTIFACT_DIR/$SRPM_NAME\"
 
 prepare_rpmbuild_tree \"$DRY_RUN\" \"$RPMBUILD_ROOT\"
 if [ \"$DRY_RUN\" = 0 ]; then
-  cp \"$REPO_ROOT/SPECS/$SPEC_NAME\" \"$SPEC_PATH\"
+  materialize_spec \"$REPO_ROOT/SPECS/$SOURCE_SPEC_NAME\" \"$SPEC_PATH\" \"$CACHE_MODE\" \"$RPM_RELEASE\" \"$RPM_SYSTEM\" \"$PREFIX\"
 fi
 prepare_source_archive \"$DRY_RUN\" \"$SOURCE_ARCHIVE\" \"$SOURCE_URL\" \"$SOURCE_PATH\"
 if [ \"${{#RPMBUILD_ARGS[@]}}\" -gt 0 ]; then
@@ -3495,8 +3751,6 @@ if [ \"${{#RPMBUILD_ARGS[@]}}\" -gt 0 ]; then
     --define \"_topdir $RPMBUILD_ROOT\" \\
     --define \"_sysconfdir /etc\" \\
     --define \"package_prefix $PREFIX\" \\
-    --define \"package_system $RPM_SYSTEM\" \\
-    --define \"package_release $RPM_RELEASE\" \\
     --define \"_smp_mflags -j$JOBS\" \\
     \"${{RPMBUILD_ARGS[@]}}\" \\
     \"$SPEC_PATH\"
@@ -3505,8 +3759,6 @@ else
     --define \"_topdir $RPMBUILD_ROOT\" \\
     --define \"_sysconfdir /etc\" \\
     --define \"package_prefix $PREFIX\" \\
-    --define \"package_system $RPM_SYSTEM\" \\
-    --define \"package_release $RPM_RELEASE\" \\
     --define \"_smp_mflags -j$JOBS\" \\
     \"$SPEC_PATH\"
 fi
@@ -3527,7 +3779,7 @@ source \"$SCRIPT_DIR/rpm-common.sh\"
 
 usage() {{
   cat <<'USAGE'
-Usage: scripts/verify-rpm.sh --rpm PATH --rpm-system SYSTEM --rpm-release RELEASE --rpm-arch ARCH [--cache-mode MODE] [--dry-run]
+Usage: scripts/verify-rpm.sh --rpm PATH --rpm-system SYSTEM --rpm-release RELEASE --rpm-arch ARCH [--cache-mode MODE] [--prefix PATH] [--dry-run]
 
 Validate RPM metadata and payload ownership boundaries.
 USAGE
@@ -3539,6 +3791,7 @@ RPM_SYSTEM=
 RPM_RELEASE=
 RPM_ARCH=
 CACHE_MODE=\"$DEFAULT_CACHE_MODE\"
+PREFIX=\"$DEFAULT_PREFIX\"
 
 while [ $# -gt 0 ]; do
   case \"$1\" in
@@ -3547,6 +3800,7 @@ while [ $# -gt 0 ]; do
     --rpm-release) [ $# -ge 2 ] || usage_error \"missing value for --rpm-release\"; RPM_RELEASE=\"$2\"; shift 2 ;;
     --rpm-arch) [ $# -ge 2 ] || usage_error \"missing value for --rpm-arch\"; RPM_ARCH=\"$2\"; shift 2 ;;
     --cache-mode) [ $# -ge 2 ] || usage_error \"missing value for --cache-mode\"; CACHE_MODE=\"$2\"; shift 2 ;;
+    --prefix) [ $# -ge 2 ] || usage_error \"missing value for --prefix\"; PREFIX=\"$2\"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --help) usage; exit 0 ;;
     *) usage_error \"unknown option: $1\" ;;
@@ -3562,9 +3816,10 @@ require_repo_root \"$REPO_ROOT\"
 validate_rpm_system \"$RPM_SYSTEM\"
 validate_rpm_release \"$RPM_RELEASE\"
 validate_cache_mode \"$CACHE_MODE\"
+require_absolute_path \"$PREFIX\" \"prefix\"
 NORMALIZED_ARCH=$(normalize_arch \"$RPM_ARCH\")
 RPM_PACKAGE_NAME=$(package_name_for_cache_mode \"$CACHE_MODE\")
-RPM_FULL_RELEASE=$(rpm_full_release \"$RPM_RELEASE\" \"$RPM_SYSTEM\")
+RPM_FULL_RELEASE=$(rpm_full_release \"$RPM_RELEASE\" \"$RPM_SYSTEM\" \"$CACHE_MODE\")
 EXPECTED_RPM=$(rpm_name_for_arch \"$NORMALIZED_ARCH\" \"$RPM_RELEASE\" \"$RPM_SYSTEM\" \"$CACHE_MODE\")
 
 if [ \"$DRY_RUN\" = 1 ]; then
@@ -3573,6 +3828,7 @@ if [ \"$DRY_RUN\" = 1 ]; then
   printf 'Would expect RPM release: %s\\n' \"$RPM_RELEASE\"
   printf 'Would expect RPM full release: %s\\n' \"$RPM_FULL_RELEASE\"
   printf 'Would expect RPM cache mode: %s\\n' \"$CACHE_MODE\"
+  printf 'Would expect RPM prefix: %s\\n' \"$PREFIX\"
   printf 'Would expect RPM package name: %s\\n' \"$RPM_PACKAGE_NAME\"
   printf 'Would expect RPM basename: %s\\n' \"$EXPECTED_RPM\"
   exit 0
@@ -3590,57 +3846,53 @@ printf '%s\\n' \"$metadata\" | grep -F \"Release     : $RPM_FULL_RELEASE\" >/dev
 printf '%s\\n' \"$metadata\" | grep -F \"Architecture: $NORMALIZED_ARCH\" >/dev/null || die \"RPM metadata missing expected architecture\"
 
 payload=$(rpm -qpl \"$RPM_PATH\")
-if printf '%s\\n' \"$payload\" | grep -Fx '/var/cache/racket/racket-compiled-cache.log' >/dev/null; then
+if printf '%s\\n' \"$payload\" | grep -E '/racket-compiled-cache[.]log$' >/dev/null; then
   die \"RPM payload unexpectedly includes racket compiled cache debug log\"
 fi
 if printf '%s\\n' \"$payload\" | grep -Eq '^/usr$|^/usr/(bin|lib|lib64|share)$'; then
   die \"RPM payload claims shared /usr parent directory\"
 fi
+immutable_cache_root=\"$PREFIX/lib/racket/$PACKAGE_VERSION/compiled-cache\"
 if [ \"$CACHE_MODE\" = postinstall ]; then
-  if printf '%s\\n' \"$payload\" | grep -E '^/var/cache/racket/compiled/.+[.]zo$' >/dev/null; then
-    die \"postinstall RPM payload unexpectedly includes system compiled cache .zo files\"
+  if printf '%s\\n' \"$payload\" | grep -F \"$immutable_cache_root/\" | grep -E '[.]zo$' >/dev/null; then
+    die \"postinstall RPM payload unexpectedly includes immutable compiled cache .zo files\"
   fi
 else
-  printf '%s\\n' \"$payload\" | grep -E '^/var/cache/racket/compiled/.+[.]zo$' >/dev/null \\
-    || die \"cached RPM payload does not include system compiled cache .zo files\"
-  runtime_collects_cache=\"/var/cache/racket/compiled/${{DEFAULT_PREFIX#/}}/share/racket/collects\"
+  printf '%s\\n' \"$payload\" | grep -F \"$immutable_cache_root/\" | grep -E '[.]zo$' >/dev/null \\
+    || die \"cached RPM payload does not include immutable compiled cache .zo files\"
+  runtime_collects_cache=\"$immutable_cache_root/${{PREFIX#/}}/share/racket/collects\"
   printf '%s\\n' \"$payload\" | grep -F \"$runtime_collects_cache/\" | grep -E '[.]zo$' >/dev/null \\
     || die \"cached RPM payload does not include runtime-keyed collects cache .zo files\"
-  runtime_pkgs_cache=\"/var/cache/racket/compiled/${{DEFAULT_PREFIX#/}}/share/racket/pkgs\"
+  runtime_pkgs_cache=\"$immutable_cache_root/${{PREFIX#/}}/share/racket/pkgs\"
   printf '%s\\n' \"$payload\" | grep -F \"$runtime_pkgs_cache/\" | grep -E '[.]zo$' >/dev/null \\
     || die \"cached RPM payload does not include runtime-keyed package cache .zo files\"
-  rhombus_ephemeral_cache=\"$DEFAULT_PREFIX/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod\"
-  printf '%s\\n' \"$payload\" | grep -F \"$rhombus_ephemeral_cache/\" | grep -E '[.]zo$' >/dev/null \\
-    || die \"cached RPM payload does not include Rhombus demod cache .zo files\"
 fi
+if printf '%s\\n' \"$payload\" | grep -F '/compiled/ephemeral/' >/dev/null; then
+  die \"RPM payload unexpectedly includes Rhombus ephemeral cache\"
+fi
+provides=$(rpm -qp --provides \"$RPM_PATH\")
+printf '%s\\n' \"$provides\" | grep -F \"$BASE_PACKAGE_NAME(cache-mode-$CACHE_MODE)\" >/dev/null \\
+  || die \"RPM metadata is missing cache-mode capability\"
 scripts=$(rpm -qp --scripts \"$RPM_PATH\")
 if [ \"$CACHE_MODE\" = postinstall ]; then
-  printf '%s\\n' \"$scripts\" | grep -F 'raco setup --system --no-user --reset-cache -D --no-pkg-deps' >/dev/null \\
+  printf '%s\\n' \"$scripts\" | grep -F \"$PREFIX/bin/raco setup\" | grep -F -- '--reset-cache --unsafe-delete-all' >/dev/null \\
     || die \"RPM scriptlets do not build the system compiled cache\"
-  printf '%s\\n' \"$scripts\" | grep -F 'raco setup --system --delete-cache' >/dev/null \\
-    || die \"RPM scriptlets do not delete the system compiled cache\"
-  printf '%s\\n' \"$scripts\" | grep -F \"rpm -q --quiet $CACHED_PACKAGE_NAME >/dev/null 2>&1\" >/dev/null \\
-    || die \"RPM preun does not guard cache deletion for package replacement\"
   printf '%s\\n' \"$scripts\" | grep -F 'package-racket-rhombus-cache' >/dev/null \\
-    || die \"RPM scriptlets do not warm the Rhombus demod cache\"
-  printf '%s\\n' \"$scripts\" | grep -F 'racket -U -R \"$compiled_cache_root\" -N rhombus -l- rhombus/run.rhm --version' >/dev/null \\
-    || die \"RPM scriptlets do not warm the Rhombus version cache into the system cache\"
+    || die \"RPM scriptlets do not warm Rhombus into the dynamic cache\"
 else
-  if printf '%s\\n' \"$scripts\" | grep -F 'raco setup --system --no-user --reset-cache -D --no-pkg-deps' >/dev/null; then
+  if printf '%s\\n' \"$scripts\" | grep -F '/bin/raco setup' >/dev/null; then
     die \"cached RPM scriptlets unexpectedly build the system compiled cache\"
   fi
-  if printf '%s\\n' \"$scripts\" | grep -F 'raco setup --system --delete-cache' >/dev/null; then
-    die \"cached RPM scriptlets unexpectedly delete the system compiled cache through raco\"
-  fi
 fi
+printf '%s\\n' \"$scripts\" | grep -F \"rm -rf \\\"/var/cache/racket/$PACKAGE_VERSION/compiled\\\"\" >/dev/null \\
+  || die \"RPM scriptlets do not purge the versioned dynamic cache directory\"
+printf '%s\\n' \"$scripts\" | grep -F \"rm -f \\\"/var/cache/racket/$PACKAGE_VERSION/racket-compiled-cache.log\\\"\" >/dev/null \\
+  || die \"RPM scriptlets do not purge the compiled cache debug log\"
 printf '%s\\n' \"$scripts\" | grep -F 'rm -rf /var/cache/racket/compiled' >/dev/null \\
-  || die \"RPM scriptlets do not purge the system compiled cache directory\"
-printf '%s\\n' \"$scripts\" | grep -F 'rhombus-lib/rhombus/private/compiled/ephemeral/demod' >/dev/null \\
-  || die \"RPM scriptlets do not purge the Rhombus demod cache directory\"
-printf '%s\\n' \"$scripts\" | grep -F \"rmdir $DEFAULT_PREFIX/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral\" >/dev/null \\
-  || die \"RPM scriptlets do not remove empty Rhombus ephemeral cache parents\"
-printf '%s\\n' \"$scripts\" | grep -F 'rpm -q --quiet \"$other_package\" >/dev/null 2>&1' >/dev/null \\
-  || die \"RPM postun does not guard shared cache deletion for package replacement\"
+  || die \"RPM scriptlets do not purge the legacy unversioned cache\"
+if printf '%s\\n' \"$scripts\" | grep -E 'rpm -q|racket9-cached|other_package=' >/dev/null; then
+  die \"RPM scriptlets retain obsolete cross-package lifecycle checks\"
+fi
 printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
 ")
 
@@ -3671,46 +3923,29 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
   ) ; end begin delete-generated-file-if-present!
 ) ; end define delete-generated-file-if-present!
 
-(define (delete-empty-directory-if-present! who path)
-  (begin
-    (define d (complete-path* path))
-    (cond
-      [(directory-exists? d)
-       (if (empty-directory? d)
-           (begin
-             (delete-directory d)
-             (println/flush f"Removed stale empty directory: {(clean-path-string d)}")
-           ) ; end begin delete empty directory
-           (raise-user-error who
-                             f"refusing to delete non-empty directory: {(clean-path-string d)}")
-       ) ; end if directory empty
-      ]
-      [(file-exists? d)
-       (raise-user-error who
-                         f"path exists but is not a directory: {(clean-path-string d)}")]
-      [else
-       (void)]
-    ) ; end cond directory state
-  ) ; end begin delete-empty-directory-if-present!
-) ; end define delete-empty-directory-if-present!
-
 (define (remove-rpm-spec-stale-outputs! c)
   (begin
     (delete-generated-file-if-present!
      'write-rpm-spec-scaffold!
-     (rpm-repository-file-path c)
-     (list generated-rpm-repository-notice-marker
-           generated-rpm-repo-notice-marker))
-    (delete-empty-directory-if-present!
+     (rpm-legacy-definition-spec-path c)
+     '("%{!?cache_mode:%global cache_mode"
+       "%global cached_package_name"))
+    (delete-generated-file-if-present!
      'write-rpm-spec-scaffold!
-     (build-path (cfg-rpm-repo-root c) "repo"))
+     (build-path (cfg-rpm-repo-root c) f"{(cfg-package-name c)}.repo")
+     (list generated-rpm-repository-notice-marker))
+    (void)
   ) ; end begin remove-rpm-spec-stale-outputs!
 ) ; end define remove-rpm-spec-stale-outputs!
 
 (define (rpm-spec-output-paths c)
   (append
-   (list (rpm-repo-gitignore-path c)
-         (rpm-definition-spec-path c)
+   (list (rpm-repo-gitignore-path c))
+   (for/list ([cache-mode (in-list rpm-cache-modes)])
+     (rpm-definition-spec-path c cache-mode))
+   (for/list ([system (in-list rpm-supported-systems)])
+     (rpm-repository-file-path c system))
+   (list
          (rpm-definition-source-keep-path c)
          (rpm-script-path c "rpm-common.sh")
          (rpm-script-path c "build-rpm.sh")
@@ -3744,15 +3979,25 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
     (assert-nonempty-file 'validate-rpm-spec-scaffold! (rpm-repo-readme-path c))
     (assert-nonempty-file 'validate-rpm-spec-scaffold! (rpm-repo-gitignore-path c))
     (assert-file 'validate-rpm-spec-scaffold! (rpm-definition-source-keep-path c))
-    (validate-rpm-spec! c
-                        (rpm-definition-spec-path c)
-                        (formula-source-url c))
+    (for ([system (in-list rpm-supported-systems)])
+      (validate-rpm-repository-file! c system)
+    ) ; end for rpm repository client files
+    (for ([cache-mode (in-list rpm-cache-modes)])
+      (validate-rpm-spec! c
+                          (rpm-definition-spec-path c cache-mode)
+                          (formula-source-url c)
+                          cache-mode)
+    ) ; end for generated rpm specs
     (define readme-content (file->string (rpm-repo-readme-path c)))
-    (for ([needle (in-list (list "RPM SPEC and build-script repository"
-                                 "not an RPM artifact repository"
+    (for ([needle (in-list (list "generated RPM packaging and two-channel repository"
                                  "SPECS/"
                                  "SOURCES/"
-                                 "scripts/build-rpm.sh"))])
+                                 "scripts/build-rpm.sh"
+                                 "repo/cached/SYSTEM/$basearch"
+                                 "repo/postinstall/SYSTEM/$basearch"
+                                 "--target rpm-repo"
+                                 "dnf --refresh distro-sync"
+                                 "rpm -q --provides"))])
       (unless (string-contains? readme-content needle)
         (raise-user-error 'validate-rpm-spec-scaffold!
                           f"generated README is missing: {needle}")
@@ -3765,37 +4010,42 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
                                       "require_repo_root"
                                       "validate_cache_mode"
                                       "package_name_for_cache_mode"
-                                      "racket9-cached"))
+                                      "DEFAULT_CACHE_MODE=cached"
+                                      "cache_mode_rank"
+                                      "spec_name_for_cache_mode"
+                                      "materialize_spec"
+                                      "racket9-cached.spec"
+                                      "racket9-postinstall.spec"))
     (validate-generated-rpm-script! c
                                     "build-rpm.sh"
                                     '("Usage: scripts/build-rpm.sh"
-                                      "rpmbuild -bb"
+                                      "rpmbuild -ba"
                                       "--define \"_sysconfdir /etc\""
                                       "--cache-mode"
-                                      "cache_mode $CACHE_MODE"
+                                      "materialize_spec"
+                                      "SRPM_OUTPUT"
                                       "--dry-run"))
     (validate-generated-rpm-script! c
                                     "build-srpm.sh"
                                     '("Usage: scripts/build-srpm.sh"
                                       "rpmbuild -bs"
                                       "--define \"_sysconfdir /etc\""
+                                      "--cache-mode"
+                                      "materialize_spec"
                                       "--dry-run"))
     (validate-generated-rpm-script! c
                                     "verify-rpm.sh"
                                     '("rpm -qip"
                                       "rpm -qpl"
+                                      "rpm -qp --provides"
                                       "rpm -qp --scripts"
                                       "--cache-mode"
-                                      "cached RPM payload does not include system compiled cache"
+                                      "cached RPM payload does not include immutable compiled cache"
                                       "cached RPM payload does not include runtime-keyed collects cache"
-	                                      "cached RPM payload does not include runtime-keyed package cache"
-	                                      "cached RPM payload does not include Rhombus demod cache"
-	                                      "RPM scriptlets do not warm the Rhombus demod cache"
-	                                      "RPM scriptlets do not warm the Rhombus version cache into the system cache"
-	                                      "RPM preun does not guard cache deletion for package replacement"
-	                                      "RPM scriptlets do not purge the Rhombus demod cache directory"
-	                                      "RPM scriptlets do not remove empty Rhombus ephemeral cache parents"
-	                                      "RPM postun does not guard shared cache deletion for package replacement"
+                                      "cached RPM payload does not include runtime-keyed package cache"
+                                      "RPM payload unexpectedly includes Rhombus ephemeral cache"
+                                      "cache-mode-$CACHE_MODE"
+                                      "obsolete cross-package lifecycle checks"
                                       "racket compiled cache debug log"
                                       "--dry-run"))
   ) ; end begin validate-rpm-spec-scaffold!
@@ -3811,10 +4061,17 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
     (define source-url (formula-source-url c))
     (define source-sha256 (resolve-rpm-source-sha256! c source-url))
     (write-text-file! (rpm-repo-gitignore-path c) rpm-spec-gitignore-content)
-    (write-rpm-spec! c
-                     (rpm-definition-spec-path c)
-                     source-url
-                     source-sha256)
+    (for ([system (in-list rpm-supported-systems)])
+      (write-text-file! (rpm-repository-file-path c system)
+                        (rpm-repository-content c system))
+    ) ; end for rpm repository client files
+    (for ([cache-mode (in-list rpm-cache-modes)])
+      (write-rpm-spec! c
+                       (rpm-definition-spec-path c cache-mode)
+                       source-url
+                       source-sha256
+                       cache-mode)
+    ) ; end for rpm cache modes
     (write-text-file! (rpm-definition-source-keep-path c) "")
     (write-executable-text-file! (rpm-script-path c "rpm-common.sh")
                                  (rpm-common-script-content c source-sha256))
@@ -3879,6 +4136,20 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
      'package-name package-name)
   ) ; end for/list expanded cache targets
 ) ; end define ci-targets-with-cache-modes
+
+(define (rpm-ci-targets-with-cache-modes c targets)
+  (for*/list ([target (in-list targets)]
+              [cache-mode (in-list rpm-cache-modes)])
+    (define base-id (hash-ref target 'id))
+    (hash-set
+     (hash-set
+      (hash-set
+       (hash-set target 'id f"{base-id}-{cache-mode}")
+       'cache-mode cache-mode)
+      'channel cache-mode)
+     'package-name (cfg-package-name c))
+  ) ; end for/list expanded rpm cache targets
+) ; end define rpm-ci-targets-with-cache-modes
 
 (define (assert-single-line-string who key value)
   (begin
@@ -4062,10 +4333,25 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
   ) ; end apply string-append matrix lines
 ) ; end define rpm-ci-matrix-lines
 
+(define (rpm-ci-transaction-matrix-lines targets)
+  (apply
+   string-append
+   (for/list ([target (in-list targets)])
+     f"          - id: {(yaml-single-quote (hash-ref target 'id))}
+            rpm_system: {(yaml-single-quote (hash-ref target 'rpm-system))}
+            rpm_release: {(yaml-single-quote (hash-ref target 'rpm-release))}
+            rpm_arch: {(yaml-single-quote (hash-ref target 'rpm-arch))}
+            runner: {(yaml-single-quote (hash-ref target 'runner))}
+            container: {(yaml-single-quote (hash-ref target 'container))}
+"
+   ) ; end for/list transaction target
+  ) ; end apply transaction matrix lines
+) ; end define rpm-ci-transaction-matrix-lines
+
 (define (rpm-ci-workflow-content c config)
   (begin
     (define base-targets (rpm-ci-normalized-targets config))
-    (define targets (ci-targets-with-cache-modes c base-targets))
+    (define targets (rpm-ci-targets-with-cache-modes c base-targets))
     (define artifact-prefix
       (assert-rpm-ci-artifact-prefix (config-required-string 'rpm-ci-config config 'artifact-prefix)))
     (define release-tag
@@ -4085,7 +4371,12 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
     (define matrix-jobs "${{ matrix.jobs }}")
     (define matrix-artifact-name "${{ matrix.artifact_name }}")
     (define matrix-setup-packages "${{ matrix.setup_packages }}")
+    (define srpm-rebuild-if
+      "${{ matrix.id == 'el9-x86_64-cached' || matrix.id == 'el9-x86_64-postinstall' }}")
     (define token-expr "${{ secrets.GITHUB_TOKEN }}")
+    (define github-ref "${{ github.ref }}")
+    (define github-sha "${{ github.sha }}")
+    (define pages-url "${{ steps.deployment.outputs.page_url }}")
     (define rpm-files-count "${#rpm_files[@]}")
     (define rpm-files-array "\"${rpm_files[@]}\"")
     f"{(generated-rpm-code-notice "#")}name: rpm build and release
@@ -4098,6 +4389,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: rpm-build-and-release-{github-ref}
+  cancel-in-progress: false
 
 jobs:
   build-rpm:
@@ -4120,10 +4415,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -f SPECS/{(cfg-package-name c)}.spec
+          test -f SPECS/{(rpm-spec-file-name c "cached")}
+          test -f SPECS/{(rpm-spec-file-name c "postinstall")}
           test -x scripts/build-rpm.sh
           test -x scripts/verify-rpm.sh
-          test ! -e {(cfg-package-name c)}.repo
+          repo_file={(shell-single-quoted f"{(cfg-package-name c)}-{matrix-system}.repo")}
+          test -f \"$repo_file\"
+          grep -F {(shell-single-quoted f"[{(cfg-rpm-repo-id c)}-{matrix-system}-cached]")} \"$repo_file\"
+          grep -F {(shell-single-quoted f"[{(cfg-rpm-repo-id c)}-{matrix-system}-postinstall]")} \"$repo_file\"
           test ! -d repo
 
       - name: Install RPM build dependencies
@@ -4164,11 +4463,36 @@ jobs:
             --prefix {(shell-single-quoted (cfg-prefix c))} \\
             --jobs \"{matrix-jobs}\"
 
+      - name: Rebuild concrete SRPM
+        if: {srpm-rebuild-if}
+        shell: bash
+        run: |
+          set -euo pipefail
+          srpm=$(find \"$GITHUB_WORKSPACE/.build/{matrix-id}/rpmbuild/SRPMS\" -maxdepth 1 -name '*.src.rpm' -type f -print -quit)
+          [ -n \"$srpm\" ] || {{ echo 'matching SRPM was not produced by rpmbuild -ba'; exit 1; }}
+          rebuild_root=\"$GITHUB_WORKSPACE/.build/{matrix-id}/srpm-rebuild\"
+          mkdir -p \"$rebuild_root/BUILD\" \"$rebuild_root/BUILDROOT\" \"$rebuild_root/RPMS\" \"$rebuild_root/SOURCES\" \"$rebuild_root/SPECS\" \"$rebuild_root/SRPMS\"
+          rpmbuild --rebuild --target \"{matrix-arch}\" \\
+            --define \"_topdir $rebuild_root\" \\
+            --define \"_build_id_links none\" \\
+            --define \"_sysconfdir /etc\" \\
+            --define \"_smp_mflags -j{matrix-jobs}\" \\
+            \"$srpm\"
+          rebuilt_rpm=$(find \"$rebuild_root/RPMS\" -name '*.rpm' ! -name '*.src.rpm' -type f -print -quit)
+          [ -n \"$rebuilt_rpm\" ] || {{ echo 'SRPM rebuild did not produce a binary RPM'; exit 1; }}
+          scripts/verify-rpm.sh \\
+            --rpm \"$rebuilt_rpm\" \\
+            --rpm-system \"{matrix-system}\" \\
+            --rpm-release \"{matrix-release}\" \\
+            --rpm-arch \"{matrix-arch}\" \\
+            --cache-mode \"{matrix-cache-mode}\"
+
       - name: Install and uninstall smoke test
         shell: bash
         env:
           PACKAGE_NAME: {matrix-package-name}
           PACKAGE_VERSION: {(yaml-single-quote (cfg-source-version c))}
+          CACHE_MODE: {matrix-cache-mode}
         run: |
           set -euo pipefail
           mapfile -t rpm_files < <(find \"$GITHUB_WORKSPACE/artifacts\" -maxdepth 1 -name '*.rpm' ! -name '*.src.rpm' -type f | sort)
@@ -4187,17 +4511,28 @@ jobs:
           fi
           $pm -y install \"${{rpm_files[0]}}\"
           rpm -qa | grep -Ei '^(libedit|libedit-devel|editline)' || true
-          cache_count=$(find /var/cache/racket/compiled -path '*/compiled/*.zo' 2>/dev/null | wc -l)
-          [ \"$cache_count\" -gt 0 ] || {{ echo 'system compiled cache is empty after RPM install'; exit 1; }}
-          runtime_collects_cache=\"/var/cache/racket/compiled{(cfg-prefix c)}/share/racket/collects\"
-          runtime_pkgs_cache=\"/var/cache/racket/compiled{(cfg-prefix c)}/share/racket/pkgs\"
-          rhombus_ephemeral_cache=\"{(cfg-prefix c)}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod\"
+          immutable_cache_root=\"{(cfg-prefix c)}/lib/racket/$PACKAGE_VERSION/compiled-cache\"
+          dynamic_cache_root=\"/var/cache/racket/$PACKAGE_VERSION/compiled\"
+          if [ \"$CACHE_MODE\" = cached ]; then
+            cache_root=\"$immutable_cache_root\"
+            [ ! -e \"$dynamic_cache_root\" ] || {{ echo \"cached install left a stale dynamic cache: $dynamic_cache_root\"; exit 1; }}
+          else
+            cache_root=\"$dynamic_cache_root\"
+            if find \"$immutable_cache_root\" -path '*/compiled/*.zo' -type f -print -quit 2>/dev/null | grep -q .; then
+              echo \"postinstall payload unexpectedly contains immutable cache files: $immutable_cache_root\"
+              exit 1
+            fi
+          fi
+          cache_count=$(find \"$cache_root\" -path '*/compiled/*.zo' 2>/dev/null | wc -l)
+          [ \"$cache_count\" -gt 0 ] || {{ echo \"selected compiled cache is empty after RPM install: $cache_root\"; exit 1; }}
+          runtime_collects_cache=\"$cache_root{(cfg-prefix c)}/share/racket/collects\"
+          runtime_pkgs_cache=\"$cache_root{(cfg-prefix c)}/share/racket/pkgs\"
+          rhombus_ephemeral_root=\"{(cfg-prefix c)}/share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral\"
           find \"$runtime_collects_cache\" -path '*/compiled/*.zo' -type f -print -quit | grep -q . \\
             || {{ echo \"runtime-keyed collects cache is empty after RPM install: $runtime_collects_cache\"; exit 1; }}
           find \"$runtime_pkgs_cache\" -path '*/compiled/*.zo' -type f -print -quit | grep -q . \\
             || {{ echo \"runtime-keyed package cache is empty after RPM install: $runtime_pkgs_cache\"; exit 1; }}
-          find \"$rhombus_ephemeral_cache\" -path '*/compiled/*.zo' -type f -print -quit | grep -q . \\
-            || {{ echo \"Rhombus demod cache is empty after RPM install: $rhombus_ephemeral_cache\"; exit 1; }}
+          [ ! -e \"$rhombus_ephemeral_root\" ] || {{ echo \"Rhombus ephemeral cache was installed: $rhombus_ephemeral_root\"; exit 1; }}
           racket -e '(displayln (version))' | grep -F \"$PACKAGE_VERSION\"
           racket -e '(displayln f\"rpm-ci-ok\")' | grep -F 'rpm-ci-ok'
           racket -e '(require readline/readline) (displayln f\"rpm-readline-ok\")' | grep -F 'rpm-readline-ok'
@@ -4210,12 +4545,14 @@ jobs:
           HOME=\"$empty_home\" timeout 30s rhombus -e 'println(\"rpm-rhombus-fresh-home-ok\")' | grep -F 'rpm-rhombus-fresh-home-ok'
           rm -rf \"$empty_home\"
           raco pkg show --all >/tmp/raco-pkgs.txt
+          rpm -V \"$PACKAGE_NAME\"
           rpm -e \"$PACKAGE_NAME\"
           if rpm -q \"$PACKAGE_NAME\" >/dev/null 2>&1; then
             echo \"Package still installed after rpm -e: $PACKAGE_NAME\"
             exit 1
           fi
-          [ ! -d /var/cache/racket/compiled ] || {{ echo 'system compiled cache remains after RPM erase'; exit 1; }}
+          [ ! -d \"$dynamic_cache_root\" ] || {{ echo 'dynamic compiled cache remains after RPM erase'; exit 1; }}
+          [ ! -d \"$immutable_cache_root\" ] || {{ echo 'immutable compiled cache remains after RPM erase'; exit 1; }}
 
       - name: Upload RPM artifact
         uses: actions/upload-artifact@v6
@@ -4224,19 +4561,212 @@ jobs:
           path: artifacts/*.rpm
           if-no-files-found: error
 
-  publish-rpm:
+  test-rpm-transactions:
+    name: transactions {matrix-system} {matrix-arch}
     needs: build-rpm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+{(rpm-ci-transaction-matrix-lines base-targets)}    runs-on: {matrix-runner}
+    container:
+      image: {matrix-container}
+      options: --user root
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Download both cache modes
+        uses: actions/download-artifact@v6
+        with:
+          pattern: {(yaml-single-quote f"{artifact-prefix}-{matrix-id}-*")}
+          path: transaction-assets
+          merge-multiple: true
+
+      - name: Verify install upgrade downgrade reinstall and erase
+        shell: bash
+        env:
+          PACKAGE_NAME: {(yaml-single-quote (cfg-package-name c))}
+          PACKAGE_VERSION: {(yaml-single-quote (cfg-source-version c))}
+          RPM_SYSTEM: {matrix-system}
+          RPM_RELEASE: {matrix-release}
+          RPM_ARCH: {matrix-arch}
+        run: |
+          set -euo pipefail
+          postinstall_rpm=$(find \"$GITHUB_WORKSPACE/transaction-assets\" -type f -name \"*-$RPM_RELEASE.1.postinstall.$RPM_SYSTEM.$RPM_ARCH.rpm\" -print -quit)
+          cached_rpm=$(find \"$GITHUB_WORKSPACE/transaction-assets\" -type f -name \"*-$RPM_RELEASE.2.cached.$RPM_SYSTEM.$RPM_ARCH.rpm\" -print -quit)
+          [ -n \"$postinstall_rpm\" ] || {{ echo 'postinstall RPM not found'; exit 1; }}
+          [ -n \"$cached_rpm\" ] || {{ echo 'cached RPM not found'; exit 1; }}
+          if command -v dnf >/dev/null 2>&1; then
+            pm=dnf
+          elif command -v yum >/dev/null 2>&1; then
+            pm=yum
+          else
+            echo 'dnf or yum is required for RPM transaction tests'
+            exit 1
+          fi
+          $pm -y install createrepo_c rpm-build
+          transaction_repo=\"$GITHUB_WORKSPACE/transaction-repo\"
+          mkdir -p \"$transaction_repo/cached\" \"$transaction_repo/postinstall\"
+          cp \"$cached_rpm\" \"$transaction_repo/cached/\"
+          cp \"$postinstall_rpm\" \"$transaction_repo/postinstall/\"
+          createrepo_c \"$transaction_repo/cached\"
+          createrepo_c \"$transaction_repo/postinstall\"
+          printf '%s\\n' \
+            '[racket-transaction-cached]' \
+            'name=Racket transaction cached' \
+            \"baseurl=file://$transaction_repo/cached\" \
+            'enabled=0' \
+            'gpgcheck=0' \
+            '' \
+            '[racket-transaction-postinstall]' \
+            'name=Racket transaction postinstall' \
+            \"baseurl=file://$transaction_repo/postinstall\" \
+            'enabled=0' \
+            'gpgcheck=0' \
+            > /etc/yum.repos.d/racket-transaction.repo
+          dynamic_cache_root=\"/var/cache/racket/$PACKAGE_VERSION/compiled\"
+          immutable_cache_root=\"{(cfg-prefix c)}/lib/racket/$PACKAGE_VERSION/compiled-cache\"
+          assert_release() {{
+            expected=\"$1\"
+            actual=$(rpm -q --qf '%{{RELEASE}}' \"$PACKAGE_NAME\")
+            [ \"$actual\" = \"$expected\" ] || {{ echo \"expected release $expected, got $actual\"; exit 1; }}
+          }}
+          assert_cached_runtime() {{
+            local empty_home
+            empty_home=$(mktemp -d)
+            HOME=\"$empty_home\" {(cfg-prefix c)}/bin/racket -e '(require racket/list racket/match) (displayln \"rpm-cached-transaction-ok\")' | grep -F rpm-cached-transaction-ok
+            HOME=\"$empty_home\" {(cfg-prefix c)}/bin/rhombus --version | grep -F Rhombus
+            rm -rf \"$empty_home\"
+          }}
+          legacy_root=\"$GITHUB_WORKSPACE/legacy-rpm\"
+          mkdir -p \"$legacy_root/BUILD\" \"$legacy_root/BUILDROOT\" \"$legacy_root/RPMS\" \"$legacy_root/SOURCES\" \"$legacy_root/SPECS\" \"$legacy_root/SRPMS\"
+          printf '%s\\n' \
+            'Name: racket9-cached' \
+            'Version: 9.2.2' \
+            \"Release: 6.$RPM_SYSTEM\" \
+            'Summary: Legacy split-name migration fixture' \
+            'License: MIT' \
+            'BuildArch: noarch' \
+            'Conflicts: racket9' \
+            '%description' \
+            'Legacy migration fixture.' \
+            '%files' \
+            > \"$legacy_root/SPECS/racket9-cached.spec\"
+          rpmbuild -bb --define \"_topdir $legacy_root\" \"$legacy_root/SPECS/racket9-cached.spec\"
+          legacy_rpm=$(find \"$legacy_root/RPMS\" -name 'racket9-cached-*.rpm' -type f -print -quit)
+          [ -n \"$legacy_rpm\" ] || {{ echo 'legacy migration fixture RPM was not built'; exit 1; }}
+          rpm -i \"$legacy_rpm\"
+          rpm -q racket9-cached
+          mkdir -p /var/cache/racket/compiled
+          touch /var/cache/racket/compiled/legacy-sentinel
+          $pm -y install \"$postinstall_rpm\"
+          if rpm -q racket9-cached >/dev/null 2>&1; then
+            echo 'legacy racket9-cached was not obsoleted by racket9'
+            exit 1
+          fi
+          [ ! -e /var/cache/racket/compiled ] || {{ echo 'legacy unversioned cache was not removed'; exit 1; }}
+          assert_release \"$RPM_RELEASE.1.postinstall.$RPM_SYSTEM\"
+          find \"$dynamic_cache_root\" -path '*/compiled/*.zo' -type f -print -quit | grep -q .
+          $pm -y --disablerepo='*' --enablerepo=racket-transaction-cached --refresh distro-sync \"$PACKAGE_NAME\"
+          assert_release \"$RPM_RELEASE.2.cached.$RPM_SYSTEM\"
+          [ ! -e \"$dynamic_cache_root\" ] || {{ echo 'cached upgrade left stale dynamic cache'; exit 1; }}
+          find \"$immutable_cache_root\" -path '*/compiled/*.zo' -type f -print -quit | grep -q .
+          assert_cached_runtime
+          $pm -y --disablerepo='*' --enablerepo=racket-transaction-postinstall --refresh distro-sync \"$PACKAGE_NAME\"
+          assert_release \"$RPM_RELEASE.1.postinstall.$RPM_SYSTEM\"
+          [ ! -e \"$immutable_cache_root\" ] || {{ echo 'postinstall downgrade left immutable payload cache'; exit 1; }}
+          find \"$dynamic_cache_root\" -path '*/compiled/*.zo' -type f -print -quit | grep -q .
+          rpm -Uvh --replacepkgs \"$postinstall_rpm\"
+          assert_release \"$RPM_RELEASE.1.postinstall.$RPM_SYSTEM\"
+          $pm -y --disablerepo='*' --enablerepo=racket-transaction-cached --refresh distro-sync \"$PACKAGE_NAME\"
+          assert_release \"$RPM_RELEASE.2.cached.$RPM_SYSTEM\"
+          assert_cached_runtime
+          rpm -Uvh --replacepkgs \"$cached_rpm\"
+          assert_release \"$RPM_RELEASE.2.cached.$RPM_SYSTEM\"
+          [ ! -e \"$dynamic_cache_root\" ] || {{ echo 'cached reinstall left stale dynamic cache'; exit 1; }}
+          find \"$immutable_cache_root\" -path '*/compiled/*.zo' -type f -print -quit | grep -q .
+          assert_cached_runtime
+          rpm -V \"$PACKAGE_NAME\"
+          rpm -e \"$PACKAGE_NAME\"
+          [ ! -e \"$dynamic_cache_root\" ] || {{ echo 'final erase left dynamic cache'; exit 1; }}
+          [ ! -e \"$immutable_cache_root\" ] || {{ echo 'final erase left immutable cache'; exit 1; }}
+
+  publish-rpm:
+    needs:
+      - build-rpm
+      - test-rpm-transactions
     runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: write
     steps:
+      - name: Checkout rpm-racket
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
       - name: Download RPM artifacts
         uses: actions/download-artifact@v6
         with:
           pattern: {(yaml-single-quote f"{artifact-prefix}-*")}
           path: release-assets
           merge-multiple: true
+
+      - name: Build system-isolated channel repositories
+        shell: bash
+        env:
+          RELEASE_TAG: {(yaml-single-quote release-tag)}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y createrepo-c rpm
+          site_root=\"$GITHUB_WORKSPACE/pages-site\"
+          rm -rf \"$site_root\"
+          mkdir -p \"$site_root\"
+          cp {(cfg-package-name c)}-*.repo \"$site_root/\"
+          mapfile -t rpm_files < <(find \"$GITHUB_WORKSPACE/release-assets\" -maxdepth 2 -name '*.rpm' ! -name '*.src.rpm' -type f | sort)
+          [ \"${{#rpm_files[@]}}\" -eq {(number->string (length targets))} ] || {{ echo 'unexpected binary RPM count for repository publication'; exit 1; }}
+          for rpm_file in \"${{rpm_files[@]}}\"; do
+            release=$(rpm -qp --qf '%{{RELEASE}}' \"$rpm_file\")
+            arch=$(rpm -qp --qf '%{{ARCH}}' \"$rpm_file\")
+            system=\"${{release##*.}}\"
+            case \"$release\" in
+              *.2.cached.*) cache_mode=cached ;;
+              *.1.postinstall.*) cache_mode=postinstall ;;
+              *) echo \"unrecognized cache-mode Release: $release\"; exit 1 ;;
+            esac
+            case \"$system\" in
+              {(string-join rpm-supported-systems "|")}) ;;
+              *) echo \"unsupported RPM system in Release: $release\"; exit 1 ;;
+            esac
+            repo_root=\"$site_root/repo/$cache_mode/$system/$arch\"
+            mkdir -p \"$repo_root\"
+            cp \"$rpm_file\" \"$repo_root/\"
+          done
+          release_base=\"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/\"
+          while IFS= read -r repo_root; do
+            createrepo_c --compress-type gz --baseurl \"$release_base\" \"$repo_root\"
+            rm -f \"$repo_root\"/*.rpm
+            test -s \"$repo_root/repodata/repomd.xml\"
+            primary_xml=$(find \"$repo_root/repodata\" -maxdepth 1 -name '*primary.xml.gz' -type f -print -quit)
+            [ -n \"$primary_xml\" ] || {{ echo \"primary metadata is missing: $repo_root\"; exit 1; }}
+            zgrep -F \"xml:base=\\\"$release_base\\\"\" \"$primary_xml\" >/dev/null || {{ echo \"primary metadata lacks Release base URL: $repo_root\"; exit 1; }}
+            zgrep -E 'location .*href=\"[^/]+[.]rpm\"' \"$primary_xml\" >/dev/null || {{ echo \"primary metadata lacks basename-only RPM location: $repo_root\"; exit 1; }}
+            if zgrep -E 'location .*href=\"[^\"]*/' \"$primary_xml\" >/dev/null; then
+              echo \"primary metadata contains a nested RPM location: $repo_root\"
+              exit 1
+            fi
+          done < <(find \"$site_root/repo\" -type f -name '*.rpm' -exec dirname {{}} \\; | sort -u)
+          if find \"$site_root\" -type f -name '*.rpm' -print -quit | grep -q .; then
+            echo 'Pages repository must contain metadata only, not RPM payloads'
+            exit 1
+          fi
+
+      - name: Upload RPM repository Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: pages-site
 
       - name: Publish RPM release assets
         shell: bash
@@ -4246,6 +4776,7 @@ jobs:
           RELEASE_TAG: {(yaml-single-quote release-tag)}
           RELEASE_NAME: {(yaml-single-quote release-name)}
           CREATE_RELEASE: {(yaml-single-quote (if create-release? "true" "false"))}
+          BUILD_SHA: {github-sha}
           PACKAGE_NAME: {(yaml-single-quote (cfg-package-name c))}
           PACKAGE_VERSION: {(yaml-single-quote (cfg-source-version c))}
           EXPECTED_RPM_COUNT: {(number->string (length targets))}
@@ -4262,6 +4793,7 @@ jobs:
             exit 1
           fi
           declare -A seen
+          expected_assets=$(mktemp)
           for rpm_file in \"${{rpm_files[@]}}\"; do
             asset_name=\"${{rpm_file##*/}}\"
             if [ -n \"${{seen[$asset_name]:-}}\" ]; then
@@ -4269,21 +4801,62 @@ jobs:
               exit 1
             fi
             seen[\"$asset_name\"]=1
+            printf '%s\\n' \"$asset_name\" >> \"$expected_assets\"
           done
+          sort -o \"$expected_assets\" \"$expected_assets\"
           printf 'Release assets before upload for %s:\\n' \"$RELEASE_TAG\"
           gh api \"repos/${{GITHUB_REPOSITORY}}/releases/tags/$RELEASE_TAG\" --jq '.assets[].name' || true
-          if ! gh release view \"$RELEASE_TAG\" --repo \"$GITHUB_REPOSITORY\" >/dev/null 2>&1; then
+          git fetch --force --tags origin
+          tag_exists=false
+          if git rev-parse -q --verify \"refs/tags/$RELEASE_TAG^{{commit}}\" >/dev/null; then
+            tag_exists=true
+            tag_sha=$(git rev-list -n 1 \"refs/tags/$RELEASE_TAG\")
+            if [ \"$tag_sha\" != \"$BUILD_SHA\" ]; then
+              echo \"Immutable release tag $RELEASE_TAG points to $tag_sha, not current build $BUILD_SHA\"
+              exit 1
+            fi
+          fi
+          if gh release view \"$RELEASE_TAG\" --repo \"$GITHUB_REPOSITORY\" >/dev/null 2>&1; then
+            [ \"$tag_exists\" = true ] || {{ echo \"release exists without fetched tag: $RELEASE_TAG\"; exit 1; }}
+          else
             if [ \"$CREATE_RELEASE\" != true ]; then
               echo \"GitHub release does not exist and create-release is false: $RELEASE_TAG\"
               exit 1
             fi
-            gh release create \"$RELEASE_TAG\" --repo \"$GITHUB_REPOSITORY\" --title \"$RELEASE_NAME\" --notes \"Generated RPM artifacts for $PACKAGE_NAME $PACKAGE_VERSION.\"
+            if [ \"$tag_exists\" = true ]; then
+              gh release create \"$RELEASE_TAG\" --repo \"$GITHUB_REPOSITORY\" --verify-tag --title \"$RELEASE_NAME\" --notes \"Generated RPM artifacts for $PACKAGE_NAME $PACKAGE_VERSION.\"
+            else
+              gh release create \"$RELEASE_TAG\" --repo \"$GITHUB_REPOSITORY\" --target \"$BUILD_SHA\" --title \"$RELEASE_NAME\" --notes \"Generated RPM artifacts for $PACKAGE_NAME $PACKAGE_VERSION.\"
+            fi
           fi
+          while IFS=$'\\t' read -r asset_id asset_name; do
+            [ -n \"$asset_id\" ] || continue
+            if ! grep -Fx \"$asset_name\" \"$expected_assets\" >/dev/null; then
+              printf 'Deleting stale release asset: %s\\n' \"$asset_name\"
+              gh api --method DELETE \"repos/$GITHUB_REPOSITORY/releases/assets/$asset_id\"
+            fi
+          done < <(gh api \"repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG\" --jq '.assets[] | [.id, .name] | @tsv')
           printf 'Uploading RPM files to release %s:\\n' \"$RELEASE_TAG\"
           printf '  %s\\n' {rpm-files-array}
           gh release upload \"$RELEASE_TAG\" --repo \"$GITHUB_REPOSITORY\" {rpm-files-array} --clobber
           printf 'Release assets after upload for %s:\\n' \"$RELEASE_TAG\"
-          gh api \"repos/${{GITHUB_REPOSITORY}}/releases/tags/$RELEASE_TAG\" --jq '.assets[].name'
+          actual_assets=$(mktemp)
+          gh api \"repos/${{GITHUB_REPOSITORY}}/releases/tags/$RELEASE_TAG\" --jq '.assets[].name' | sort | tee \"$actual_assets\"
+          diff -u \"$expected_assets\" \"$actual_assets\"
+
+  deploy-rpm-repository:
+    needs: publish-rpm
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: {pages-url}
+    steps:
+      - name: Deploy RPM repository to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
 "
   ) ; end begin rpm-ci-workflow-content
 ) ; end define rpm-ci-workflow-content
@@ -4304,7 +4877,7 @@ jobs:
   (begin
     (validate-yaml! c path)
     (define content (file->string path))
-    (define targets (ci-targets-with-cache-modes c (rpm-ci-normalized-targets config)))
+    (define targets (rpm-ci-targets-with-cache-modes c (rpm-ci-normalized-targets config)))
     (define artifact-prefix
       (assert-rpm-ci-artifact-prefix (config-required-string 'rpm-ci-config config 'artifact-prefix)))
     (for ([needle (in-list (list "name: rpm build and release"
@@ -4312,17 +4885,40 @@ jobs:
                                  "push:"
                                  "workflow_dispatch:"
                                  "build-rpm:"
+                                 "test-rpm-transactions:"
                                  "publish-rpm:"
+                                 "deploy-rpm-repository:"
                                  "scripts/build-rpm.sh"
                                  "scripts/verify-rpm.sh"
+                                 "repo_file="
+                                 f"[{(cfg-rpm-repo-id c)}-"
+                                 "-cached]"
+                                 "-postinstall]"
+                                 "Rebuild concrete SRPM"
+                                 "rpmbuild --rebuild"
+                                 "matching SRPM was not produced by rpmbuild -ba"
                                  "cache_mode:"
                                  "package_name:"
                                  "--cache-mode \"${{ matrix.cache_mode }}\""
                                  "actions/checkout@v6"
                                  "actions/upload-artifact@v6"
                                  "actions/download-artifact@v6"
+                                 "actions/upload-pages-artifact@v4"
+                                 "actions/deploy-pages@v4"
+                                 "Build system-isolated channel repositories"
+                                 "createrepo_c"
+                                 "pages: write"
+                                 "id-token: write"
+                                 "name: github-pages"
                                  "GH_REPO:"
                                  "gh release upload"
+                                 "Deleting stale release asset"
+                                 "Immutable release tag"
+                                 "--target \"$BUILD_SHA\""
+                                 "cancel-in-progress: false"
+                                 "primary metadata lacks Release base URL"
+                                 "Pages repository must contain metadata only"
+                                 "diff -u \"$expected_assets\" \"$actual_assets\""
                                  "--repo \"$GITHUB_REPOSITORY\""
                                  "contents: write"
                                  "Downloaded RPM files"
@@ -4332,15 +4928,26 @@ jobs:
                                  "config-manager --set-enabled crb"
                                  "$pm -y install \"${rpm_files[0]}\""
                                  "rpm -qa | grep -Ei"
-                                 "system compiled cache is empty after RPM install"
+                                 "selected compiled cache is empty after RPM install"
                                  "runtime-keyed collects cache is empty after RPM install"
                                  "runtime-keyed package cache is empty after RPM install"
-                                 "Rhombus demod cache is empty after RPM install"
+                                 "Rhombus ephemeral cache was installed"
+                                 "cached install left a stale dynamic cache"
+                                 "postinstall payload unexpectedly contains immutable cache files"
                                  "rpm-empty-home-ok"
                                  "timeout 30s rhombus --version"
                                  "rpm-rhombus-ok"
                                  "rpm-rhombus-fresh-home-ok"
-                                 "system compiled cache remains after RPM erase"
+                                 "--enablerepo=racket-transaction-postinstall --refresh distro-sync"
+                                 "rpm -Uvh --replacepkgs"
+                                 "cached upgrade left stale dynamic cache"
+                                 "cached reinstall left stale dynamic cache"
+                                 "postinstall downgrade left immutable payload cache"
+                                 "legacy racket9-cached was not obsoleted by racket9"
+                                 "legacy unversioned cache was not removed"
+                                 "dynamic compiled cache remains after RPM erase"
+                                 "immutable compiled cache remains after RPM erase"
+                                 "rpm -V \"$PACKAGE_NAME\""
                                  "racket -e '(displayln f\"rpm-ci-ok\")'"
                                  "racket -e '(require readline/readline) (displayln f\"rpm-readline-ok\")'"
                                  "EXPECTED_RPM_COUNT:"))])
@@ -4362,6 +4969,9 @@ jobs:
         ) ; end unless workflow contains target needle
       ) ; end for target needle
     ) ; end for target
+    (when (string-contains? content "${ matrix")
+      (raise-user-error 'validate-rpm-ci-workflow!
+                        "RPM CI workflow contains a malformed GitHub expression"))
   ) ; end begin validate-rpm-ci-workflow!
 ) ; end define validate-rpm-ci-workflow!
 
@@ -4382,7 +4992,7 @@ jobs:
   (begin
     (assert-rpm-repo-root! c #:write? #f)
     (define workflow-path (rpm-ci-workflow-path c))
-    (define targets (ci-targets-with-cache-modes c (rpm-ci-normalized-targets config)))
+    (define targets (rpm-ci-targets-with-cache-modes c (rpm-ci-normalized-targets config)))
     (println/flush f"Would read RPM CI config: {(clean-path-string (cfg-rpm-ci-config c))}")
     (println/flush f"Would generate RPM CI workflow: {(clean-path-string workflow-path)}")
     (println/flush f"Would validate RPM CI workflow YAML with: {(cfg-ruby-bin c)}")
@@ -5867,18 +6477,22 @@ jobs:
   ) ; end begin build-windows-ci!
 ) ; end define build-windows-ci!
 
-(define (validate-rpm-repo-metadata! c)
+(define (validate-rpm-repo-metadata! c cache-mode)
   (begin
+    (validate-rpm-cache-mode 'validate-rpm-repo-metadata! cache-mode)
     (assert-nonempty-file 'validate-rpm-repo-metadata!
-                          (build-path (rpm-repo-arch-root c) "repodata" "repomd.xml"))
-    (println/flush f"Validated RPM repo metadata: {(clean-path-string (rpm-repo-arch-root c))}")
+                          (build-path (rpm-repo-arch-root c (cfg-rpm-arch c) cache-mode)
+                                      "repodata"
+                                      "repomd.xml"))
+    (println/flush f"Validated RPM repo metadata ({cache-mode}): {(clean-path-string (rpm-repo-arch-root c (cfg-rpm-arch c) cache-mode))}")
   ) ; end begin validate-rpm-repo-metadata!
 ) ; end define validate-rpm-repo-metadata!
 
-(define (copy-rpm-into-repo! c rpm-path)
+(define (copy-rpm-into-repo! c rpm-path cache-mode)
   (begin
-    (define packages-dir (rpm-repo-packages-dir c))
-    (define dest (build-path packages-dir (rpm-package-name c)))
+    (validate-rpm-cache-mode 'copy-rpm-into-repo! cache-mode)
+    (define packages-dir (rpm-repo-packages-dir c (cfg-rpm-arch c) cache-mode))
+    (define dest (build-path packages-dir (rpm-package-name c cache-mode)))
     (make-directory* packages-dir)
     (copy-file rpm-path dest #t)
     (assert-nonempty-file 'copy-rpm-into-repo! dest)
@@ -5890,15 +6504,16 @@ jobs:
   ) ; end begin copy-rpm-into-repo!
 ) ; end define copy-rpm-into-repo!
 
-(define (update-rpm-repo! c)
+(define (update-one-rpm-repo! c cache-mode)
   (begin
+    (validate-rpm-cache-mode 'update-one-rpm-repo! cache-mode)
     (define produced-by-rpm? (target-selected? c "rpm"))
-    (define rpm-name (rpm-package-name c))
-    (define rpm-path (rpm-package-path c))
+    (define rpm-name (rpm-package-name c cache-mode))
+    (define rpm-path (rpm-package-path c cache-mode))
     (define dry-run-planned? (and (cfg-dry-run? c) produced-by-rpm?))
     (assert-rpm-repo-root! c #:write? (not (cfg-dry-run? c)))
     (unless dry-run-planned?
-      (validate-rpm! c rpm-path)
+      (validate-rpm! c rpm-path cache-mode)
     ) ; end unless dry-run planned rpm artifact
     (define local-sha (if dry-run-planned?
                           "<dry-run: artifact not built>"
@@ -5907,6 +6522,7 @@ jobs:
     (println/flush f"RPM repo root: {(clean-path-string (cfg-rpm-repo-root c))}")
     (println/flush f"RPM repo id: {(cfg-rpm-repo-id c)}")
     (println/flush f"RPM repo baseurl: {(cfg-rpm-repo-baseurl c)}")
+    (println/flush f"RPM repo channel: {cache-mode}")
     (println/flush f"RPM repo package: {rpm-name}")
     (println/flush f"RPM repo sha256: {local-sha}")
     (if (cfg-dry-run? c)
@@ -5915,20 +6531,26 @@ jobs:
            (if dry-run-planned?
                f"Would update RPM repo from planned rpm output {(clean-path-string rpm-path)}"
                f"Would update RPM repo from {(clean-path-string rpm-path)}"))
-          (println/flush f"Would copy RPM into repo: {(clean-path-string rpm-path)} -> {(clean-path-string (build-path (rpm-repo-packages-dir c) rpm-name))}")
-          (println/flush f"Would run createrepo_c --update {(clean-path-string (rpm-repo-arch-root c))}")
+          (println/flush f"Would copy RPM into repo: {(clean-path-string rpm-path)} -> {(clean-path-string (build-path (rpm-repo-packages-dir c (cfg-rpm-arch c) cache-mode) rpm-name))}")
+          (println/flush f"Would run createrepo_c --update {(clean-path-string (rpm-repo-arch-root c (cfg-rpm-arch c) cache-mode))}")
         ) ; end begin dry-run rpm repo
         (begin
-          (assert-executable 'update-rpm-repo! (cfg-createrepo-bin c))
-          (copy-rpm-into-repo! c rpm-path)
-          (run! 'update-rpm-repo!
+          (assert-executable 'update-one-rpm-repo! (cfg-createrepo-bin c))
+          (copy-rpm-into-repo! c rpm-path cache-mode)
+          (run! 'update-one-rpm-repo!
                 (cfg-createrepo-bin c)
-                (list "--update" (clean-path-string (rpm-repo-arch-root c)))
+                (list "--update" (clean-path-string (rpm-repo-arch-root c (cfg-rpm-arch c) cache-mode)))
                 #:dry-run? #f)
-          (validate-rpm-repo-metadata! c)
+          (validate-rpm-repo-metadata! c cache-mode)
         ) ; end begin update rpm repo
     ) ; end if dry-run
-  ) ; end begin update-rpm-repo!
+  ) ; end begin update one rpm repo
+) ; end define update-one-rpm-repo!
+
+(define (update-rpm-repo! c)
+  (for ([cache-mode (in-list rpm-cache-modes)])
+    (update-one-rpm-repo! c cache-mode)
+  ) ; end for rpm repo channels
 ) ; end define update-rpm-repo!
 
 (define (build-rpm-repo! c)
@@ -6851,7 +7473,6 @@ information.
 				                                 "could not prepare Racket setup bootstrap config"
 			                                 "preserve_compiled_cache_dir?"
 			                                 "system_cache_populated?"
-			                                 "rhombus_demod_cache_populated?"
 			                                 "package-racket-rhombus-cache"
 			                                 "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""
 					                                 "system bin/\"racket\", \"-U\", \"-G\", config_dir.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n             \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\""
@@ -6888,6 +7509,11 @@ information.
 	      (raise-user-error 'validate-formula-file!
 	                        f"formula has stale no-launcher text after a Ruby block: {(clean-path-string formula-path)}")
 	    ) ; end when stale no-launcher text
+	    (when (or (string-contains? content "rhombus_demod_cache")
+	              (string-contains? content "compiled/ephemeral/demod"))
+	      (raise-user-error 'validate-formula-file!
+	                        f"formula must not preserve Rhombus ephemeral cache: {(clean-path-string formula-path)}")
+	    ) ; end when Rhombus ephemeral cache is preserved
 	    (formula-sha256 formula-path)
     (void)
   ) ; end begin validate-formula-file!
@@ -7109,7 +7735,7 @@ information.
 
   def preserve_compiled_cache_dir?(path)
     path = Pathname(path).cleanpath
-    preserved_roots = [system_cache_root, rhombus_demod_cache].map(&:cleanpath)
+    preserved_roots = [system_cache_root].map(&:cleanpath)
     preserved_roots.any? do |root|
       path == root || path.to_s.start_with?(\"#{root}/\") || root.to_s.start_with?(\"#{path}/\")
     end
@@ -7199,10 +7825,25 @@ information.
 	            "  end\n\n"
 	            "  def setup_system_cache")))
 	    ) ; end define with-rhombus-cache-methods
+	    (define without-rhombus-ephemeral
+	      (string-replace
+	       (string-replace
+	        (string-replace
+	         (string-replace
+	          with-rhombus-cache-methods
+	          "    system_cache_roots.all? { |root| !Dir[\"#{root}/**/compiled/*.zo\"].empty? } &&\n      rhombus_demod_cache_populated?"
+	          "    system_cache_roots.all? { |root| !Dir[\"#{root}/**/compiled/*.zo\"].empty? }")
+	         "  def rhombus_demod_cache\n    prefix/\"share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod\"\n  end\n\n  def rhombus_demod_cache_populated?\n    !Dir[\"#{rhombus_demod_cache}/**/compiled/*.zo\"].empty?\n  end\n\n"
+	         "")
+	        "preserved_roots = [system_cache_root, rhombus_demod_cache].map(&:cleanpath)"
+	        "preserved_roots = [system_cache_root].map(&:cleanpath)")
+	       "    assert rhombus_demod_cache_populated?, \"Rhombus demod cache is empty\"\n"
+	       "")
+	    ) ; end define without-rhombus-ephemeral
 	(define with-rhombus-cache-setup
-	  (if (string-contains? with-rhombus-cache-methods "package-racket-rhombus-cache")
-	      with-rhombus-cache-methods
-	      (string-replace with-rhombus-cache-methods
+	  (if (string-contains? without-rhombus-ephemeral "package-racket-rhombus-cache")
+	      without-rhombus-ephemeral
+	      (string-replace without-rhombus-ephemeral
 	                          "           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\""
 	                          (string-append
 		                       "           \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"\n"
@@ -7463,16 +8104,7 @@ information.
   end
 
   def system_cache_populated?
-    system_cache_roots.all? {{ |root| !Dir[\"{rb-root}/**/compiled/*.zo\"].empty? }} &&
-      rhombus_demod_cache_populated?
-  end
-
-  def rhombus_demod_cache
-    prefix/\"share/racket/pkgs/rhombus-lib/rhombus/private/compiled/ephemeral/demod\"
-  end
-
-  def rhombus_demod_cache_populated?
-    !Dir[\"#{{rhombus_demod_cache}}/**/compiled/*.zo\"].empty?
+    system_cache_roots.all? {{ |root| !Dir[\"{rb-root}/**/compiled/*.zo\"].empty? }}
   end
 
   def with_setup_bootstrap_config
@@ -7509,7 +8141,7 @@ information.
 
   def preserve_compiled_cache_dir?(path)
     path = Pathname(path).cleanpath
-    preserved_roots = [system_cache_root, rhombus_demod_cache].map(&:cleanpath)
+    preserved_roots = [system_cache_root].map(&:cleanpath)
     preserved_roots.any? do |root|
       path == root || path.to_s.start_with?(\"#{{root}}/\") || root.to_s.start_with?(\"#{{path}}/\")
     end
@@ -7543,7 +8175,6 @@ information.
     output = shell_output(\"{rb-bin}/racket -e '(require racket/pvector) (displayln (pvector->list (pvector 1 2 3)))'\")
     assert_match \"(1 2 3)\", output
     assert system_cache_populated?, \"system compiled cache is empty\"
-    assert rhombus_demod_cache_populated?, \"Rhombus demod cache is empty\"
 
     empty_home = testpath/\"empty-home\"
     empty_home.mkpath
@@ -9783,7 +10414,8 @@ jobs:
     (println/flush f"RPM target system: {(cfg-rpm-system c)}")
     (println/flush f"RPM package version: {(rpm-version c)}")
     (println/flush f"RPM package release base: {(cfg-rpm-release c)}")
-    (println/flush f"RPM package release: {(rpm-release c)}")
+    (println/flush f"RPM package release (cached/default): {(rpm-release c "cached")}")
+    (println/flush f"RPM package release (postinstall/optional): {(rpm-release c "postinstall")}")
     (println/flush f"RPM package prefix: {(cfg-prefix c)}")
   ) ; end when rpm target or repo target
   (when (needs-deb-repo-config? (cfg-targets c))
@@ -10000,7 +10632,9 @@ jobs:
     (check-equal? (normalize-rpm-arch "arm64") "aarch64")
     (check-equal? (normalize-rpm-arch "amd64") "x86_64")
     (check-equal? (brew-source-tgz-name c) "racket-minimal-9.2.2-src.tgz")
-    (check-equal? (rpm-package-name c) "racket9-9.2.2-1.el9.x86_64.rpm")
+    (check-equal? (rpm-package-name c) "racket9-9.2.2-1.2.cached.el9.x86_64.rpm")
+    (check-equal? (rpm-package-name c "postinstall")
+                  "racket9-9.2.2-1.1.postinstall.el9.x86_64.rpm")
     (check-true (and (member "sandbox-lib" packages string=?) #t))
     (check-true (and (member "errortrace-lib" packages string=?) #t))
     (check-true (and (member "source-syntax" packages string=?) #t))
@@ -10135,18 +10769,19 @@ jobs:
     (define openeuler2403 (test-cfg #:rpm-system "openeuler2403"
                                     #:rpm-release "1"
                                     #:rpm-arch "aarch64"))
-    (check-equal? (rpm-release el9) "1.el9")
-    (check-equal? (rpm-package-name el9) "racket9-9.2.2-1.el9.x86_64.rpm")
-    (check-equal? (rpm-release fc40) "2.fc40")
-    (check-equal? (rpm-package-name fc40) "racket9-9.2.2-2.fc40.x86_64.rpm")
-    (check-equal? (rpm-release fc43) "2.fc43")
-    (check-equal? (rpm-package-name fc43) "racket9-9.2.2-2.fc43.x86_64.rpm")
-    (check-equal? (rpm-release fc44) "2.fc44")
-    (check-equal? (rpm-package-name fc44) "racket9-9.2.2-2.fc44.x86_64.rpm")
-    (check-equal? (rpm-release openeuler2203) "1.openeuler2203")
-    (check-equal? (rpm-package-name openeuler2203) "racket9-9.2.2-1.openeuler2203.aarch64.rpm")
-    (check-equal? (rpm-release openeuler2403) "1.openeuler2403")
-    (check-equal? (rpm-package-name openeuler2403) "racket9-9.2.2-1.openeuler2403.aarch64.rpm")
+    (check-equal? (rpm-release el9) "1.2.cached.el9")
+    (check-equal? (rpm-release el9 "postinstall") "1.1.postinstall.el9")
+    (check-equal? (rpm-package-name el9) "racket9-9.2.2-1.2.cached.el9.x86_64.rpm")
+    (check-equal? (rpm-release fc40) "2.2.cached.fc40")
+    (check-equal? (rpm-package-name fc40) "racket9-9.2.2-2.2.cached.fc40.x86_64.rpm")
+    (check-equal? (rpm-release fc43) "2.2.cached.fc43")
+    (check-equal? (rpm-package-name fc43) "racket9-9.2.2-2.2.cached.fc43.x86_64.rpm")
+    (check-equal? (rpm-release fc44) "2.2.cached.fc44")
+    (check-equal? (rpm-package-name fc44) "racket9-9.2.2-2.2.cached.fc44.x86_64.rpm")
+    (check-equal? (rpm-release openeuler2203) "1.2.cached.openeuler2203")
+    (check-equal? (rpm-package-name openeuler2203) "racket9-9.2.2-1.2.cached.openeuler2203.aarch64.rpm")
+    (check-equal? (rpm-release openeuler2403) "1.2.cached.openeuler2403")
+    (check-equal? (rpm-package-name openeuler2403) "racket9-9.2.2-1.2.cached.openeuler2403.aarch64.rpm")
     (check-exn exn:fail?
                (lambda ()
                  (assert-rpm-system "openeuler")
@@ -10188,7 +10823,7 @@ jobs:
     (check-equal? (apt-deb-name c) "racket9_9.2.2.1-1_amd64.deb")
     (check-equal? (deb-generated-package-name c "1" "ubuntu2404" "amd64")
                   "racket9_9.2.2-1.ubuntu2404_amd64.deb")
-    (check-equal? (rpm-package-name c) "racket9-9.2.2-1.el9.x86_64.rpm")
+    (check-equal? (rpm-package-name c) "racket9-9.2.2-1.2.cached.el9.x86_64.rpm")
     (check-equal? (brew-tgz-member-path c "src/README.txt")
                   "racket-9.2.2/src/README.txt")
     (define content (formula-content/full c test-sha256))
@@ -10221,9 +10856,9 @@ jobs:
         (define spec-content (file->string spec-path))
         (check-true (string-contains? spec-content "Version: 9.2.2"))
         (check-false (string-contains? spec-content "Version: 9.2.2.1"))
-        (check-true (string-contains? spec-content "%{!?package_system:%global package_system el9}"))
-        (check-true (string-contains? spec-content "%{!?package_release:%global package_release 1}"))
-        (check-true (string-contains? spec-content "Release: %{package_release}.%{package_system}"))
+        (check-true (string-contains? spec-content "%global package_system el9"))
+        (check-true (string-contains? spec-content "%global package_release 1"))
+        (check-true (string-contains? spec-content "Release: %{package_release}.2.cached.%{package_system}"))
         (check-true (string-contains? spec-content "Source0: https://github.com/CutieDeng/racket/releases/download/v9.2.2/racket-minimal-9.2.2-src.tgz"))
         (check-true (string-contains? spec-content "Requires: libedit"))
         (check-false (string-contains? spec-content "Source1:"))
@@ -10318,7 +10953,8 @@ end
 	        (check-true (string-contains? content "if build.bottle?"))
 	        (check-true (string-contains? content "preserve_compiled_cache_dir?"))
 	        (check-true (string-contains? content "system_cache_populated?"))
-		        (check-true (string-contains? content "rhombus_demod_cache_populated?"))
+		        (check-false (string-contains? content "rhombus_demod_cache_populated?"))
+		        (check-false (string-contains? content "compiled/ephemeral/demod"))
 		        (check-true (string-contains? content "package-racket-rhombus-cache"))
 		        (check-true (string-contains? content "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""))
 		        (check-true (string-contains? content "with_setup_bootstrap_config"))
@@ -10362,9 +10998,8 @@ end
 		                                 "system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"\n    configure_racket"
 		                                 "racket_config.atomic_write content"
 		                                 "if build.bottle?"
-		                                 "system_cache_populated?"
-			                                 "rhombus_demod_cache_populated?"
-			                                 "package-racket-rhombus-cache"
+			                                 "system_cache_populated?"
+				                                 "package-racket-rhombus-cache"
 			                                 "with_setup_bootstrap_config"
 			                                 "could not prepare Racket setup bootstrap config"
 					                                 "system bin/\"racket\", \"-U\", \"-G\", config_dir.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",\n             \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\""
@@ -10376,7 +11011,6 @@ end
                                  "Dir[\"#{prefix}/**/compiled\"].sort_by(&:length).reverse_each"
                                  "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""
 	                                 "assert system_cache_populated?"
-	                                 "assert rhombus_demod_cache_populated?"
                                  "brew-empty-home-ok"
                                  "printf 'f\\\"hi\\\""
                                  "refute_match(/no readline support/"
@@ -10392,6 +11026,8 @@ end
     (check-false (string-contains? content "Fixing up Cellar references"))
     (check-false (string-contains? content "Formula[\"openssl@3\"].opt_lib"))
     (check-false (string-contains? content "#{var}/cache/racket/compiled"))
+    (check-false (string-contains? content "rhombus_demod_cache"))
+    (check-false (string-contains? content "compiled/ephemeral/demod"))
     (check-false (string-contains? content "assert_match(/\\e\\["))
   ) ; end test-case full Formula template
 
