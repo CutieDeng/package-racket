@@ -2478,28 +2478,28 @@ cleanup_rhombus_ephemeral() {{
 setup_config_dir=$(mktemp -d) || exit 1
 [ -n \"$setup_config_dir\" ] || {{ echo \"mktemp returned an empty Racket setup config directory\" >&2; exit 1; }}
 setup_config_file=\"$setup_config_dir/config.rktd\"
-setup_bootstrap_root=\"$setup_config_dir/compiled\"
 sed -E \\
   -e 's|compiled-file-system-cache-root . \"%{{dynamic_cache_root}}\"|compiled-file-system-cache-root . \"%{{immutable_cache_root}}\"|' \\
   -e 's/[[:space:]]*\\(compiled-file-cache-roots[[:space:]]+\\.[[:space:]]+\\([^)]*\\)\\)//' \\
   \"$config_file\" > \"$setup_config_file\"
 if grep -F '(compiled-file-cache-roots .' \"$setup_config_file\" >/dev/null; then
-  echo \"could not prepare Racket setup bootstrap config\" >&2
+  echo \"could not prepare isolated Racket setup config\" >&2
   exit 1
 fi
-grep -F '(compiled-file-system-cache-root . \"%{{immutable_cache_root}}\")' \"$setup_config_file\" >/dev/null || {{ echo \"setup bootstrap config did not select the immutable cache root\" >&2; exit 1; }}
-mkdir -p \"$setup_bootstrap_root\"
+grep -F '(compiled-file-system-cache-root . \"%{{immutable_cache_root}}\")' \"$setup_config_file\" >/dev/null || {{ echo \"isolated setup config did not select the immutable cache root\" >&2; exit 1; }}
+# Reset the target before Racket starts so setup and its workers use the same root.
+rm -rf \"$staged_cache_root\"
 mkdir -p \"$staged_cache_root\"
 trap cleanup_staging EXIT
 add_runtime_link \"%{{buildroot}}$runtime_share_dir\" \"$runtime_share_dir\"
 add_runtime_link \"%{{buildroot}}$runtime_lib_dir\" \"$runtime_lib_dir\"
 add_runtime_link \"$config_dir\" \"$runtime_config_dir\"
-if ! \"$racket_bin\" -U -R \"$setup_bootstrap_root\" -X \"$runtime_collects_dir\" -G \"$setup_config_dir\" -N raco -l- raco setup --system --no-user --reset-cache --unsafe-delete-all -D --no-pkg-deps --no-launcher; then
+if ! \"$racket_bin\" -U -R \"$runtime_cache_root\" -X \"$runtime_collects_dir\" -G \"$setup_config_dir\" -N raco -l- raco setup --no-user -D --no-pkg-deps --no-launcher; then
   exit 1
 fi
 cleanup_rhombus_ephemeral
 if find \"%{{buildroot}}$runtime_share_dir\" -type d -name compiled ! -path '*/info-domain/compiled' -print -quit | grep -q .; then
-  echo \"setup bootstrap leaked compiled files into the staged runtime tree\" >&2
+  echo \"setup leaked compiled files into the staged runtime tree\" >&2
   exit 1
 fi
 if ! \"$racket_bin\" -U -R \"$runtime_cache_root\" -X \"$runtime_collects_dir\" -G \"$runtime_config_dir\" -N rhombus -l- rhombus/run.rhm --version >/dev/null; then
@@ -2569,17 +2569,21 @@ cleanup_rhombus_ephemeral() {{
   rmdir \"$rhombus_compiled_root\" 2>/dev/null || true
 }}
 setup_config_dir=
+empty_home=
 cleanup_posttrans() {{
   if [ -n \"${{setup_config_dir:-}}\" ]; then
     rm -rf \"$setup_config_dir\"
     setup_config_dir=
+  fi
+  if [ -n \"${{empty_home:-}}\" ]; then
+    rm -rf \"$empty_home\"
+    empty_home=
   fi
   cleanup_rhombus_ephemeral
 }}
 trap cleanup_posttrans EXIT
 %if \"%{{cache_mode}}\" == \"postinstall\"
 compiled_cache_root=\"%{{dynamic_cache_root}}\"
-mkdir -p \"$compiled_cache_root\"
 setup_jobs=
 if [ -r /etc/os-release ]; then
   . /etc/os-release
@@ -2591,30 +2595,31 @@ setup_config_source=\"%{{_sysconfdir}}/racket/config.rktd\"
 setup_config_dir=$(mktemp -d) || exit 1
 [ -n \"$setup_config_dir\" ] || {{ echo \"mktemp returned an empty Racket setup config directory\" >&2; exit 1; }}
 setup_config_file=\"$setup_config_dir/config.rktd\"
-setup_bootstrap_root=\"$setup_config_dir/compiled\"
 sed -E 's/[[:space:]]*\\(compiled-file-cache-roots[[:space:]]+\\.[[:space:]]+\\([^)]*\\)\\)//' \"$setup_config_source\" > \"$setup_config_file\"
 if grep -F '(compiled-file-cache-roots .' \"$setup_config_file\" >/dev/null; then
-  echo \"could not prepare Racket setup bootstrap config\" >&2
+  echo \"could not prepare isolated Racket setup config\" >&2
   exit 1
 fi
-grep -F '(compiled-file-system-cache-root . \"%{{dynamic_cache_root}}\")' \"$setup_config_file\" >/dev/null || {{ echo \"setup bootstrap config did not select the dynamic cache root\" >&2; exit 1; }}
-mkdir -p \"$setup_bootstrap_root\"
-if ! %{{package_prefix}}/bin/racket -U -R \"$setup_bootstrap_root\" -X %{{package_prefix}}/share/racket/collects -G \"$setup_config_dir\" -N raco -l- raco setup $setup_jobs --system --no-user --reset-cache --unsafe-delete-all -D --no-pkg-deps --no-launcher; then
+grep -F '(compiled-file-system-cache-root . \"%{{dynamic_cache_root}}\")' \"$setup_config_file\" >/dev/null || {{ echo \"isolated setup config did not select the dynamic cache root\" >&2; exit 1; }}
+# Reset the target before Racket starts so setup and its workers use the same root.
+rm -rf \"$compiled_cache_root\"
+mkdir -p \"$compiled_cache_root\"
+if ! %{{package_prefix}}/bin/racket -U -R \"$compiled_cache_root\" -X %{{package_prefix}}/share/racket/collects -G \"$setup_config_dir\" -N raco -l- raco setup $setup_jobs --no-user -D --no-pkg-deps --no-launcher; then
   exit 1
 fi
 cleanup_rhombus_ephemeral
 rm -rf \"$setup_config_dir\"
 setup_config_dir=
-empty_home=$(mktemp -d)
+empty_home=$(mktemp -d) || exit 1
+[ -n \"$empty_home\" ] || {{ echo \"mktemp returned an empty Racket smoke-test home directory\" >&2; exit 1; }}
 if ! HOME=\"$empty_home\" %{{package_prefix}}/bin/racket -U -R \"$compiled_cache_root\" -N rhombus -l- rhombus/run.rhm --version >/dev/null; then
-  rm -rf \"$empty_home\"
   exit 1
 fi
 if ! HOME=\"$empty_home\" %{{package_prefix}}/bin/racket -U -R \"$compiled_cache_root\" -N rhombus -l- rhombus/run.rhm -e 'println(\"package-racket-rhombus-cache\")' >/dev/null; then
-  rm -rf \"$empty_home\"
   exit 1
 fi
 rm -rf \"$empty_home\"
+empty_home=
 rm -f \"/var/cache/racket/%{{version}}/racket-compiled-cache.log\"
 %else
 rm -rf \"%{{dynamic_cache_root}}\"
@@ -2688,8 +2693,7 @@ exit 0
                                  "add_runtime_link"
                                  "runtime staging link path already exists"
                                  "-X \"$runtime_collects_dir\" -G \"$runtime_config_dir\""
-                                 "-U -R \"$runtime_cache_root\""
-                                 "--reset-cache --unsafe-delete-all"
+                                 "-U -R \"$runtime_cache_root\" -X \"$runtime_collects_dir\" -G \"$setup_config_dir\" -N raco -l- raco setup"
                                  "--no-launcher"
                                  "-N rhombus -l- rhombus/run.rhm --version"
                                  "package-racket-rhombus-cache"
@@ -2700,18 +2704,19 @@ exit 0
                                  "runtime-keyed staged system compiled cache"
                                  "runtime-keyed staged package compiled cache"
                                  "racket-compiled-cache.log"
-                                 "could not prepare Racket setup bootstrap config"
+                                 "could not prepare isolated Racket setup config"
                                  "mktemp returned an empty Racket setup config directory"
-                                 "setup bootstrap config did not select the immutable cache root"
-                                 "setup bootstrap config did not select the dynamic cache root"
-                                 "setup bootstrap leaked compiled files into the staged runtime tree"
-                                 "setup_bootstrap_root=\"$setup_config_dir/compiled\""
-                                 "-U -R \"$setup_bootstrap_root\" -X \"$runtime_collects_dir\" -G \"$setup_config_dir\" -N raco -l- raco setup"
+                                 "mktemp returned an empty Racket smoke-test home directory"
+                                 "isolated setup config did not select the immutable cache root"
+                                 "isolated setup config did not select the dynamic cache root"
+                                 "setup leaked compiled files into the staged runtime tree"
+                                 "rm -rf \"$staged_cache_root\""
                                  "%posttrans"
                                  "cleanup_posttrans"
                                  "/etc/os-release"
                                  "setup_jobs=\"-j 1\""
-                                 "%{package_prefix}/bin/racket -U -R \"$setup_bootstrap_root\" -X %{package_prefix}/share/racket/collects"
+                                 "rm -rf \"$compiled_cache_root\""
+                                 "%{package_prefix}/bin/racket -U -R \"$compiled_cache_root\" -X %{package_prefix}/share/racket/collects"
                                  "%postun"
                                  "if [ \"$1\" = \"0\" ]; then"
                                  "rm -rf \"%{dynamic_cache_root}\""
@@ -2738,6 +2743,10 @@ exit 0
                                     "other_package="
                                     "rpm -q --quiet"
                                     "-R same"
+                                    "setup_bootstrap_root="
+                                    "--system"
+                                    "--reset-cache"
+                                    "--unsafe-delete-all"
                                     "rhombus_ephemeral_root="
                                     "config.rktd.package-racket-final"
                                     "compiled-file-system-cache-root . \"/var/cache/racket/compiled\""
@@ -3929,18 +3938,21 @@ printf '%s\\n' \"$provides\" | grep -F \"$BASE_PACKAGE_NAME(cache-mode-$CACHE_MO
   || die \"RPM metadata is missing cache-mode capability\"
 scripts=$(rpm -qp --scripts \"$RPM_PATH\")
 if [ \"$CACHE_MODE\" = postinstall ]; then
-  printf '%s\\n' \"$scripts\" | grep -F \"$PREFIX/bin/racket -U\" | grep -F -- '-R \"$setup_bootstrap_root\"' | grep -F -- \"-X $PREFIX/share/racket/collects\" | grep -F -- '-G \"$setup_config_dir\" -N raco -l- raco setup' | grep -F -- '--reset-cache --unsafe-delete-all' >/dev/null \\
+  printf '%s\\n' \"$scripts\" | grep -F \"$PREFIX/bin/racket -U\" | grep -F -- '-R \"$compiled_cache_root\"' | grep -F -- \"-X $PREFIX/share/racket/collects\" | grep -F -- '-G \"$setup_config_dir\" -N raco -l- raco setup' | grep -F -- '--no-user' >/dev/null \\
     || die \"RPM scriptlets do not build the system compiled cache\"
-  printf '%s\\n' \"$scripts\" | grep -F 'could not prepare Racket setup bootstrap config' >/dev/null \\
-    || die \"RPM scriptlets do not isolate setup from the cache being reset\"
-  printf '%s\\n' \"$scripts\" | grep -F 'setup_bootstrap_root=\"$setup_config_dir/compiled\"' >/dev/null \\
-    || die \"RPM scriptlets do not keep bootstrap bytecode under the temporary setup directory\"
+  printf '%s\\n' \"$scripts\" | grep -F 'could not prepare isolated Racket setup config' >/dev/null \\
+    || die \"RPM scriptlets do not isolate setup from installed cache-root policy\"
+  printf '%s\\n' \"$scripts\" | grep -F 'rm -rf \"$compiled_cache_root\"' >/dev/null \\
+    || die \"RPM scriptlets do not reset the compiled cache before Racket starts\"
   printf '%s\\n' \"$scripts\" | grep -F 'package-racket-rhombus-cache' >/dev/null \\
     || die \"RPM scriptlets do not warm Rhombus into the dynamic cache\"
 else
   if printf '%s\\n' \"$scripts\" | grep -F 'raco setup' >/dev/null; then
     die \"cached RPM scriptlets unexpectedly build the system compiled cache\"
   fi
+fi
+if printf '%s\\n' \"$scripts\" | grep -E -- '--system|--reset-cache|--unsafe-delete-all' >/dev/null; then
+  die \"RPM scriptlets retain in-process compiled-cache reset options\"
 fi
 printf '%s\\n' \"$scripts\" | grep -F 'cleanup_rhombus_ephemeral' >/dev/null \\
   || die \"RPM scriptlets do not clean Rhombus ephemeral compiled state\"
