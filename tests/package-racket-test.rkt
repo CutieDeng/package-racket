@@ -410,7 +410,7 @@ actual output:
 
 (module+ test
   (test-case "production packaging revisions stay synchronized"
-    (define expected-release "1")
+    (define expected-release "2")
     (define package-config (read-config (build-path package-root "package-config.rktd")))
     (define source-version (hash-ref package-config 'source-version))
     (define formula-version (hash-ref package-config 'formula-version))
@@ -459,7 +459,7 @@ actual output:
        (define text (combined-output out err))
        (check-contains text "Targets: apt")
        (check-contains text "APT package:")
-       (check-contains text "racket9_9.2.3.1-1_amd64.deb")
+       (check-contains text "racket9_9.2.3.2-1_amd64.deb")
        (check-not-contains text "APT release config:")
        (check-false (directory-exists? artifact-dir))
        (check-false (directory-exists? work-dir))
@@ -483,7 +483,7 @@ actual output:
                 "--dry-run")))
        (define text (combined-output out err))
        (check-contains text "Targets: rpm")
-       (check-contains text "Formula/package version: 9.2.3.1")
+       (check-contains text "Formula/package version: 9.2.3.2")
        (check-contains text "RPM target arch: aarch64")
        (check-contains text "RPM target system: openeuler2403")
        (check-contains text "RPM package version: 9.2.3")
@@ -1155,8 +1155,8 @@ actual output:
        (check-contains text "Would generate Windows portable README:")
        (check-contains text "Would generate Windows portable CI workflow:")
        (check-contains text "Would configure Windows runner: windows-2022")
-       (check-contains text "Would configure Windows portable zip: racket9-9.2.3.1-windows-x86_64.zip")
-       (check-contains text "Would configure Windows Inno installer: racket9-9.2.3.1-windows-x86_64-setup.exe")
+       (check-contains text "Would configure Windows portable zip: racket9-9.2.3.2-windows-x86_64.zip")
+       (check-contains text "Would configure Windows Inno installer: racket9-9.2.3.2-windows-x86_64-setup.exe")
        (check-contains text "Would publish Windows release asset: no")
        (check-false (file-exists? (build-path windows-repo-root "README.md")))
        (check-false (file-exists? (build-path windows-repo-root ".github" "workflows" "build-windows-portable.yml")))
@@ -1185,8 +1185,8 @@ actual output:
        (check-true (file-exists? workflow-path))
        (check-contains (file->string readme-file) "GENERATED WINDOWS PORTABLE PACKAGING METADATA - DO NOT EDIT.")
        (check-contains (file->string readme-file) "build-windows-portable.yml")
-       (check-contains (file->string readme-file) "racket9-9.2.3.1-windows-x86_64.zip")
-       (check-contains (file->string readme-file) "racket9-9.2.3.1-windows-x86_64-setup.exe")
+       (check-contains (file->string readme-file) "racket9-9.2.3.2-windows-x86_64.zip")
+       (check-contains (file->string readme-file) "racket9-9.2.3.2-windows-x86_64-setup.exe")
        (check-contains (file->string readme-file) "/CACHEPATH")
        (check-contains (file->string readme-file) "Release asset publishing is enabled")
        (check-contains (file->string readme-file) "CutieDeng/racket")
@@ -1197,8 +1197,8 @@ actual output:
        (check-contains workflow-content "runs-on: windows-2022")
        (check-contains workflow-content "SOURCE_URL: 'https://github.com/CutieDeng/racket/releases/download/v9.2.3/racket-minimal-9.2.3-src.tgz'")
        (check-contains workflow-content "SOURCE_SHA256: '")
-       (check-contains workflow-content "ZIP_NAME: 'racket9-9.2.3.1-windows-x86_64.zip'")
-       (check-contains workflow-content "EXE_NAME: 'racket9-9.2.3.1-windows-x86_64-setup.exe'")
+       (check-contains workflow-content "ZIP_NAME: 'racket9-9.2.3.2-windows-x86_64.zip'")
+       (check-contains workflow-content "EXE_NAME: 'racket9-9.2.3.2-windows-x86_64-setup.exe'")
        (check-contains workflow-content "NMAKE_TARGET: 'plain-install'")
        (check-contains workflow-content "dir src\\Makefile.nt")
        (check-contains workflow-content "dir src\\buildmain.zuo")
@@ -1292,14 +1292,14 @@ actual output:
          (run-package/success
           (list "--target" "apt"
                 "--racket-root" (path-arg racket-root)
-                "--formula-version" "9.2.3.1"
+                "--formula-version" "9.2.3.2"
                 "--artifact-dir" (path-arg artifact-dir)
                 "--work-dir" (path-arg work-dir)
                 "--dry-run")))
        (define text (combined-output out err))
-       (check-contains text "Formula/package version: 9.2.3.1")
+       (check-contains text "Formula/package version: 9.2.3.2")
        (check-contains text "Racket source version: 9.2.3")
-       (check-contains text "racket9_9.2.3.1-1_amd64.deb")
+       (check-contains text "racket9_9.2.3.2-1_amd64.deb")
        (check-false (directory-exists? artifact-dir))
       ) ; end lambda temp dir
     ) ; end with-temp-dir
@@ -1335,7 +1335,7 @@ actual output:
        (define racket-root (make-fake-racket-root! tmp))
        (define artifact-dir (build-path tmp "artifacts"))
        (define work-dir (build-path tmp "work"))
-       (define deb-name "racket9_9.2.3.1-1_amd64.deb")
+       (define deb-name "racket9_9.2.3.2-1_amd64.deb")
        (define config-path (build-path tmp "apt-release-config.rktd"))
        (write-apt-release-config! config-path deb-name)
        (define-values (out err)
@@ -1370,16 +1370,16 @@ actual output:
           (list "--target" "apt"
                 "--target" "apt-release"
                 "--racket-root" (path-arg racket-root)
-                "--formula-version" "9.2.3.1"
+                "--formula-version" "9.2.3.2"
                 "--artifact-dir" (path-arg artifact-dir)
                 "--work-dir" (path-arg work-dir)
                 "--apt-release-config" (path-arg config-path)
                 "--dry-run")))
        (define text (combined-output out err))
        (check-contains text "APT package:")
-       (check-contains text "racket9_9.2.3.1-1_amd64.deb")
+       (check-contains text "racket9_9.2.3.2-1_amd64.deb")
        (check-contains text "APT release tag: v9.2.3")
-       (check-contains text "APT release asset: racket9_9.2.3.1-1_amd64.deb")
+       (check-contains text "APT release asset: racket9_9.2.3.2-1_amd64.deb")
        (check-contains text "Would upload apt release asset from planned apt output")
       ) ; end lambda temp dir
     ) ; end with-temp-dir
