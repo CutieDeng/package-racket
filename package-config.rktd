@@ -1,2 +1,2 @@
-#hash((source-version . "9.2.2")
-      (formula-version . "9.2.2.7"))
+#hash((source-version . "9.2.3")
+      (formula-version . "9.2.3"))
