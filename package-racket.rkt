@@ -7570,6 +7570,7 @@ information.
 				                                 "with_setup_bootstrap_config"
 				                                 "could not prepare Racket setup bootstrap config"
 			                                 "preserve_compiled_cache_dir?"
+			                                 "next if dir.end_with?(\"/info-domain/compiled\")"
 			                                 "system_cache_populated?"
 			                                 "package-racket-rhombus-cache"
 			                                 "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""
@@ -7842,6 +7843,7 @@ information.
   def remove_precompiled_cache
     Dir[\"#{prefix}/**/compiled\"].sort_by(&:length).reverse_each do |dir|
       next if preserve_compiled_cache_dir?(dir)
+      next if dir.end_with?(\"/info-domain/compiled\")
 
       rm_r dir
     end
@@ -8046,9 +8048,21 @@ information.
 			                   with-no-launcher-cache-setup
 			                   "    end")
 			) ; end define without-stale-block-no-launcher
+			(define with-info-domain-preserved
+			  (if (string-contains? without-stale-block-no-launcher "info-domain/compiled")
+			      without-stale-block-no-launcher
+			      (string-replace without-stale-block-no-launcher
+			                      "      next if preserve_compiled_cache_dir?(dir)
+
+      rm_r dir"
+			                      "      next if preserve_compiled_cache_dir?(dir)
+      next if dir.end_with?(\"/info-domain/compiled\")
+
+      rm_r dir"))
+			) ; end define with-info-domain-preserved
 			(write-text-file!
 			 formula-path
-			 without-stale-block-no-launcher)
+			 with-info-domain-preserved)
     (ensure-formula-docs-test! c formula-path)
     (validate-formula-file! c formula-path)
   ) ; end begin set-formula-source!
@@ -8248,6 +8262,7 @@ information.
   def remove_precompiled_cache
     Dir[\"{rb-prefix}/**/compiled\"].sort_by(&:length).reverse_each do |dir|
       next if preserve_compiled_cache_dir?(dir)
+      next if dir.end_with?(\"/info-domain/compiled\")
 
       rm_r dir
     end
