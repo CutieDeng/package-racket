@@ -1606,7 +1606,7 @@ build_staged_system_cache() {{
   cp \"$config_file\" \"$backup\"
   write_staged_config \"$config_file\" \"$stage_root\" \"$prefix\" \"$runtime_cache_root\" \"$staged_cache_root\"
   mkdir -p \"$staged_cache_root\"
-  if ! \"$racket_bin\" -X \"$collects_dir\" -G \"$config_dir\" -N raco -l- raco setup -j 1 --system --no-user --reset-cache -D --no-pkg-deps --no-launcher; then
+  if ! \"$racket_bin\" -X \"$collects_dir\" -G \"$config_dir\" -N raco -l- raco setup --system --no-user --reset-cache -D --no-pkg-deps --no-launcher; then
     cp \"$backup\" \"$config_file\"
     rm -f \"$backup\"
     return 1
@@ -2179,7 +2179,7 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
 		                                      "pkgs-dir"
 		                                      "racket-compiled-cache.log"
 		                                      "-X \"$collects_dir\" -G \"$config_dir\""
-		                                      "raco setup -j 1 --system --no-user --reset-cache -D --no-pkg-deps --no-launcher"
+		                                      "raco setup --system --no-user --reset-cache -D --no-pkg-deps --no-launcher"
 		                                      "PLTCOMPILEDROOTS=\"$runtime_cache_root\""
 		                                      "\"$runtime_rhombus_bin\" -e"
 		                                      "replace_config_value"
@@ -2584,13 +2584,6 @@ cleanup_posttrans() {{
 trap cleanup_posttrans EXIT
 %if \"%{{cache_mode}}\" == \"postinstall\"
 compiled_cache_root=\"%{{dynamic_cache_root}}\"
-setup_jobs=
-if [ -r /etc/os-release ]; then
-  . /etc/os-release
-  if [ \"${{ID:-}}\" = \"fedora\" ] && [ \"${{VERSION_ID:-}}\" = \"44\" ]; then
-    setup_jobs=\"-j 1\"
-  fi
-fi
 setup_config_source=\"%{{_sysconfdir}}/racket/config.rktd\"
 setup_config_dir=$(mktemp -d) || exit 1
 [ -n \"$setup_config_dir\" ] || {{ echo \"mktemp returned an empty Racket setup config directory\" >&2; exit 1; }}
@@ -2604,7 +2597,7 @@ grep -F '(compiled-file-system-cache-root . \"%{{dynamic_cache_root}}\")' \"$set
 # Reset the target before Racket starts so setup and its workers use the same root.
 rm -rf \"$compiled_cache_root\"
 mkdir -p \"$compiled_cache_root\"
-if ! %{{package_prefix}}/bin/racket -U -R \"$compiled_cache_root\" -X %{{package_prefix}}/share/racket/collects -G \"$setup_config_dir\" -N raco -l- raco setup $setup_jobs --no-user -D --no-pkg-deps --no-launcher; then
+if ! %{{package_prefix}}/bin/racket -U -R \"$compiled_cache_root\" -X %{{package_prefix}}/share/racket/collects -G \"$setup_config_dir\" -N raco -l- raco setup --no-user -D --no-pkg-deps --no-launcher; then
   exit 1
 fi
 cleanup_rhombus_ephemeral
@@ -2713,8 +2706,6 @@ exit 0
                                  "rm -rf \"$staged_cache_root\""
                                  "%posttrans"
                                  "cleanup_posttrans"
-                                 "/etc/os-release"
-                                 "setup_jobs=\"-j 1\""
                                  "rm -rf \"$compiled_cache_root\""
                                  "%{package_prefix}/bin/racket -U -R \"$compiled_cache_root\" -X %{package_prefix}/share/racket/collects"
                                  "%postun"
