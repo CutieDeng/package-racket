@@ -1817,7 +1817,6 @@ fi
 SOURCE_DIR=\"${{source_dirs[0]}}\"
 
 sed -i 's|))$|) (default-scope . \"installation\") (compiled-file-cache-roots . (user system)) (compiled-file-system-cache-root . \"/var/cache/racket/compiled\"))|' \"$SOURCE_DIR/etc/config.rktd\"
-sed -i 's/\"1[.]1\"/\"3\"/g' \"$SOURCE_DIR/collects/openssl/libssl.rkt\" \"$SOURCE_DIR/collects/openssl/libcrypto.rkt\"
 cd \"$SOURCE_DIR/src\"
 ./configure \\
   --disable-debug \\
@@ -1855,8 +1854,14 @@ if [ \"$CACHE_MODE\" = cached ]; then
 Provides: $BASE_PACKAGE_NAME
 CONTROL
 fi
+# arm64 Racket runs crypto+TLS on the in-tree rktcrypto engine and never
+# loads OpenSSL, so the package declares no libssl dependency there.
+RUNTIME_DEPENDS=\"libc6, libedit2, libffi8, libssl3, libsqlite3-0, zlib1g\"
+if [ \"$NORMALIZED_ARCH\" = arm64 ]; then
+  RUNTIME_DEPENDS=\"libc6, libedit2, libffi8, libsqlite3-0, zlib1g\"
+fi
 cat >> \"$DEBIAN_DIR/control\" <<CONTROL
-Depends: libc6, libedit2, libffi8, libssl3, libsqlite3-0, zlib1g
+Depends: $RUNTIME_DEPENDS
 Description: $PACKAGE_SUMMARY
  Racket packaged from a stable source release archive.
 CONTROL
@@ -2189,7 +2194,9 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
                                     "build-deb.sh"
                                     '("Usage: scripts/build-deb.sh"
                                      "dpkg-deb --root-owner-group --build"
-                                     "Depends: libc6, libedit2"
+                                     "RUNTIME_DEPENDS=\"libc6, libedit2, libffi8, libssl3, libsqlite3-0, zlib1g\""
+                                     "if [ \"$NORMALIZED_ARCH\" = arm64 ]; then\n  RUNTIME_DEPENDS=\"libc6, libedit2, libffi8, libsqlite3-0, zlib1g\""
+                                     "Depends: $RUNTIME_DEPENDS"
 	                                      "compiled-file-cache-roots"
 	                                      "--enable-sharezo"
 	                                      "find \"$STAGE_ROOT\" -type d -name compiled ! -path '*/info-domain/compiled'"
@@ -2369,7 +2376,11 @@ BuildRequires: gcc
 BuildRequires: libffi-devel
 BuildRequires: make
 BuildRequires: ncurses-devel
+# aarch64 Racket runs crypto+TLS on the in-tree rktcrypto engine; only the
+# other architectures still carry OpenSSL pending rktcrypto perf validation.
+%ifnarch aarch64
 BuildRequires: openssl-devel
+%endif
 BuildRequires: perl
 BuildRequires: sqlite-devel
 BuildRequires: zlib-devel
@@ -2409,7 +2420,6 @@ fi
 
 %build
 sed -i 's|))$|) (default-scope . \"installation\") (compiled-file-cache-roots . (user system \"%{{immutable_cache_root}}\")) (compiled-file-system-cache-root . \"%{{dynamic_cache_root}}\"))|' etc/config.rktd
-sed -i 's/\"1[.]1\"/\"3\"/g' collects/openssl/libssl.rkt collects/openssl/libcrypto.rkt
 cd src
 ./configure \\
   --disable-debug \\
@@ -2662,7 +2672,7 @@ exit 0
                                  "BuildRequires: gcc"
                                  "BuildRequires: libffi-devel"
                                  "BuildRequires: make"
-                                 "BuildRequires: openssl-devel"
+                                 "%ifnarch aarch64\nBuildRequires: openssl-devel\n%endif"
                                  "Requires: libedit"
                                  f"Provides: {(rpm-cache-mode-capability c cache-mode)} = %{{version}}-%{{release}}"
                                  f"Obsoletes: {(cached-package-name (cfg-package-name c))} < %{{version}}-%{{package_release}}"
@@ -7552,7 +7562,7 @@ information.
                                  generated-code-notice-marker
                                  f"url \"{(formula-source-url c)}\""
                                  f"version \"{(cfg-formula-version c)}\""
-	                                 "depends_on \"openssl@3\""
+	                                 "on_intel do\n    depends_on \"openssl@3\"\n  end"
 		                                 "depends_on \"ncurses\""
 		                                 "racket_config.atomic_write content"
 		                                 "(compiled-file-system-cache-root . \\\"#{system_cache_root}\\\")"
@@ -8091,7 +8101,6 @@ information.
     (define rb-man (ruby-interpolate "man"))
     (define rb-etc (ruby-interpolate "etc"))
     (define rb-openssl-rpath (ruby-interpolate "formula_opt_lib(\"openssl@3\")"))
-    (define rb-openssl-libssl (ruby-interpolate "formula_opt_lib(\"openssl@3\")/shared_library(\"libssl\")"))
     (define rb-bin (ruby-interpolate "bin"))
     (define rb-lib (ruby-interpolate "lib"))
     (define rb-root (ruby-interpolate "root"))
@@ -8099,7 +8108,6 @@ information.
     (define rb-empty-home (ruby-interpolate "empty_home"))
     (define rb-test-script (ruby-interpolate "testpath/\"interactive-packages.rkt\""))
     (define rb-rhombus-script (ruby-interpolate "testpath/\"rhombus-smoke.rhm\""))
-    (define macos-openssl-rx "%r{.*openssl@3/.*/libssl.*\\.dylib}")
     f"{(generated-code-notice "#")}class RacketAT9 < Formula
   desc \"Modern programming language in the Lisp/Scheme family\"
   homepage \"https://racket-lang.org/\"
@@ -8112,14 +8120,18 @@ information.
     skip \"Private Racket fork releases are managed manually\"
   end
 
-  depends_on \"openssl@3\"
-
   uses_from_macos \"libffi\"
 
   on_linux do
     depends_on \"libedit\"
     depends_on \"ncurses\"
     depends_on \"zlib-ng-compat\"
+  end
+
+  # arm64 Racket runs crypto+TLS on the in-tree rktcrypto engine and loads no
+  # OpenSSL; Intel builds still carry it pending rktcrypto perf validation.
+  on_intel do
+    depends_on \"openssl@3\"
   end
 
   # These files are amended when packages are installed or removed.
@@ -8153,10 +8165,6 @@ information.
   end
 
   def install
-    # Prefer Homebrew OpenSSL 3 over older OpenSSL variants.
-    inreplace %w[libssl.rkt libcrypto.rkt].map {{ |file| buildpath/\"collects/openssl\"/file }},
-              '\"1.1\"', '\"3\"'
-
     cd \"src\" do
       args = %W[
         --disable-debug
@@ -8170,14 +8178,16 @@ information.
         --enable-useprefix
       ]
 
-      ENV[\"LDFLAGS\"] = \"-rpath {rb-openssl-rpath}\"
-      ENV[\"LDFLAGS\"] = \"-Wl,-rpath={rb-openssl-rpath}\" if OS.linux?
+      if Hardware::CPU.intel?
+        ENV[\"LDFLAGS\"] = \"-rpath {rb-openssl-rpath}\"
+        ENV[\"LDFLAGS\"] = \"-Wl,-rpath={rb-openssl-rpath}\" if OS.linux?
+      end
 
       system \"./configure\", *args
       system \"make\"
       system \"make\", \"install\"
 
-      if OS.mac?
+      if OS.mac? && Hardware::CPU.intel?
         openssl_opt_lib = formula_opt_lib(\"openssl@3\")
         racket_libdir = lib/\"racket\"
 
@@ -8356,12 +8366,19 @@ information.
 
     assert_match '(default-scope . \"installation\")', racket_config.read
 
+    output = shell_output(\"{rb-bin}/racket -e '(require openssl) (displayln ssl-available?)'\")
+    assert_match \"#t\", output
+
+    # TLS runs on the in-tree rktcrypto engine: requiring openssl must not
+    # pull an OpenSSL shared library into the process on any architecture.
+    # (Apple system frameworks transitively load /usr/lib/libssl.*, so on
+    # macOS only Homebrew's OpenSSL counts as a violation.)
     if OS.mac?
       output = shell_output(\"DYLD_PRINT_LIBRARIES=1 {rb-bin}/racket -e '(require openssl)' 2>&1\")
-      assert_match({macos-openssl-rx}, output)
+      refute_match(%r{{openssl@3/.*/lib(ssl|crypto)}}, output)
     else
       output = shell_output(\"LD_DEBUG=libs {rb-bin}/racket -e '(require openssl)' 2>&1\")
-      assert_match \"init: {rb-openssl-libssl}\", output
+      refute_match(/libssl|libcrypto/, output)
     end
   end
 end
@@ -11011,7 +11028,9 @@ jobs:
   version \"9.2.2\"
   license any_of: [\"MIT\", \"Apache-2.0\"]
 
-  depends_on \"openssl@3\"
+  on_intel do
+    depends_on \"openssl@3\"
+  end
 
   on_linux do
     depends_on \"ncurses\"
@@ -11087,8 +11106,12 @@ end
                                  "url \"https://github.com/CutieDeng/racket/releases/download/v9.2.2/racket-minimal-9.2.2-src.tgz\""
                                  f"sha256 \"{test-sha256}\""
                                  "version \"9.2.2\""
-                                 "depends_on \"openssl@3\""
+                                 "on_intel do\n    depends_on \"openssl@3\"\n  end"
                                  "formula_opt_lib(\"openssl@3\")"
+                                 "if Hardware::CPU.intel?"
+                                 "if OS.mac? && Hardware::CPU.intel?"
+                                 "(require openssl) (displayln ssl-available?)"
+                                 "refute_match(/libssl|libcrypto/, output)"
                                  "depends_on \"ncurses\""
                                  "depends_on \"zlib-ng-compat\""
                                  "require \"pty\""
@@ -11129,6 +11152,9 @@ end
     (check-false (string-contains? content "inreplace \"etc/config.rktd\""))
     (check-false (string-contains? content "Fixing up Cellar references"))
     (check-false (string-contains? content "Formula[\"openssl@3\"].opt_lib"))
+    (check-false (string-contains? content "libssl.rkt"))
+    (check-false (string-contains? content "libcrypto.rkt"))
+    (check-false (string-contains? content "shared_library(\"libssl\")"))
     (check-false (string-contains? content "#{var}/cache/racket/compiled"))
     (check-false (string-contains? content "rhombus_demod_cache"))
     (check-false (string-contains? content "compiled/ephemeral/demod"))

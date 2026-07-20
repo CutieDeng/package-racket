@@ -1,10 +1,10 @@
-#hash((release-tag . "v9.2.3")
-      (release-name . "Racket 9.2.3 DEB packages")
+#hash((release-tag . "v9.2.4")
+      (release-name . "Racket 9.2.4 DEB packages")
       (artifact-prefix . "deb")
       (create-release . #t)
       (targets . (#hash((id . "debian12-amd64")
                         (deb-system . "debian12")
-                        (deb-release . "3")
+                        (deb-release . "1")
                         (deb-arch . "amd64")
                         (runner . "ubuntu-24.04")
                         (container . "debian:12")
@@ -30,7 +30,7 @@
                                            "zlib1g-dev")))
                   #hash((id . "ubuntu2404-amd64")
                         (deb-system . "ubuntu2404")
-                        (deb-release . "3")
+                        (deb-release . "1")
                         (deb-arch . "amd64")
                         (runner . "ubuntu-24.04")
                         (container . "ubuntu:24.04")
@@ -56,7 +56,7 @@
                                            "zlib1g-dev")))
                   #hash((id . "debian12-arm64")
                         (deb-system . "debian12")
-                        (deb-release . "3")
+                        (deb-release . "1")
                         (deb-arch . "arm64")
                         (runner . "ubuntu-24.04-arm")
                         (container . "debian:12")
@@ -74,7 +74,6 @@
                                            "libedit-dev"
                                            "libffi-dev"
                                            "libsqlite3-dev"
-                                           "libssl-dev"
                                            "make"
                                            "sed"
                                            "tar"
@@ -82,7 +81,7 @@
                                            "zlib1g-dev")))
                   #hash((id . "ubuntu2404-arm64")
                         (deb-system . "ubuntu2404")
-                        (deb-release . "3")
+                        (deb-release . "1")
                         (deb-arch . "arm64")
                         (runner . "ubuntu-24.04-arm")
                         (container . "ubuntu:24.04")
@@ -100,7 +99,6 @@
                                            "libedit-dev"
                                            "libffi-dev"
                                            "libsqlite3-dev"
-                                           "libssl-dev"
                                            "make"
                                            "sed"
                                            "tar"
