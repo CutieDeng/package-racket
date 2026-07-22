@@ -2,8 +2,10 @@
 
 (require file/tar
          file/md5
+         file/sha1
          json
          net/uri-codec
+         setup/getinfo
          net/url
          racket/cmdline
          racket/file
@@ -1817,6 +1819,10 @@ fi
 SOURCE_DIR=\"${{source_dirs[0]}}\"
 
 sed -i 's|))$|) (default-scope . \"installation\") (compiled-file-cache-roots . (user system)) (compiled-file-system-cache-root . \"/var/cache/racket/compiled\"))|' \"$SOURCE_DIR/etc/config.rktd\"
+# /etc/racket is not under the install prefix, so the bundled self catalog
+# needs an absolute path here (the source tree ships a brew-layout relative one)
+sed -i 's|\"../../share/racket/self-catalog\"|\"'\"$PREFIX\"'/share/racket/self-catalog\"|' \"$SOURCE_DIR/etc/config.rktd\"
+grep -F '/share/racket/self-catalog' \"$SOURCE_DIR/etc/config.rktd\" >/dev/null || die \"config lost the self catalog entry\"
 cd \"$SOURCE_DIR/src\"
 ./configure \\
   --disable-debug \\
@@ -2420,6 +2426,8 @@ fi
 
 %build
 sed -i 's|))$|) (default-scope . \"installation\") (compiled-file-cache-roots . (user system \"%{{immutable_cache_root}}\")) (compiled-file-system-cache-root . \"%{{dynamic_cache_root}}\"))|' etc/config.rktd
+sed -i 's|\"../../share/racket/self-catalog\"|\"%{{package_prefix}}/share/racket/self-catalog\"|' etc/config.rktd
+grep -F '%{{package_prefix}}/share/racket/self-catalog' etc/config.rktd >/dev/null
 cd src
 ./configure \\
   --disable-debug \\
@@ -6284,6 +6292,7 @@ jobs:
             $pattern = '\\s*\\(' + [regex]::Escape($key) + '\\s+\\.\\s+(\"[^\"]*\"|\\([^)]*\\)|[^)]*)\\)'
             $configText = [regex]::Replace($configText, $pattern, '')
           }}
+          $configText = $configText.Replace('\"../../share/racket/self-catalog\"', '\"../share/self-catalog\"')
           $cacheForConfig = $CacheRoot.Replace('\\', '/').Replace('\"', '\\\"')
           $entries = ' (default-scope . \"installation\") (compiled-file-cache-roots . (user system)) (compiled-file-system-cache-root . \"' + $cacheForConfig + '\")'
           $configText = [regex]::Replace($configText, '\\s*\\)\\)\\s*$', $entries + \"))`r`n\")
@@ -6921,10 +6930,11 @@ for build and installation instructions, see \"src/README.txt\".
 installed packages in source form.)
 
 The distribution has been configured so that when you install or
-update packages, the package catalogs at
+update packages, the bundled self catalog (share/self-catalog, which
+records the checksums of every package shipped with this distribution)
+is consulted first, followed by
   {(release-catalog-url version)}
   https://download.rhombus-lang.org/releases/current/catalog/
-are consulted first.
 
 Visit http://racket-lang.org/ for more Racket resources.
 
@@ -6946,8 +6956,18 @@ information.
 
 (define (write-brew-config! dest version)
   (begin
+    ;; The self catalog ships in the source tree as share/self-catalog and is
+    ;; installed as <share>/racket/self-catalog. The installed config lives at
+    ;; <sysconfdir>/racket/config.rktd, so "../.." reaches the install prefix
+    ;; both for Homebrew (/opt/homebrew/etc/racket -> /opt/homebrew) and for a
+    ;; plain unix-style prefix (<prefix>/etc/racket -> <prefix>). Keeping it
+    ;; ahead of the release catalogs makes `raco pkg` resolve every shipped
+    ;; package to the exact archive checksum recorded in pkgs.rktd, so
+    ;; `update-implies`-style checks no longer see a bogus mismatch against
+    ;; the official catalog.
     (define catalogs
-      (list (release-catalog-url version)
+      (list "../../share/racket/self-catalog"
+            (release-catalog-url version)
             "https://download.rhombus-lang.org/releases/current/catalog/"
             #f))
     (call-with-output-file dest
@@ -7161,23 +7181,28 @@ information.
 (define (brew-auto-pkg? name)
   (not (member name '("racket-lib" "tstring"))))
 
-(define (brew-pkg-info-value name)
+(define (brew-pkg-info-value name checksum)
   (begin
     (define auto? (brew-auto-pkg? name))
     (cond
       [(brew-sc-pkg? name)
-       f"#s((sc-pkg-info pkg-info 3) (catalog {(datum->source name)}) \"\" {(if auto? "#t" "#f")} {(datum->source name)})"]
+       f"#s((sc-pkg-info pkg-info 3) (catalog {(datum->source name)}) {(datum->source checksum)} {(if auto? "#t" "#f")} {(datum->source name)})"]
       [else
-       f"#s(pkg-info (catalog {(datum->source name)}) \"\" {(if auto? "#t" "#f")})"]
+       f"#s(pkg-info (catalog {(datum->source name)}) {(datum->source checksum)} {(if auto? "#t" "#f")})"]
     ) ; end cond pkg info kind
   ) ; end begin brew-pkg-info-value
 ) ; end define brew-pkg-info-value
 
-(define (write-brew-pkgs-db! dest packages)
+(define (write-brew-pkgs-db! dest packages checksums)
   (begin
     (define entries
       (for/hash ([name (in-list packages)])
-        (values name (brew-pkg-info-value name))
+        (define checksum
+          (hash-ref checksums name
+                    (lambda ()
+                      (raise-user-error 'write-brew-pkgs-db!
+                                        f"package has no self-catalog checksum: {name}"))))
+        (values name (brew-pkg-info-value name checksum))
       ) ; end for/hash entries
     ) ; end define entries
     (call-with-output-file dest
@@ -7200,6 +7225,85 @@ information.
     ) ; end call-with-output-file
   ) ; end begin write-brew-pkgs-db!
 ) ; end define write-brew-pkgs-db!
+
+(define (brew-self-catalog-dir dist-root)
+  (build-path dist-root "share" "self-catalog"))
+
+(define (write-brew-package-archive! pkg-dir archive-path)
+  (begin
+    (parameterize ([current-directory pkg-dir])
+      (call-with-output-file archive-path
+        #:exists 'truncate/replace
+        (lambda (out)
+          (tar->output (relative-files-from pkg-dir pkg-dir)
+                       out
+                       #:timestamp 0
+                       #:format 'pax)
+        ) ; end lambda archive out
+      ) ; end call-with-output-file archive
+    ) ; end parameterize package dir
+    (call-with-input-file archive-path sha1)
+  ) ; end begin write-brew-package-archive!
+) ; end define write-brew-package-archive!
+
+(define (brew-package-catalog-metadata pkgs-dir name)
+  (begin
+    (define info (get-info/full (build-path pkgs-dir name)))
+    (unless info
+      (raise-user-error 'brew-package-catalog-metadata
+                        f"package has no readable info.rkt: {name}")
+    ) ; end unless readable info
+    (values (info 'deps (lambda () '()))
+            (info 'pkg-desc (lambda () f"{name} (part of the Racket distribution)")))
+  ) ; end begin brew-package-catalog-metadata
+) ; end define brew-package-catalog-metadata
+
+(define (write-brew-catalog-entry! catalog-pkg-dir pkgs-dir name checksum)
+  (begin
+    (define-values (deps desc) (brew-package-catalog-metadata pkgs-dir name))
+    ;; relative to the catalog root directory, like the entries that
+    ;; `pkg/dirs-catalog` writes for the in-tree pkgs-catalog
+    (define source f"pkgs/{name}.tar")
+    (call-with-output-file (build-path catalog-pkg-dir name)
+      #:exists 'truncate/replace
+      (lambda (out)
+        (display "#hash((author . \"\")" out)
+        (display f" (checksum . {(datum->source checksum)})" out)
+        (display f" (dependencies . {(datum->source deps)})" out)
+        (display f" (description . {(datum->source desc)})" out)
+        (display " (modules . ())" out)
+        (display f" (name . {(datum->source name)})" out)
+        (display f" (source . {(datum->source source)})" out)
+        (display " (tags . ()))\n" out)
+      ) ; end lambda entry out
+    ) ; end call-with-output-file entry
+  ) ; end begin write-brew-catalog-entry!
+) ; end define write-brew-catalog-entry!
+
+;; Builds share/self-catalog inside the staged tree: one deterministic
+;; .tar archive per shipped package plus a file-catalog entry that
+;; records the archive's SHA-1, and returns the package->checksum map so
+;; pkgs.rktd can record the same values. With this catalog configured
+;; ahead of the release catalogs, `raco pkg` update checks compare the
+;; recorded checksum against this catalog and correctly report the
+;; shipped packages as up to date.
+(define (write-brew-self-catalog! dist-root packages)
+  (begin
+    (define pkgs-dir (build-path dist-root "share" "pkgs"))
+    (define catalog-dir (brew-self-catalog-dir dist-root))
+    (define catalog-pkg-dir (build-path catalog-dir "pkg"))
+    (define catalog-archives-dir (build-path catalog-dir "pkgs"))
+    (make-directory* catalog-pkg-dir)
+    (make-directory* catalog-archives-dir)
+    (for/hash ([name (in-list (sort packages string<?))])
+      (define checksum
+        (write-brew-package-archive! (build-path pkgs-dir name)
+                                     (build-path catalog-archives-dir f"{name}.tar")))
+      (write-brew-catalog-entry! catalog-pkg-dir pkgs-dir name checksum)
+      (values name checksum)
+    ) ; end for/hash package archives
+  ) ; end begin write-brew-self-catalog!
+) ; end define write-brew-self-catalog!
 
 (define (patch-brew-racket-lib-info! pkgs-dir)
   (begin
@@ -7304,7 +7408,6 @@ information.
     (make-directory* pkgs-dir)
     (copy-brew-licenses! (cfg-racket-root c) share-dir)
     (write-brew-links! (build-path share-dir "links.rktd") packages)
-    (write-brew-pkgs-db! (build-path pkgs-dir "pkgs.rktd") packages)
     (for ([name (in-list packages)])
       (copy-brew-tree! (brew-package-source (cfg-racket-root c) name)
                        (build-path pkgs-dir name))
@@ -7313,6 +7416,11 @@ information.
     (when (cfg-with-docs? c)
       (patch-brew-draw-lib-info! pkgs-dir)
     ) ; end when docs require draw-lib metadata patch
+    ;; the archives must be built from the staged (already patched)
+    ;; package trees, and pkgs.rktd must record the same checksums that
+    ;; the self catalog advertises
+    (define checksums (write-brew-self-catalog! dist-root packages))
+    (write-brew-pkgs-db! (build-path pkgs-dir "pkgs.rktd") packages checksums)
     dist-root
   ) ; end begin stage-brew-source!
 ) ; end define stage-brew-source!
@@ -7413,6 +7521,31 @@ information.
                           f"brew source tgz pkgs.rktd is missing: {needle}")
       ) ; end unless pkgs db needle
     ) ; end for required pkgs db entries
+    (define pkgs-db (read (open-input-string pkgs-db-content)))
+    (define tgz-members
+      (capture! 'validate-brew-tgz!
+                (cfg-tar-bin c)
+                (list "-tf" (clean-path-string (brew-output-tgz c)))))
+    (for ([name (in-list (brew-source-packages c))])
+      (define entry-content (brew-tgz-file-content c f"share/self-catalog/pkg/{name}"))
+      (define entry (read (open-input-string entry-content)))
+      (define catalog-checksum (hash-ref entry 'checksum ""))
+      (unless (regexp-match? #px"^[0-9a-f]{40}$" catalog-checksum)
+        (raise-user-error 'validate-brew-tgz!
+                          f"self catalog entry has no usable checksum: {name}")
+      ) ; end unless checksum shape
+      (define db-info (hash-ref pkgs-db name #f))
+      (define db-checksum (and db-info (vector-ref (struct->vector db-info) 2)))
+      (unless (equal? catalog-checksum db-checksum)
+        (raise-user-error 'validate-brew-tgz!
+                          f"self catalog and pkgs.rktd checksums disagree for: {name}")
+      ) ; end unless checksums agree
+      (unless (string-contains? tgz-members
+                                (brew-tgz-member-path c f"share/self-catalog/pkgs/{name}.tar"))
+        (raise-user-error 'validate-brew-tgz!
+                          f"brew source tgz is missing the self catalog archive for: {name}")
+      ) ; end unless archive member present
+    ) ; end for self catalog entries
     (define racket-lib-info-content
       (brew-tgz-file-content c "share/pkgs/racket-lib/info.rkt"))
     (when (string-contains? racket-lib-info-content brew-racket-lib-excluded-dependency)
@@ -10738,7 +10871,12 @@ jobs:
         (write-brew-config! config-path "9.2.2")
         (define cfg (call-with-input-file config-path read))
         (check-equal? (hash-ref cfg 'installation-name) "9.2.2")
-        (check-equal? (hash-ref cfg 'pkg-catalog-lookup-version) "9.2"))
+        (check-equal? (hash-ref cfg 'pkg-catalog-lookup-version) "9.2")
+        (check-equal? (hash-ref cfg 'catalogs)
+                      (list "../../share/racket/self-catalog"
+                            "https://download.racket-lang.org/releases/9.2/catalog/"
+                            "https://download.rhombus-lang.org/releases/current/catalog/"
+                            #f)))
       (lambda ()
         (when (file-exists? config-path)
           (delete-file config-path))))
@@ -10756,6 +10894,12 @@ jobs:
     (check-equal? (rpm-package-name c) "racket9-9.2.2-1.2.cached.el9.x86_64.rpm")
     (check-equal? (rpm-package-name c "postinstall")
                   "racket9-9.2.2-1.1.postinstall.el9.x86_64.rpm")
+    (check-equal? (brew-pkg-info-value "sandbox-lib"
+                                       "0123456789012345678901234567890123456789")
+                  "#s(pkg-info (catalog \"sandbox-lib\") \"0123456789012345678901234567890123456789\" #t)")
+    (check-equal? (brew-pkg-info-value "tstring"
+                                       "0123456789012345678901234567890123456789")
+                  "#s((sc-pkg-info pkg-info 3) (catalog \"tstring\") \"0123456789012345678901234567890123456789\" #f \"tstring\")")
     (check-true (and (member "sandbox-lib" packages string=?) #t))
     (check-true (and (member "errortrace-lib" packages string=?) #t))
     (check-true (and (member "source-syntax" packages string=?) #t))
