@@ -672,7 +672,7 @@
 ) ; end define normalize-deb-arch
 
 (define deb-supported-systems
-  '("debian12" "ubuntu2404"))
+  '("debian12" "ubuntu2204" "ubuntu2404"))
 
 (define (assert-deb-system system)
   (begin
@@ -1128,7 +1128,7 @@ scripts/build-deb.sh \\
   --prefix /usr
 ```
 
-Supported Debian-family systems are `debian12` and `ubuntu2404`. The package
+Supported Debian-family systems are `debian12`, `ubuntu2204`, and `ubuntu2404`. The package
 revision is generated as `deb-release.deb-system`, so `{(cfg-deb-release c)}`
 and `{(cfg-deb-system c)}` produce version `{(deb-package-version c (cfg-deb-release c) (cfg-deb-system c))}`.
 
@@ -1239,8 +1239,8 @@ normalize_arch() {{
 
 validate_deb_system() {{
   case \"$1\" in
-    debian12|ubuntu2404) ;;
-    *) die \"deb system must be debian12 or ubuntu2404: $1\" ;;
+    debian12|ubuntu2204|ubuntu2404) ;;
+    *) die \"deb system must be debian12, ubuntu2204, or ubuntu2404: $1\" ;;
   esac
 }}
 
@@ -1714,7 +1714,7 @@ Options:
   --source-url URL       Source archive URL. Defaults to the generated release URL.
   --artifact-dir PATH    Directory that receives the final .deb.
   --work-dir PATH        Build work directory.
-  --deb-system SYSTEM    debian12 or ubuntu2404.
+  --deb-system SYSTEM    debian12, ubuntu2204, or ubuntu2404.
   --deb-release RELEASE  Package revision base, for example 1. The system suffix is appended separately.
   --cache-mode MODE      postinstall or cached. Defaults to postinstall.
   --prefix PATH          Install prefix inside the package. Defaults to generated /usr.

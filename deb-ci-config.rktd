@@ -54,6 +54,32 @@
                                            "tar"
                                            "xz-utils"
                                            "zlib1g-dev")))
+                  #hash((id . "ubuntu2204-amd64")
+                        (deb-system . "ubuntu2204")
+                        (deb-release . "3")
+                        (deb-arch . "amd64")
+                        (runner . "ubuntu-24.04")
+                        (container . "ubuntu:22.04")
+                        (jobs . 2)
+                        (setup-packages . ("build-essential"
+                                           "ca-certificates"
+                                           "coreutils"
+                                           "curl"
+                                           "dpkg-dev"
+                                           "file"
+                                           "findutils"
+                                           "gcc"
+                                           "grep"
+                                           "gzip"
+                                           "libedit-dev"
+                                           "libffi-dev"
+                                           "libsqlite3-dev"
+                                           "libssl-dev"
+                                           "make"
+                                           "sed"
+                                           "tar"
+                                           "xz-utils"
+                                           "zlib1g-dev")))
                   #hash((id . "debian12-arm64")
                         (deb-system . "debian12")
                         (deb-release . "3")
@@ -85,6 +111,31 @@
                         (deb-arch . "arm64")
                         (runner . "ubuntu-24.04-arm")
                         (container . "ubuntu:24.04")
+                        (jobs . 2)
+                        (setup-packages . ("build-essential"
+                                           "ca-certificates"
+                                           "coreutils"
+                                           "curl"
+                                           "dpkg-dev"
+                                           "file"
+                                           "findutils"
+                                           "gcc"
+                                           "grep"
+                                           "gzip"
+                                           "libedit-dev"
+                                           "libffi-dev"
+                                           "libsqlite3-dev"
+                                           "make"
+                                           "sed"
+                                           "tar"
+                                           "xz-utils"
+                                           "zlib1g-dev")))
+                  #hash((id . "ubuntu2204-arm64")
+                        (deb-system . "ubuntu2204")
+                        (deb-release . "3")
+                        (deb-arch . "arm64")
+                        (runner . "ubuntu-24.04-arm")
+                        (container . "ubuntu:22.04")
                         (jobs . 2)
                         (setup-packages . ("build-essential"
                                            "ca-certificates"
