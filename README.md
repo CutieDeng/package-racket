@@ -540,16 +540,22 @@ runs on push to `main` and manual dispatch, expands every target into
 its target container, uploads Actions artifacts, then publishes the DEB files
 to the configured GitHub Release with `--clobber`.
 
-The `postinstall` mode emits the normal `racket9` package and builds the system
-compiled cache after install. The `cached` mode emits `racket9-cached`, embeds
-the generated system compiled cache in the package payload, and skips install
-time cache generation.
+Both cache modes emit the same `racket9` package; the cache mode is encoded in
+the package revision as `deb-release.deb-system.cache-rank.cache-mode`. The
+default `cached` mode (rank 2) embeds the generated system compiled cache in
+the package payload and skips install time cache generation; the `postinstall`
+mode (rank 1) builds the system compiled cache after install. Cached outranks
+postinstall under dpkg version comparison at the same release number, and both
+flavors declare `Conflicts`/`Replaces`/`Provides` against the previously
+published split-name `racket9-cached` package for bounded migration.
 
 The default DEB repository config is `deb-repo-config.rktd`; it explicitly sets
 `deb-repo-root` to `/Users/cutiedeng/Y2026/M06/D23/deb-racket`, plus the
 default `deb-system`, `deb-release`, and `deb-arch` used for local scaffold
-validation. With `source-version` `9.2.1`, `deb-release` `5`, and `deb-system`
-`ubuntu2404`, the generated Debian package version is `9.2.2-7.ubuntu2404`.
+validation. With `source-version` `9.2.5`, `deb-release` `3`, and `deb-system`
+`ubuntu2404`, the generated Debian package version is
+`9.2.5-3.ubuntu2404.2.cached` for the default cached mode and
+`9.2.5-3.ubuntu2404.1.postinstall` for the postinstall mode.
 Supported generated DEB systems are `debian12` and `ubuntu2404`.
 Supported DEB architecture spellings are `amd64`, `x86_64`, `x64`, `arm64`,
 and `aarch64`; they normalize to Debian's `amd64` or `arm64`.
