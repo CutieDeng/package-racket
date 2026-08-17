@@ -5831,6 +5831,14 @@ racket package-racket.rkt \\
 ;; Emits the YAML for a single per-arch Windows portable build job. Every step
 ;; is identical across arches; only the arch-varying values (job id, runner,
 ;; MSVC arch, artifact/zip/exe names, and Inno architecture) differ.
+(define (windows-ci-mingw-arch who arch)
+  (cond
+    [(string=? arch "x86_64") "x86_64"]
+    [(string=? arch "arm64") "aarch64"]
+    [else (raise-user-error who f"no llvm-mingw arch mapping for windows arch: {arch}")]
+  ) ; end cond windows arch to llvm-mingw arch
+) ; end define windows-ci-mingw-arch
+
 (define (windows-ci-build-job c
                               #:job-id job-id
                               #:arch arch
@@ -5845,6 +5853,8 @@ racket package-racket.rkt \\
                               #:jobs jobs
                               #:source-url source-url
                               #:source-sha source-sha)
+  (define mingw-arch (windows-ci-mingw-arch 'windows-ci-build-job arch))
+  (define github-token-expr "${{ github.token }}")
   f"
   {job-id}:
     name: build windows {arch}
@@ -5972,6 +5982,42 @@ racket package-racket.rkt \\
             throw \"nmake build failed with exit $LASTEXITCODE\"
           }}
 
+      - name: Install llvm-mingw (clang for librktcrypto DLL)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          api=\"https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest\"
+          url=$(curl -fsSL -H \"Authorization: Bearer {github-token-expr}\" \"$api\" \\
+                | grep -oE '\"browser_download_url\": *\"[^\"]*ucrt-{mingw-arch}\\.zip\"' \\
+                | head -1 | sed -E 's/.*\"(https[^\"]+)\"/\\1/')
+          echo \"llvm-mingw asset: $url\"
+          test -n \"$url\"
+          curl -fsSL \"$url\" -o llvm-mingw.zip
+          mkdir -p \"$HOME/llvm-mingw\"
+          unzip -q llvm-mingw.zip -d \"$HOME/llvm-mingw\"
+          bindir=$(dirname \"$(find \"$HOME/llvm-mingw\" -name clang.exe | head -1)\")
+          echo \"$bindir\" >> \"$GITHUB_PATH\"
+          \"$bindir/{mingw-arch}-w64-mingw32-clang\" --version
+
+      - name: Build librktcrypto.dll with clang
+        shell: bash
+        run: |
+          set -euxo pipefail
+          src=$(cygpath -u \"$SRC_DIR\")
+          crypto=$(dirname \"$(find \"$src/src\" -name rktcrypto_ecc.c | head -1)\")
+          echo \"librktcrypto sources: $crypto\"
+          test -n \"$crypto\"
+          mkdir -p dllbuild
+          grep -o '\"rktcrypto[^\"]*\\.[cS]\"' \"$crypto/build.zuo\" | tr -d '\"' > dllbuild/sources.txt
+          n=$(wc -l < dllbuild/sources.txt)
+          echo \"librktcrypto source count: $n\"
+          test \"$n\" -ge 70
+          cc={mingw-arch}-w64-mingw32-clang
+          cat dllbuild/sources.txt | xargs -P 4 -I@SRC@ sh -c \"$cc -c -O3 -I'$crypto' -o 'dllbuild/@SRC@.o' '$crypto/@SRC@'\"
+          $cc -shared -o dllbuild/librktcrypto.dll dllbuild/*.o \"$crypto/rktcrypto.def\" -lbcrypt
+          cp dllbuild/librktcrypto.dll \"$src/\"
+          ls -l \"$src/librktcrypto.dll\"
+
       - name: Install Inno Setup
         shell: pwsh
         run: |
@@ -6041,6 +6087,13 @@ racket package-racket.rkt \\
           & $racketExe.FullName -e '(displayln \"windows-portable-ok\")'
           if ($LASTEXITCODE -ne 0) {{
             throw \"Racket smoke check failed with exit $LASTEXITCODE\"
+          }}
+          & $racketExe.FullName -e '(require openssl racket/port) (unless ssl-available? (error (quote tls) \"ssl-available? is #f: librktcrypto.dll missing next to Racket.exe\")) (define-values (i o) (ssl-connect \"example.com\" 443 (quote secure))) (write-string \"GET / HTTP/1.1\\r\\nHost: example.com\\r\\nConnection: close\\r\\n\\r\\n\" o) (flush-output o) (define s (read-line i)) (close-input-port i) (close-output-port o) (unless (regexp-match? #rx\"200\" s) (error (quote tls) s)) (displayln \"windows-tls-ok\")' | Tee-Object -Variable tlsOut
+          if ($LASTEXITCODE -ne 0) {{
+            throw \"Windows TLS smoke failed with exit $LASTEXITCODE\"
+          }}
+          if (($tlsOut -join \"`n\") -notmatch 'windows-tls-ok') {{
+            throw \"Windows TLS smoke did not print windows-tls-ok\"
           }}
           & $racoCommand @racoArgs | Select-Object -First 40
           if ($LASTEXITCODE -ne 0) {{
