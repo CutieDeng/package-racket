@@ -298,6 +298,14 @@ end
       (runner . \"windows-2022\")
       (arch . \"x86_64\")
       (msvc-arch . \"x64\")
+      (windows-targets . (#hash((arch . \"x86_64\")
+                                (runner . \"windows-2022\")
+                                (msvc-arch . \"x64\")
+                                (inno-arch . \"x64compatible\"))
+                          #hash((arch . \"arm64\")
+                                (runner . \"windows-11-arm\")
+                                (msvc-arch . \"arm64\")
+                                (inno-arch . \"arm64\"))))
       (nmake-target . \"plain-install\")
       (build-jobs . 2)
       (portable-dir-name . \"racket9\")
@@ -1212,6 +1220,24 @@ actual output:
        (check-contains workflow-content "actions/download-artifact@v6")
        (check-contains workflow-content "GH_TOKEN: ${{ secrets.WINDOWS_RELEASE_TOKEN }}")
        (check-contains workflow-content "gh release upload \"$RELEASE_TAG\" -R \"$RELEASE_REPO\"")
+       ;; both per-arch build jobs are present
+       (check-contains workflow-content "build-windows-x86_64:")
+       (check-contains workflow-content "build-windows-arm64:")
+       (check-contains workflow-content "publish-windows-portable:")
+       ;; both runners and MSVC arches are present
+       (check-contains workflow-content "runs-on: windows-11-arm")
+       (check-contains workflow-content "MSVC_ARCH: 'x64'")
+       (check-contains workflow-content "MSVC_ARCH: 'arm64'")
+       ;; arm64 artifact names
+       (check-contains workflow-content "ZIP_NAME: 'racket9-9.3.1.1-windows-arm64.zip'")
+       (check-contains workflow-content "EXE_NAME: 'racket9-9.3.1.1-windows-arm64-setup.exe'")
+       ;; per-arch Inno architectures
+       (check-contains workflow-content "ArchitecturesAllowed=x64compatible")
+       (check-contains workflow-content "ArchitecturesAllowed=arm64")
+       ;; publish job needs both build jobs and downloads both artifacts
+       (check-contains workflow-content "needs: [build-windows-x86_64, build-windows-arm64]")
+       (check-contains workflow-content "pattern: 'windows-*'")
+       (check-contains workflow-content "merge-multiple: true")
       ) ; end lambda temp dir
     ) ; end with-temp-dir
   ) ; end test-case windows portable ci workflow install

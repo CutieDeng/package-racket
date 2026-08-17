@@ -5461,13 +5461,95 @@ jobs:
 (define (assert-windows-ci-msvc-arch value)
   (begin
     (assert-single-line-string 'windows-ci-config 'msvc-arch value)
-    (unless (member value '("x64" "x86" "x86_amd64" "x64_arm64") string=?)
+    (unless (member value '("x64" "x86" "x86_amd64" "x64_arm64" "arm64" "arm64_x64") string=?)
       (raise-user-error 'windows-ci-config
-                        f"msvc-arch must be x64, x86, x86_amd64, or x64_arm64: {value}")
+                        f"msvc-arch must be x64, x86, x86_amd64, x64_arm64, arm64, or arm64_x64: {value}")
     ) ; end unless known msvc mode
     value
   ) ; end begin assert-windows-ci-msvc-arch
 ) ; end define assert-windows-ci-msvc-arch
+
+(define default-windows-ci-inno-arch "x64compatible")
+
+(define (assert-windows-ci-inno-arch value)
+  (begin
+    (assert-single-line-string 'windows-ci-config 'inno-arch value)
+    (unless (regexp-match? #px"^[A-Za-z0-9]+$" value)
+      (raise-user-error 'windows-ci-config
+                        f"inno-arch must contain only letters and digits: {value}")
+    ) ; end unless safe inno arch
+    value
+  ) ; end begin assert-windows-ci-inno-arch
+) ; end define assert-windows-ci-inno-arch
+
+(define (normalize-windows-ci-target-arch value)
+  (begin
+    (assert-single-line-string 'windows-ci-config 'arch value)
+    (match (string-downcase value)
+      [(or "x86_64" "amd64" "x64") "x86_64"]
+      [(or "arm64" "aarch64") "arm64"]
+      [_ (raise-user-error 'windows-ci-config
+                           f"target arch must be x86_64/amd64/x64 or arm64/aarch64: {value}")]
+    ) ; end match target arch value
+  ) ; end begin normalize-windows-ci-target-arch
+) ; end define normalize-windows-ci-target-arch
+
+(define (windows-ci-normalize-target target)
+  (begin
+    (unless (hash? target)
+      (raise-user-error 'windows-ci-config "each windows-targets entry must be a hash")
+    ) ; end unless target is a hash
+    (define arch
+      (normalize-windows-ci-target-arch
+       (config-required-string 'windows-ci-config target 'arch)))
+    (define runner
+      (assert-windows-ci-runner
+       (config-required-string 'windows-ci-config target 'runner)))
+    (define msvc-arch
+      (assert-windows-ci-msvc-arch
+       (config-required-string 'windows-ci-config target 'msvc-arch)))
+    (define inno-arch
+      (assert-windows-ci-inno-arch
+       (config-optional-string 'windows-ci-config target 'inno-arch default-windows-ci-inno-arch)))
+    (hash 'arch arch 'runner runner 'msvc-arch msvc-arch 'inno-arch inno-arch)
+  ) ; end begin windows-ci-normalize-target
+) ; end define windows-ci-normalize-target
+
+;; Returns the normalized list of per-arch Windows build targets. If the config
+;; carries an explicit `windows-targets` list it drives the build; otherwise a
+;; single target is synthesized from the top-level arch/runner/msvc-arch fields
+;; (backward compatible with the original single-arch config shape).
+(define (windows-ci-targets config)
+  (begin
+    (define raw (hash-ref config 'windows-targets #f))
+    (define targets
+      (cond
+        [raw
+         (unless (and (list? raw) (pair? raw) (andmap hash? raw))
+           (raise-user-error 'windows-ci-config
+                             "windows-targets must be a non-empty list of hashes")
+         ) ; end unless windows-targets is a non-empty list of hashes
+         (map windows-ci-normalize-target raw)]
+        [else
+         (list
+          (windows-ci-normalize-target
+           (hash 'arch (config-required-string 'windows-ci-config config 'arch)
+                 'runner (config-required-string 'windows-ci-config config 'runner)
+                 'msvc-arch (config-required-string 'windows-ci-config config 'msvc-arch)
+                 'inno-arch (config-optional-string 'windows-ci-config config 'inno-arch
+                                                    default-windows-ci-inno-arch))))]
+      ) ; end cond explicit targets or synthesized fallback
+    ) ; end define targets
+    (define arches (map (lambda (t) (hash-ref t 'arch)) targets))
+    (unless (= (length arches) (length (remove-duplicates arches string=?)))
+      (raise-user-error 'windows-ci-config "windows-targets arches must be unique")
+    ) ; end unless arches are unique
+    targets
+  ) ; end begin windows-ci-targets
+) ; end define windows-ci-targets
+
+(define (windows-ci-target-job-id target)
+  f"build-windows-{(hash-ref target 'arch)}")
 
 (define (assert-windows-ci-nmake-target value)
   (begin
@@ -5516,6 +5598,7 @@ jobs:
     (assert-windows-ci-release-name (config-required-string 'windows-ci-config config 'release-name))
     (config-required-boolean 'windows-ci-config config 'create-release)
     (config-required-boolean 'windows-ci-config config 'publish-release)
+    (windows-ci-targets config)
     (assert-windows-ci-safe-token (config-required-string 'windows-ci-config config 'token-secret))
     (required-config-positive-integer config 'build-jobs)
     (void)
@@ -5558,40 +5641,30 @@ jobs:
   ) ; end begin assert-windows-ci-repo-root!
 ) ; end define assert-windows-ci-repo-root!
 
-(define (windows-ci-portable-zip-name c config)
-  (begin
-    (define arch
-      (assert-windows-ci-arch (config-required-string 'windows-ci-config config 'arch)))
-    f"{(cfg-package-name c)}-{(cfg-formula-version c)}-windows-{arch}.zip"
-  ) ; end begin windows-ci-portable-zip-name
-) ; end define windows-ci-portable-zip-name
+(define (windows-ci-portable-zip-name c arch)
+  f"{(cfg-package-name c)}-{(cfg-formula-version c)}-windows-{arch}.zip")
 
-(define (windows-ci-installer-exe-name c config)
-  (begin
-    (define arch
-      (assert-windows-ci-arch (config-required-string 'windows-ci-config config 'arch)))
-    f"{(cfg-package-name c)}-{(cfg-formula-version c)}-windows-{arch}-setup.exe"
-  ) ; end begin windows-ci-installer-exe-name
-) ; end define windows-ci-installer-exe-name
+(define (windows-ci-installer-exe-name c arch)
+  f"{(cfg-package-name c)}-{(cfg-formula-version c)}-windows-{arch}-setup.exe")
 
-(define (windows-ci-artifact-name config)
-  (begin
-    (define artifact-prefix
-      (assert-windows-ci-artifact-prefix (config-required-string 'windows-ci-config config 'artifact-prefix)))
-    (define arch
-      (assert-windows-ci-arch (config-required-string 'windows-ci-config config 'arch)))
-    f"{artifact-prefix}-{arch}"
-  ) ; end begin windows-ci-artifact-name
-) ; end define windows-ci-artifact-name
+(define (windows-ci-artifact-name artifact-prefix arch)
+  f"{artifact-prefix}-{arch}")
+
+(define (windows-ci-config-artifact-prefix config)
+  (assert-windows-ci-artifact-prefix
+   (config-required-string 'windows-ci-config config 'artifact-prefix)))
 
 (define (windows-ci-readme-content c config)
   (begin
-    (define arch
-      (assert-windows-ci-arch (config-required-string 'windows-ci-config config 'arch)))
-    (define runner
-      (assert-windows-ci-runner (config-required-string 'windows-ci-config config 'runner)))
-    (define zip-name (windows-ci-portable-zip-name c config))
-    (define exe-name (windows-ci-installer-exe-name c config))
+    (define targets (windows-ci-targets config))
+    (define arch-list
+      (string-join (map (lambda (t) (hash-ref t 'arch)) targets) ", "))
+    (define runner-list
+      (string-join (remove-duplicates (map (lambda (t) (hash-ref t 'runner)) targets) string=?) ", "))
+    (define zip-name
+      (string-join (map (lambda (t) f"`{(windows-ci-portable-zip-name c (hash-ref t 'arch))}`") targets) ", "))
+    (define exe-name
+      (string-join (map (lambda (t) f"`{(windows-ci-installer-exe-name c (hash-ref t 'arch))}`") targets) ", "))
     (define release-note
       (if (config-required-boolean 'windows-ci-config config 'publish-release)
           (let ([release-repo
@@ -5603,8 +5676,8 @@ jobs:
                 [token-secret
                  (assert-windows-ci-safe-token
                   (config-required-string 'windows-ci-config config 'token-secret))])
-            f"Release asset publishing is enabled. The workflow uploads `{zip-name}` and `{exe-name}` to `{release-repo}` release `{release-tag}` using the `{token-secret}` repository secret.")
-          "Release asset publishing is disabled; successful runs retain the zip and installer as GitHub Actions artifacts."))
+            f"Release asset publishing is enabled. The workflow uploads {zip-name} and {exe-name} to `{release-repo}` release `{release-tag}` using the `{token-secret}` repository secret.")
+          "Release asset publishing is disabled; successful runs retain the zips and installers as GitHub Actions artifacts."))
     f"# win-racket
 
 {generated-windows-ci-notice-marker}
@@ -5618,8 +5691,8 @@ and regenerate this repository instead.
 
 ## Build
 
-The generated workflow builds Racket on `{runner}` for `{arch}` and uploads
-`{zip-name}` and `{exe-name}` as GitHub Actions artifacts. It runs `nmake all` before the
+The generated workflow builds Racket on `{runner-list}` for `{arch-list}` and uploads
+{zip-name} and {exe-name} as GitHub Actions artifacts. It runs `nmake all` before the
 configured `nmake` target so a clean CI checkout never tries to install missing
 build outputs. The portable archive and Inno Setup installer copy only the
 installed runtime tree, not the source/build tree. The installer accepts
@@ -5694,20 +5767,28 @@ racket package-racket.rkt \\
                 (assert-windows-ci-safe-token
                  (config-required-string 'windows-ci-config config 'token-secret))]
                [token-expr
-                (string-append "${{ secrets." token-secret " }}")])
+                (string-append "${{ secrets." token-secret " }}")]
+               [targets (windows-ci-targets config)]
+               [expected (number->string (length targets))]
+               [artifact-prefix (windows-ci-config-artifact-prefix config)]
+               [needs-list
+                (string-append
+                 "[" (string-join (map windows-ci-target-job-id targets) ", ") "]")]
+               [artifact-pattern (string-append artifact-prefix "-*")])
           f"
   publish-windows-portable:
-    needs: build-windows-portable
+    needs: {needs-list}
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: write
     steps:
-      - name: Download Windows portable artifact
+      - name: Download Windows portable artifacts
         uses: actions/download-artifact@v6
         with:
-          name: {(yaml-single-quote (windows-ci-artifact-name config))}
+          pattern: {(yaml-single-quote artifact-pattern)}
+          merge-multiple: true
           path: release-assets
 
       - name: Publish Windows release assets
@@ -5718,18 +5799,19 @@ racket package-racket.rkt \\
           RELEASE_TAG: {(yaml-single-quote release-tag)}
           RELEASE_NAME: {(yaml-single-quote release-name)}
           CREATE_RELEASE: {(yaml-single-quote (if create-release? "true" "false"))}
+          EXPECTED_ASSETS: {(yaml-single-quote expected)}
         run: |
           set -euo pipefail
           command -v gh >/dev/null 2>&1 || {{ echo 'gh CLI is required on the publish runner'; exit 1; }}
           mapfile -t zip_files < <(find \"$GITHUB_WORKSPACE/release-assets\" -maxdepth 1 -name '*.zip' -type f | sort)
           mapfile -t exe_files < <(find \"$GITHUB_WORKSPACE/release-assets\" -maxdepth 1 -name '*.exe' -type f | sort)
-          if [ \"${{#zip_files[@]}}\" -ne 1 ]; then
-            printf 'Expected exactly one Windows portable zip, got %s\\n' \"${{#zip_files[@]}}\"
+          if [ \"${{#zip_files[@]}}\" -ne \"$EXPECTED_ASSETS\" ]; then
+            printf 'Expected %s Windows portable zips, got %s\\n' \"$EXPECTED_ASSETS\" \"${{#zip_files[@]}}\"
             printf '  %s\\n' \"${{zip_files[@]}}\"
             exit 1
           fi
-          if [ \"${{#exe_files[@]}}\" -ne 1 ]; then
-            printf 'Expected exactly one Windows installer exe, got %s\\n' \"${{#exe_files[@]}}\"
+          if [ \"${{#exe_files[@]}}\" -ne \"$EXPECTED_ASSETS\" ]; then
+            printf 'Expected %s Windows installer exes, got %s\\n' \"$EXPECTED_ASSETS\" \"${{#exe_files[@]}}\"
             printf '  %s\\n' \"${{exe_files[@]}}\"
             exit 1
           fi
@@ -5740,47 +5822,31 @@ racket package-racket.rkt \\
             fi
             gh release create \"$RELEASE_TAG\" -R \"$RELEASE_REPO\" --title \"$RELEASE_NAME\" --notes \"Generated Windows Racket artifacts.\"
           fi
-          gh release upload \"$RELEASE_TAG\" -R \"$RELEASE_REPO\" \"${{zip_files[0]}}\" \"${{exe_files[0]}}\" --clobber
+          gh release upload \"$RELEASE_TAG\" -R \"$RELEASE_REPO\" \"${{zip_files[@]}}\" \"${{exe_files[@]}}\" --clobber
 ")
         "")
   ) ; end begin windows-ci-publish-job-content
 ) ; end define windows-ci-publish-job-content
 
-(define (windows-ci-workflow-content c config)
-  (begin
-    (define runner
-      (assert-windows-ci-runner (config-required-string 'windows-ci-config config 'runner)))
-    (define arch
-      (assert-windows-ci-arch (config-required-string 'windows-ci-config config 'arch)))
-    (define msvc-arch
-      (assert-windows-ci-msvc-arch (config-required-string 'windows-ci-config config 'msvc-arch)))
-    (define nmake-target
-      (assert-windows-ci-nmake-target (config-required-string 'windows-ci-config config 'nmake-target)))
-    (define portable-dir
-      (assert-windows-ci-portable-dir (config-required-string 'windows-ci-config config 'portable-dir-name)))
-    (define jobs
-      (required-config-positive-integer config 'build-jobs))
-    (define source-url (formula-source-url c))
-    (define source-sha
-      (resolve-source-archive-sha256! 'windows-ci-workflow-content
-                                      c
-                                      source-url
-                                      "Windows source archive"))
-    (define zip-name (windows-ci-portable-zip-name c config))
-    (define exe-name (windows-ci-installer-exe-name c config))
-    f"{(generated-windows-ci-code-notice "#")}name: windows portable build
-
-on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-jobs:
-  build-windows-portable:
+;; Emits the YAML for a single per-arch Windows portable build job. Every step
+;; is identical across arches; only the arch-varying values (job id, runner,
+;; MSVC arch, artifact/zip/exe names, and Inno architecture) differ.
+(define (windows-ci-build-job c
+                              #:job-id job-id
+                              #:arch arch
+                              #:runner runner
+                              #:msvc-arch msvc-arch
+                              #:inno-arch inno-arch
+                              #:zip-name zip-name
+                              #:exe-name exe-name
+                              #:artifact-name artifact-name
+                              #:nmake-target nmake-target
+                              #:portable-dir portable-dir
+                              #:jobs jobs
+                              #:source-url source-url
+                              #:source-sha source-sha)
+  f"
+  {job-id}:
     name: build windows {arch}
     runs-on: {runner}
     permissions:
@@ -6076,8 +6142,8 @@ jobs:
           OutputBaseFilename=$outputBase
           Compression=lzma2
           SolidCompression=yes
-          ArchitecturesAllowed=x64compatible
-          ArchitecturesInstallIn64BitMode=x64compatible
+          ArchitecturesAllowed={inno-arch}
+          ArchitecturesInstallIn64BitMode={inno-arch}
           PrivilegesRequired=admin
           WizardStyle=modern
 
@@ -6184,12 +6250,64 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: {(yaml-single-quote (windows-ci-artifact-name config))}
+          name: {(yaml-single-quote artifact-name)}
           path: |
             artifacts/*.zip
             artifacts/*.exe
           if-no-files-found: error
-{(windows-ci-publish-job-content config)}"
+"
+) ; end define windows-ci-build-job
+
+(define (windows-ci-workflow-content c config)
+  (begin
+    (define nmake-target
+      (assert-windows-ci-nmake-target (config-required-string 'windows-ci-config config 'nmake-target)))
+    (define portable-dir
+      (assert-windows-ci-portable-dir (config-required-string 'windows-ci-config config 'portable-dir-name)))
+    (define jobs
+      (required-config-positive-integer config 'build-jobs))
+    (define artifact-prefix (windows-ci-config-artifact-prefix config))
+    (define source-url (formula-source-url c))
+    (define source-sha
+      (resolve-source-archive-sha256! 'windows-ci-workflow-content
+                                      c
+                                      source-url
+                                      "Windows source archive"))
+    (define targets (windows-ci-targets config))
+    (define build-jobs-yaml
+      (apply
+       string-append
+       (for/list ([target (in-list targets)])
+         (define arch (hash-ref target 'arch))
+         (windows-ci-build-job
+          c
+          #:job-id (windows-ci-target-job-id target)
+          #:arch arch
+          #:runner (hash-ref target 'runner)
+          #:msvc-arch (hash-ref target 'msvc-arch)
+          #:inno-arch (hash-ref target 'inno-arch)
+          #:zip-name (windows-ci-portable-zip-name c arch)
+          #:exe-name (windows-ci-installer-exe-name c arch)
+          #:artifact-name (windows-ci-artifact-name artifact-prefix arch)
+          #:nmake-target nmake-target
+          #:portable-dir portable-dir
+          #:jobs jobs
+          #:source-url source-url
+          #:source-sha source-sha))
+      ) ; end apply string-append over per-arch build jobs
+    ) ; end define build-jobs-yaml
+    f"{(generated-windows-ci-code-notice "#")}name: windows portable build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:{build-jobs-yaml}{(windows-ci-publish-job-content config)}"
   ) ; end begin windows-ci-workflow-content
 ) ; end define windows-ci-workflow-content
 
@@ -6220,15 +6338,20 @@ jobs:
 (define (validate-windows-ci-readme! c config path)
   (begin
     (define content (file->string path))
-    (define zip-name (windows-ci-portable-zip-name c config))
-    (define exe-name (windows-ci-installer-exe-name c config))
-    (for ([needle (in-list (list "# win-racket"
-                                 generated-windows-ci-notice-marker
-                                 "package-racket"
-                                 ".github/workflows/build-windows-portable.yml"
-                                 zip-name
-                                 exe-name
-                                 "/CACHEPATH"))])
+    (define targets (windows-ci-targets config))
+    (define arch-needles
+      (append-map
+       (lambda (t)
+         (define arch (hash-ref t 'arch))
+         (list (windows-ci-portable-zip-name c arch)
+               (windows-ci-installer-exe-name c arch)))
+       targets))
+    (for ([needle (in-list (append (list "# win-racket"
+                                         generated-windows-ci-notice-marker
+                                         "package-racket"
+                                         ".github/workflows/build-windows-portable.yml")
+                                   arch-needles
+                                   (list "/CACHEPATH")))])
       (unless (string-contains? content needle)
         (raise-user-error 'validate-windows-ci-readme! f"Windows README missing: {needle}")
       ) ; end unless README contains required text
@@ -6240,28 +6363,36 @@ jobs:
   (begin
     (validate-yaml! c path)
     (define content (file->string path))
-    (define zip-name (windows-ci-portable-zip-name c config))
-    (define exe-name (windows-ci-installer-exe-name c config))
-    (for ([needle (in-list (list "name: windows portable build"
-                                 generated-windows-ci-notice-marker
-                                 "runs-on:"
-                                 "windows-"
-                                 "actions/checkout@v6"
-                                 "Invoke-WebRequest"
-                                 "Get-FileHash source.tgz -Algorithm SHA256"
-                                 "src\\winfig.bat"
-                                 "nmake /f Makefile"
-                                 "Compress-Archive"
-                                 "choco install innosetup"
-                                 "ISCC.exe"
-                                 "Build Inno Setup installer"
-	                                 "/CACHEPATH"
-	                                 "raco setup --system --no-user --reset-cache -D --no-pkg-deps"
-	                                 "RegDeleteKeyIncludingSubkeys"
-                                 "windows-portable-ok"
-                                 "actions/upload-artifact@v6"
-                                 zip-name
-                                 exe-name))])
+    (define targets (windows-ci-targets config))
+    (define arch-needles
+      (append-map
+       (lambda (t)
+         (define arch (hash-ref t 'arch))
+         (list f"runs-on: {(hash-ref t 'runner)}"
+               f"MSVC_ARCH: {(yaml-single-quote (hash-ref t 'msvc-arch))}"
+               (windows-ci-target-job-id t)
+               (windows-ci-portable-zip-name c arch)
+               (windows-ci-installer-exe-name c arch)))
+       targets))
+    (for ([needle (in-list (append (list "name: windows portable build"
+                                         generated-windows-ci-notice-marker
+                                         "runs-on:"
+                                         "windows-"
+                                         "actions/checkout@v6"
+                                         "Invoke-WebRequest"
+                                         "Get-FileHash source.tgz -Algorithm SHA256"
+                                         "src\\winfig.bat"
+                                         "nmake /f Makefile"
+                                         "Compress-Archive"
+                                         "choco install innosetup"
+                                         "ISCC.exe"
+                                         "Build Inno Setup installer"
+                                         "/CACHEPATH"
+                                         "raco setup --system --no-user --reset-cache -D --no-pkg-deps"
+                                         "RegDeleteKeyIncludingSubkeys"
+                                         "windows-portable-ok"
+                                         "actions/upload-artifact@v6")
+                                   arch-needles))])
       (unless (string-contains? content needle)
         (raise-user-error 'validate-windows-ci-workflow! f"Windows CI workflow missing: {needle}")
       ) ; end unless workflow contains required needle
@@ -6306,8 +6437,11 @@ jobs:
     (println/flush f"Would generate Windows portable CI workflow: {(clean-path-string workflow-path)}")
     (println/flush f"Would validate Windows CI workflow YAML with: {(cfg-ruby-bin c)}")
     (println/flush f"Would configure Windows runner: {(config-required-string 'windows-ci-config config 'runner)}")
-    (println/flush f"Would configure Windows portable zip: {(windows-ci-portable-zip-name c config)}")
-    (println/flush f"Would configure Windows Inno installer: {(windows-ci-installer-exe-name c config)}")
+    (for ([target (in-list (windows-ci-targets config))])
+      (define arch (hash-ref target 'arch))
+      (println/flush f"Would configure Windows portable zip: {(windows-ci-portable-zip-name c arch)}")
+      (println/flush f"Would configure Windows Inno installer: {(windows-ci-installer-exe-name c arch)}")
+    ) ; end for each windows target
     (println/flush f"Would publish Windows release asset: {(if (config-required-boolean 'windows-ci-config config 'publish-release) "yes" "no")}")
   ) ; end begin print-windows-ci-dry-run-plan!
 ) ; end define print-windows-ci-dry-run-plan!
