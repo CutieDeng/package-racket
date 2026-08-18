@@ -6195,8 +6195,11 @@ racket package-racket.rkt \\
           $racoExe = Join-Path $InstallRoot 'raco.exe'
           $racketExe = Join-Path $InstallRoot 'Racket.exe'
           if (Test-Path -LiteralPath $racketExe) {{
-            $cfgForRacket = $configPath.Replace('\\', '/')
-            & $racketExe -e \"(void (call-with-input-file `\"$cfgForRacket`\" read))\"
+            # No double quotes in the -e argument: this script runs under
+            # Windows PowerShell 5.1 (Inno launches powershell.exe), whose
+            # native argument passing mangles embedded quotes.
+            $env:RACKET_INSTALLER_CONFIG_CHECK = $configPath
+            & $racketExe -e '(void (call-with-input-file (getenv (symbol->string (quote RACKET_INSTALLER_CONFIG_CHECK))) read))'
             if ($LASTEXITCODE -ne 0) {{
               throw \"rewritten config.rktd is not readable Racket data: $configPath\"
             }}
