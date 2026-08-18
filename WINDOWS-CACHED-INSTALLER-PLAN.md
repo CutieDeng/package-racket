@@ -9,11 +9,11 @@ in `package-racket.rkt` before relying on them.
 
 Windows currently ships two artifacts per arch (see `windows-ci-build-job`):
 
-- **Portable zip**: the nmake-built tree. Works out of the box — the build
-  already compiled every collect into **in-tree** `compiled/` dirs, so no
-  compile happens at first run. It does NOT carry the runtime-keyed system
-  compiled cache (the fork's demod cache), so startup is the slower,
-  non-demod path.
+- **Portable zip**: the nmake-built tree. CORRECTION (verified from the
+  released 9.3.3 zip, 2026-08-18): it ships **ZERO compiled files** — 1011
+  `.rkt` sources and no `.zo` anywhere, so every launch interprets from
+  source (`raco help` takes ~18s on a CI runner). Sources carry the
+  reproducible source archive's 1980-01-01 timestamps.
 - **`-setup.exe` (Inno)**: copies the same tree into `{autopf}\Racket9`,
   asks for a cache dir (default `{app}\var\cache\racket\compiled`,
   `/CACHEPATH=` for unattended), records it in `HKLM\Software\Racket9`,
@@ -47,10 +47,16 @@ Goal: a `-setup-cached.exe` that installs with **no raco setup at all**.
    cache is built after the sources on CI, so zo ≥ source holds after
    install. (PoC must confirm; fallback: touch the cache tree newest-last
    during CI staging.)
-3. **Cache miss is functionally invisible** — the tree keeps its in-tree
-   `compiled/` dirs, so a missed cache degrades to portable-zip behavior,
-   never to source compilation. The cached variant is a pure startup-time
-   optimization; correctness risk is low.
+3. **Cache miss degrades to portable-zip behavior** — which (see §1
+   correction) means from-source interpretation: functional but painfully
+   slow. The cached variant is therefore not a minor optimization; it is
+   the first actually-precompiled Windows Racket artifact.
+3b. **The first setup on a zo-less tree cannot self-validate.** raco setup
+   bootstraps from source ("ignoring compiled files, rebuilding from
+   source"), and the cache it writes gets rewritten wholesale by the next
+   setup run (1910/1985 files, PoC run 6) even though mtimes are valid.
+   Convergence: build the cache with TWO setup passes on CI; passes three
+   and four (in-place and post-repackage) must then no-op — PoC-gated.
 4. The DEB `cached` flow already proves build-elsewhere/run-at-target works
    when the absolute path matches (staged root → installed root, same
    `/usr` layout; `scripts/build-deb.sh` rewrites
