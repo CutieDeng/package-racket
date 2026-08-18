@@ -6095,6 +6095,13 @@ racket package-racket.rkt \\
           if (($tlsOut -join \"`n\") -notmatch 'windows-tls-ok') {{
             throw \"Windows TLS smoke did not print windows-tls-ok\"
           }}
+          & $racketExe.FullName -e '(require racket/random/generator) (unless rktrandom-available? (error (quote rktrandom) \"rktrandom-available? is #f: librktrandom not linked into Racket.exe\")) (define g (make-rgen 42)) (define xs (for/list ([i (in-range 4)]) (rgen-u64 g))) (unless (equal? xs (list 17334047174172577666 1019500725184315962 11076454993390921235 13198794054228246118)) (error (quote rktrandom) \"seed-42 xoshiro256++ stream diverges from the Unix reference\" xs)) (displayln \"windows-rktrandom-ok\")' | Tee-Object -Variable rndOut
+          if ($LASTEXITCODE -ne 0) {{
+            throw \"Windows rktrandom smoke failed with exit $LASTEXITCODE\"
+          }}
+          if (($rndOut -join \"`n\") -notmatch 'windows-rktrandom-ok') {{
+            throw \"Windows rktrandom smoke did not print windows-rktrandom-ok\"
+          }}
           & $racoCommand @racoArgs | Select-Object -First 40
           if ($LASTEXITCODE -ne 0) {{
             Write-Warning \"raco package listing failed with exit $LASTEXITCODE; keeping portable artifact because Racket smoke check passed\"
@@ -8315,6 +8322,9 @@ information.
     assert_match '(default-scope . \"installation\")', racket_config.read
 
     output = shell_output(\"{rb-bin}/racket -e '(require openssl) (displayln ssl-available?)'\")
+    assert_match \"#t\", output
+
+    output = shell_output(\"{rb-bin}/racket -e '(require racket/random/generator) (displayln rktrandom-available?)'\")
     assert_match \"#t\", output
 
     # TLS runs on the in-tree rktcrypto engine: requiring openssl must not
@@ -11036,6 +11046,7 @@ end
                                  "if Hardware::CPU.intel?"
                                  "if OS.mac? && Hardware::CPU.intel?"
                                  "(require openssl) (displayln ssl-available?)"
+                                 "(require racket/random/generator) (displayln rktrandom-available?)"
                                  "refute_match(/libssl|libcrypto/, output)"
                                  "depends_on \"ncurses\""
                                  "depends_on \"zlib-ng-compat\""

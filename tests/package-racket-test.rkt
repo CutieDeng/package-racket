@@ -56,7 +56,7 @@
      (build-path root "racket" "src" "version" "racket_version.h")
      "#define MZSCHEME_VERSION_X 9
 #define MZSCHEME_VERSION_Y 3
-#define MZSCHEME_VERSION_Z 2
+#define MZSCHEME_VERSION_Z 3
 #define MZSCHEME_VERSION_W 0
 ")
     root
@@ -71,10 +71,10 @@
     (write-text!
      (build-path tap "Formula" "racket@9.rb")
      "class RacketAT9 < Formula
-  url \"https://github.com/CutieDeng/racket/releases/download/v9.3.2/racket-minimal-9.3.2-src.tgz\"
+  url \"https://github.com/CutieDeng/racket/releases/download/v9.3.3/racket-minimal-9.3.3-src.tgz\"
   sha256 \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"
   test do
-    assert_match \"9.3.2\", shell_output(\"racket -v\")
+    assert_match \"9.3.3\", shell_output(\"racket -v\")
   end
 end
 ")
@@ -124,7 +124,7 @@ end
   (write-text!
    path
    f"#hash((source-release-repo . \"CutieDeng/racket\")
-      (source-release-tag . \"v9.3.2\")
+      (source-release-tag . \"v9.3.3\")
       (source-release-asset . \"{asset-name}\")
       (source-release-token-file . \"missing-token.rktd\")
       (replace-release-asset . #t))
@@ -134,7 +134,7 @@ end
     (write-text!
      path
    f"#hash((apt-release-repo . \"CutieDeng/racket\")
-      (apt-release-tag . \"v9.3.2\")
+      (apt-release-tag . \"v9.3.3\")
       (apt-release-asset . \"{asset-name}\")
       (apt-release-token-file . \"missing-token.rktd\")
       (replace-release-asset . #t))
@@ -171,8 +171,8 @@ end
   (define (write-deb-ci-config! path)
     (write-text!
      path
-     "#hash((release-tag . \"v9.3.2\")
-      (release-name . \"Racket 9.3.2 DEB packages\")
+     "#hash((release-tag . \"v9.3.3\")
+      (release-name . \"Racket 9.3.3 DEB packages\")
       (artifact-prefix . \"deb\")
       (create-release . #t)
       (targets . (#hash((id . \"debian12-amd64\")
@@ -204,8 +204,8 @@ end
   (define (write-rpm-ci-config! path)
     (write-text!
      path
-     "#hash((release-tag . \"v9.3.2\")
-      (release-name . \"Racket 9.3.2 RPM packages\")
+     "#hash((release-tag . \"v9.3.3\")
+      (release-name . \"Racket 9.3.3 RPM packages\")
       (artifact-prefix . \"rpm\")
       (create-release . #t)
       (targets . (#hash((id . \"el9-x86_64\")
@@ -277,8 +277,8 @@ end
   (define (write-invalid-rpm-ci-config! path)
     (write-text!
      path
-     "#hash((release-tag . \"v9.3.2\")
-      (release-name . \"Racket 9.3.2 RPM packages\")
+     "#hash((release-tag . \"v9.3.3\")
+      (release-name . \"Racket 9.3.3 RPM packages\")
       (artifact-prefix . \"rpm\")
       (create-release . #t)
       (targets . (#hash((id . \"bad-openeuler\")
@@ -312,8 +312,8 @@ end
       (artifact-prefix . \"windows\")
       (publish-release . {(if publish-release? "#t" "#f")})
       (release-repo . \"CutieDeng/racket\")
-      (release-tag . \"v9.3.2\")
-      (release-name . \"Racket 9.3.2 Windows portable\")
+      (release-tag . \"v9.3.3\")
+      (release-name . \"Racket 9.3.3 Windows portable\")
       (create-release . #f)
       (token-secret . \"WINDOWS_RELEASE_TOKEN\"))
 "))
@@ -475,7 +475,7 @@ actual output:
        (define text (combined-output out err))
        (check-contains text "Targets: apt")
        (check-contains text "APT package:")
-       (check-contains text "racket9_9.3.2.1-1_amd64.deb")
+       (check-contains text "racket9_9.3.3.1-1_amd64.deb")
        (check-not-contains text "APT release config:")
        (check-false (directory-exists? artifact-dir))
        (check-false (directory-exists? work-dir))
@@ -499,17 +499,17 @@ actual output:
                 "--dry-run")))
        (define text (combined-output out err))
        (check-contains text "Targets: rpm")
-       (check-contains text "Formula/package version: 9.3.2.1")
+       (check-contains text "Formula/package version: 9.3.3.1")
        (check-contains text "RPM target arch: aarch64")
        (check-contains text "RPM target system: openeuler2403")
-       (check-contains text "RPM package version: 9.3.2")
+       (check-contains text "RPM package version: 9.3.3")
        (check-contains text "RPM package release base: 1")
        (check-contains text "RPM package release (cached/default): 1.2.cached.openeuler2403")
        (check-contains text "RPM package release (postinstall/optional): 1.1.postinstall.openeuler2403")
        (check-contains text "RPM package prefix: /usr")
-       (check-contains text "RPM source archive: https://github.com/CutieDeng/racket/releases/download/v9.3.2/racket-minimal-9.3.2-src.tgz")
-       (check-contains text "racket9-9.3.2-1.2.cached.openeuler2403.aarch64.rpm")
-       (check-contains text "racket9-9.3.2-1.1.postinstall.openeuler2403.aarch64.rpm")
+       (check-contains text "RPM source archive: https://github.com/CutieDeng/racket/releases/download/v9.3.3/racket-minimal-9.3.3-src.tgz")
+       (check-contains text "racket9-9.3.3-1.2.cached.openeuler2403.aarch64.rpm")
+       (check-contains text "racket9-9.3.3-1.1.postinstall.openeuler2403.aarch64.rpm")
        (check-contains text "SPECS/racket9-cached.spec")
        (check-contains text "SPECS/racket9-postinstall.spec")
        (check-contains text "--target aarch64")
@@ -602,7 +602,7 @@ actual output:
         "# GENERATED RPM REPOSITORY METADATA - DO NOT EDIT IN rpm-racket.\n")
        (make-directory* (build-path rpm-repo-root "repo"))
        (define artifact-dir (build-path tmp "artifacts"))
-       (write-text! (build-path artifact-dir "racket-minimal-9.3.2-src.tgz") "fake source artifact")
+       (write-text! (build-path artifact-dir "racket-minimal-9.3.3-src.tgz") "fake source artifact")
        (define config-path (build-path tmp "rpm-repo-config.rktd"))
        (write-rpm-repo-config! config-path rpm-repo-root)
        (define-values (out err)
@@ -652,14 +652,14 @@ actual output:
        (check-contains postinstall-spec-content "Release: %{package_release}.1.postinstall.%{package_system}")
        (check-contains postinstall-spec-content "Provides: racket9(cache-mode-postinstall)")
        (check-contains postinstall-spec-content "Obsoletes: racket9-cached < %{version}-%{package_release}")
-       (check-contains spec-content "Source0: https://github.com/CutieDeng/racket/releases/download/v9.3.2/racket-minimal-9.3.2-src.tgz")
+       (check-contains spec-content "Source0: https://github.com/CutieDeng/racket/releases/download/v9.3.3/racket-minimal-9.3.3-src.tgz")
        (check-contains spec-content "Requires: libedit")
        (check-contains spec-content "BuildRequires: gcc")
        (check-contains spec-content "%ifnarch aarch64\nBuildRequires: openssl-devel\n%endif")
        (check-not-contains spec-content "collects/openssl/libssl.rkt")
        (check-contains spec-content "%global source_sha256")
        (check-contains spec-content "Source0 sha256 mismatch")
-       (check-contains spec-content "%setup -q -n racket-9.3.2")
+       (check-contains spec-content "%setup -q -n racket-9.3.3")
        (check-contains spec-content "make install DESTDIR=%{buildroot}")
        (check-contains spec-content "missing staged collects")
        (check-contains spec-content "runtime_config_dir=\"%{_sysconfdir}/racket\"")
@@ -837,8 +837,8 @@ actual output:
        (check-contains text "DEB repo config:")
        (check-contains text "DEB repo root:")
        (check-contains text "DEB target system: ubuntu2404")
-       (check-contains text "DEB package version (cached/default): 9.3.2-1.ubuntu2404.2.cached")
-       (check-contains text "DEB package version (postinstall/optional): 9.3.2-1.ubuntu2404.1.postinstall")
+       (check-contains text "DEB package version (cached/default): 9.3.3-1.ubuntu2404.2.cached")
+       (check-contains text "DEB package version (postinstall/optional): 9.3.3-1.ubuntu2404.1.postinstall")
        (check-contains text "Would generate DEB scaffold in:")
        (check-false (file-exists? (build-path deb-repo-root "scripts" "build-deb.sh")))
        (check-false (directory-exists? work-dir))
@@ -918,7 +918,7 @@ actual output:
          (run-command! 'deb-spec-verify-deb-dry-run
                        (find-executable-path "bash")
                        (list (path-arg verify-script)
-                             "--deb" (path-arg (build-path tmp "artifacts" "racket9_9.3.2-1.ubuntu2404.2.cached_amd64.deb"))
+                             "--deb" (path-arg (build-path tmp "artifacts" "racket9_9.3.3-1.ubuntu2404.2.cached_amd64.deb"))
                              "--deb-system" "ubuntu2404"
                              "--deb-release" "1"
                              "--deb-arch" "amd64"
@@ -1144,8 +1144,8 @@ actual output:
        (check-contains text "Would generate Windows portable README:")
        (check-contains text "Would generate Windows portable CI workflow:")
        (check-contains text "Would configure Windows runner: windows-2022")
-       (check-contains text "Would configure Windows portable zip: racket9-9.3.2.1-windows-x86_64.zip")
-       (check-contains text "Would configure Windows Inno installer: racket9-9.3.2.1-windows-x86_64-setup.exe")
+       (check-contains text "Would configure Windows portable zip: racket9-9.3.3.1-windows-x86_64.zip")
+       (check-contains text "Would configure Windows Inno installer: racket9-9.3.3.1-windows-x86_64-setup.exe")
        (check-contains text "Would publish Windows release asset: no")
        (check-false (file-exists? (build-path windows-repo-root "README.md")))
        (check-false (file-exists? (build-path windows-repo-root ".github" "workflows" "build-windows-portable.yml")))
@@ -1174,8 +1174,8 @@ actual output:
        (check-true (file-exists? workflow-path))
        (check-contains (file->string readme-file) "GENERATED WINDOWS PORTABLE PACKAGING METADATA - DO NOT EDIT.")
        (check-contains (file->string readme-file) "build-windows-portable.yml")
-       (check-contains (file->string readme-file) "racket9-9.3.2.1-windows-x86_64.zip")
-       (check-contains (file->string readme-file) "racket9-9.3.2.1-windows-x86_64-setup.exe")
+       (check-contains (file->string readme-file) "racket9-9.3.3.1-windows-x86_64.zip")
+       (check-contains (file->string readme-file) "racket9-9.3.3.1-windows-x86_64-setup.exe")
        (check-contains (file->string readme-file) "/CACHEPATH")
        (check-contains (file->string readme-file) "Release asset publishing is enabled")
        (check-contains (file->string readme-file) "CutieDeng/racket")
@@ -1184,10 +1184,10 @@ actual output:
        (check-contains workflow-content "GENERATED WINDOWS PORTABLE PACKAGING METADATA - DO NOT EDIT.")
        (check-contains workflow-content "name: windows portable build")
        (check-contains workflow-content "runs-on: windows-2022")
-       (check-contains workflow-content "SOURCE_URL: 'https://github.com/CutieDeng/racket/releases/download/v9.3.2/racket-minimal-9.3.2-src.tgz'")
+       (check-contains workflow-content "SOURCE_URL: 'https://github.com/CutieDeng/racket/releases/download/v9.3.3/racket-minimal-9.3.3-src.tgz'")
        (check-contains workflow-content "SOURCE_SHA256: '")
-       (check-contains workflow-content "ZIP_NAME: 'racket9-9.3.2.1-windows-x86_64.zip'")
-       (check-contains workflow-content "EXE_NAME: 'racket9-9.3.2.1-windows-x86_64-setup.exe'")
+       (check-contains workflow-content "ZIP_NAME: 'racket9-9.3.3.1-windows-x86_64.zip'")
+       (check-contains workflow-content "EXE_NAME: 'racket9-9.3.3.1-windows-x86_64-setup.exe'")
        (check-contains workflow-content "NMAKE_TARGET: 'plain-install'")
        (check-contains workflow-content "dir src\\Makefile.nt")
        (check-contains workflow-content "dir src\\buildmain.zuo")
@@ -1245,8 +1245,8 @@ actual output:
        (check-contains workflow-content "MSVC_ARCH: 'x64'")
        (check-contains workflow-content "MSVC_ARCH: 'arm64'")
        ;; arm64 artifact names
-       (check-contains workflow-content "ZIP_NAME: 'racket9-9.3.2.1-windows-arm64.zip'")
-       (check-contains workflow-content "EXE_NAME: 'racket9-9.3.2.1-windows-arm64-setup.exe'")
+       (check-contains workflow-content "ZIP_NAME: 'racket9-9.3.3.1-windows-arm64.zip'")
+       (check-contains workflow-content "EXE_NAME: 'racket9-9.3.3.1-windows-arm64-setup.exe'")
        ;; per-arch Inno architectures
        (check-contains workflow-content "ArchitecturesAllowed=x64compatible")
        (check-contains workflow-content "ArchitecturesAllowed=arm64")
@@ -1283,11 +1283,11 @@ actual output:
        (check-contains text "RPM target system: openeuler2403")
        (check-contains text "RPM repo config:")
        (check-contains text "RPM repo root:")
-       (check-contains text "RPM package version: 9.3.2")
+       (check-contains text "RPM package version: 9.3.3")
        (check-contains text "RPM package release base: 1")
        (check-contains text "RPM package release (cached/default): 1.2.cached.openeuler2403")
-       (check-contains text "RPM repo package: racket9-9.3.2-1.2.cached.openeuler2403.aarch64.rpm")
-       (check-contains text "RPM repo package: racket9-9.3.2-1.1.postinstall.openeuler2403.aarch64.rpm")
+       (check-contains text "RPM repo package: racket9-9.3.3-1.2.cached.openeuler2403.aarch64.rpm")
+       (check-contains text "RPM repo package: racket9-9.3.3-1.1.postinstall.openeuler2403.aarch64.rpm")
        (check-contains text "RPM repo channel: cached")
        (check-contains text "RPM repo channel: postinstall")
        (check-contains text "repo/cached/openeuler2403/aarch64/Packages")
@@ -1313,14 +1313,14 @@ actual output:
          (run-package/success
           (list "--target" "apt"
                 "--racket-root" (path-arg racket-root)
-                "--formula-version" "9.3.2.1"
+                "--formula-version" "9.3.3.1"
                 "--artifact-dir" (path-arg artifact-dir)
                 "--work-dir" (path-arg work-dir)
                 "--dry-run")))
        (define text (combined-output out err))
-       (check-contains text "Formula/package version: 9.3.2.1")
-       (check-contains text "Racket source version: 9.3.2")
-       (check-contains text "racket9_9.3.2.1-1_amd64.deb")
+       (check-contains text "Formula/package version: 9.3.3.1")
+       (check-contains text "Racket source version: 9.3.3")
+       (check-contains text "racket9_9.3.3.1-1_amd64.deb")
        (check-false (directory-exists? artifact-dir))
       ) ; end lambda temp dir
     ) ; end with-temp-dir
@@ -1330,7 +1330,7 @@ actual output:
     (with-temp-dir
      (lambda (tmp)
        (define artifact-dir (build-path tmp "artifacts"))
-       (define deb-name "racket9_9.3.2-1_amd64.deb")
+       (define deb-name "racket9_9.3.3-1_amd64.deb")
        (define deb-path (build-path artifact-dir deb-name))
        (define config-path (build-path tmp "apt-release-config.rktd"))
        (make-fake-deb! deb-path)
@@ -1356,7 +1356,7 @@ actual output:
        (define racket-root (make-fake-racket-root! tmp))
        (define artifact-dir (build-path tmp "artifacts"))
        (define work-dir (build-path tmp "work"))
-       (define deb-name "racket9_9.3.2.1-1_amd64.deb")
+       (define deb-name "racket9_9.3.3.1-1_amd64.deb")
        (define config-path (build-path tmp "apt-release-config.rktd"))
        (write-apt-release-config! config-path deb-name)
        (define-values (out err)
@@ -1391,16 +1391,16 @@ actual output:
           (list "--target" "apt"
                 "--target" "apt-release"
                 "--racket-root" (path-arg racket-root)
-                "--formula-version" "9.3.2.1"
+                "--formula-version" "9.3.3.1"
                 "--artifact-dir" (path-arg artifact-dir)
                 "--work-dir" (path-arg work-dir)
                 "--apt-release-config" (path-arg config-path)
                 "--dry-run")))
        (define text (combined-output out err))
        (check-contains text "APT package:")
-       (check-contains text "racket9_9.3.2.1-1_amd64.deb")
-       (check-contains text "APT release tag: v9.3.2")
-       (check-contains text "APT release asset: racket9_9.3.2.1-1_amd64.deb")
+       (check-contains text "racket9_9.3.3.1-1_amd64.deb")
+       (check-contains text "APT release tag: v9.3.3")
+       (check-contains text "APT release asset: racket9_9.3.3.1-1_amd64.deb")
        (check-contains text "Would upload apt release asset from planned apt output")
       ) ; end lambda temp dir
     ) ; end with-temp-dir
@@ -1410,7 +1410,7 @@ actual output:
     (with-temp-dir
      (lambda (tmp)
        (define artifact-dir (build-path tmp "artifacts"))
-       (define asset-name "racket-minimal-9.3.2-src.tgz")
+       (define asset-name "racket-minimal-9.3.3-src.tgz")
        (define config-path (build-path tmp "source-release-config.rktd"))
        (write-text! (build-path artifact-dir asset-name) "source archive")
        (write-source-release-config! config-path asset-name)
@@ -1436,7 +1436,7 @@ actual output:
        (define artifact-dir (build-path tmp "artifacts"))
        (define work-dir (build-path tmp "work"))
        (define tap-dir (make-fake-homebrew-tap! tmp))
-       (define asset-name "racket-minimal-9.3.2-src.tgz")
+       (define asset-name "racket-minimal-9.3.3-src.tgz")
        (define config-path (build-path tmp "source-release-config.rktd"))
        (write-source-release-config! config-path asset-name)
        (define-values (out err)
@@ -1445,7 +1445,7 @@ actual output:
                 "--target" "source-release"
                 "--racket-root" (path-arg racket-root)
                 "--homebrew-tap" (path-arg tap-dir)
-                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.3.2"
+                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.3.3"
                 "--artifact-dir" (path-arg artifact-dir)
                 "--work-dir" (path-arg work-dir)
                 "--source-release-config" (path-arg config-path)
@@ -1475,7 +1475,7 @@ actual output:
           (list "--target" "brew"
                 "--racket-root" (path-arg racket-root)
                 "--homebrew-tap" (path-arg tap-dir)
-                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.3.2"
+                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.3.3"
                 "--artifact-dir" (path-arg artifact-dir)
                 "--work-dir" (path-arg work-dir)
                 "--within-docs"
@@ -1502,14 +1502,14 @@ actual output:
          (run-package/success
           (list "--target" "brew-ci"
                 "--racket-root" (path-arg racket-root)
-                "--formula-version" "9.3.2"
+                "--formula-version" "9.3.3"
                 "--homebrew-tap" (path-arg tap-dir)
-                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.3.2"
+                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.3.3"
                 "--work-dir" (path-arg work-dir)
                 "--brew-ci-config" (path-arg config-path))))
        (define publish-yml (build-path tap-dir ".github" "workflows" "publish.yml"))
-       (check-contains (combined-output out err) "Formula/package version: 9.3.2")
-       (check-contains (file->string publish-yml) "RELEASE_TAG: v9.3.2")
+       (check-contains (combined-output out err) "Formula/package version: 9.3.3")
+       (check-contains (file->string publish-yml) "RELEASE_TAG: v9.3.3")
       ) ; end lambda temp dir
     ) ; end with-temp-dir
   ) ; end test-case brew ci independent release tag
@@ -1527,7 +1527,7 @@ actual output:
           (list "--target" "brew-ci"
                 "--racket-root" (path-arg racket-root)
                 "--homebrew-tap" (path-arg tap-dir)
-                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.3.2"
+                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.3.3"
                 "--work-dir" (path-arg work-dir)
                 "--brew-ci-config" (path-arg config-path)
                 "--dry-run")))
@@ -1557,7 +1557,7 @@ actual output:
           (list "--target" "brew-ci"
                 "--racket-root" (path-arg racket-root)
                 "--homebrew-tap" (path-arg tap-dir)
-                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.3.2"
+                "--bottle-root-url" "https://github.com/CutieDeng/homebrew-racket/releases/download/v9.3.3"
                 "--work-dir" (path-arg work-dir)
                 "--brew-ci-config" (path-arg config-path))))
        (define text (combined-output out err))
