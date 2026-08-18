@@ -6196,22 +6196,47 @@ racket package-racket.rkt \\
           # works; fail the build if anything stays absolute.
           @'
           #lang racket/base
-          (require compiler/private/cm-path racket/file)
+          (require compiler/private/cm-path setup/getinfo racket/path racket/file)
           (define root (simplify-path (path->complete-path (vector-ref (current-command-line-arguments) 0))))
           (define root-str (string-downcase (path->string root)))
+          (define pkgs-dir (build-path root \"share\" \"pkgs\"))
           (define rewrites 0)
           (define failures (quote ()))
           (define (under-root? bs)
             (define ps (string-downcase (path->string (bytes->path bs))))
             (and (>= (string-length ps) (string-length root-str))
                  (string=? (substring ps 0 (string-length root-str)) root-str)))
+          (define (under-pkgs? p)
+            (define rel (find-relative-path pkgs-dir p))
+            (and (relative-path? rel)
+                 (let ([parts (map path-element->string (explode-path rel))])
+                   (and (pair? parts) (not (equal? (car parts) \"..\")) parts))))
+          ;; The db in a portable tree lacks sc-pkg-info entries, so the
+          ;; stock encoder cannot resolve single-collection packages; read
+          ;; the collection from each package info.rkt directly instead.
+          (define (encode-pkgs-path p)
+            (define parts (under-pkgs? p))
+            (and parts (>= (length parts) 2)
+                 (let* ([pkgdir (car parts)]
+                        [rest (cdr parts)]
+                        [info (get-info/full (build-path pkgs-dir pkgdir))]
+                        [coll (and info (info (quote collection) (lambda () (quote use-pkg-name))))])
+                   (define-values (cname sub)
+                     (cond
+                       [(eq? coll (quote multi)) (values (car rest) (cdr rest))]
+                       [(string? coll) (values coll rest)]
+                       [else (values pkgdir rest)]))
+                   (and (pair? sub)
+                        (cons (quote collects) (map string->bytes/utf-8 (cons cname sub)))))))
           (define (fix-inner v)
             (cond
               [(and (bytes? v) (under-root? v))
                (define enc (path*->collects-relative v))
                (cond
-                 [(bytes? enc) (set! failures (cons v failures)) v]
-                 [else (set! rewrites (add1 rewrites)) enc])]
+                 [(not (bytes? enc)) (set! rewrites (add1 rewrites)) enc]
+                 [(encode-pkgs-path (simplify-path (bytes->path v)))
+                  => (lambda (enc2) (set! rewrites (add1 rewrites)) enc2)]
+                 [else (set! failures (cons v failures)) v])]
               [else v]))
           (define (fix-dep sexp)
             (cond
