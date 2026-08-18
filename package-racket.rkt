@@ -6187,16 +6187,75 @@ racket package-racket.rkt \\
             throw \"suspiciously few in-tree zos: $zos\"
           }}
           Write-Host \"cached zip payload: $zos in-tree zos\"
-          # Parallel two-pass builds can leave timestamp inversions (a
+          # Some dep entries get recorded as ABSOLUTE build paths when the
+          # collects-relative encoder cannot resolve a package collection
+          # mid-build (e.g. relative requires into single-collection
+          # packages); those bind the tree to the build directory and make
+          # cm rebuild them at any other extraction path. Re-encode them
+          # post-build with the tree's own racket, where the resolution
+          # works; fail the build if anything stays absolute.
+          @'
+          #lang racket/base
+          (require compiler/private/cm-path racket/file)
+          (define root (simplify-path (path->complete-path (vector-ref (current-command-line-arguments) 0))))
+          (define root-str (string-downcase (path->string root)))
+          (define rewrites 0)
+          (define failures (quote ()))
+          (define (under-root? bs)
+            (define ps (string-downcase (path->string (bytes->path bs))))
+            (and (>= (string-length ps) (string-length root-str))
+                 (string=? (substring ps 0 (string-length root-str)) root-str)))
+          (define (fix-inner v)
+            (cond
+              [(and (bytes? v) (under-root? v))
+               (define enc (path*->collects-relative v))
+               (cond
+                 [(bytes? enc) (set! failures (cons v failures)) v]
+                 [else (set! rewrites (add1 rewrites)) enc])]
+              [else v]))
+          (define (fix-dep sexp)
+            (cond
+              [(and (pair? sexp) (eq? (quote indirect) (car sexp))) (cons (quote indirect) (fix-dep (cdr sexp)))]
+              [(and (pair? sexp) (eq? (quote ext) (car sexp))) (cons (quote ext) (fix-inner (cdr sexp)))]
+              [else (fix-inner sexp)]))
+          (for ([f (in-directory root)])
+            (when (and (file-exists? f) (regexp-match? #rx#\"[.]dep$\" (path->bytes f)))
+              (define d (call-with-input-file f read))
+              (define nd (list* (car d) (cadr d) (caddr d) (map fix-dep (cdddr d))))
+              (unless (equal? nd d)
+                (call-with-output-file f #:exists (quote truncate)
+                  (lambda (o) (write nd o) (newline o))))))
+          (printf \"dep re-encodings: ~a\\n\" rewrites)
+          (unless (null? failures)
+            (for ([b (in-list failures)]) (eprintf \"unencodable dep path: ~a\\n\" b))
+            (exit 1))
+          '@ | Set-Content -Path normalize-deps.rkt -Encoding UTF8
+          & $racketExe normalize-deps.rkt $zipRoot
+          if ($LASTEXITCODE -ne 0) {{
+            throw \"dep re-encoding failed with exit $LASTEXITCODE\"
+          }}
+          # Parallel two-pass builds can also leave timestamp inversions (a
           # dependency zo rewritten by pass 2 after its dependent was
           # validated), which cm treats as stale. Normalize like the deb
           # flow: every dep gets one shared timestamp, every zo a slightly
           # later one, so no strict dependency-newer-than-dependent ordering
-          # survives and a later raco setup no-ops.
+          # survives.
           $depStamp = Get-Date
           $zoStamp = $depStamp.AddSeconds(2)
           Get-ChildItem -LiteralPath $zipRoot -Recurse -Filter *.dep | ForEach-Object {{ $_.LastWriteTime = $depStamp }}
           Get-ChildItem -LiteralPath $zipRoot -Recurse -Filter *.zo | ForEach-Object {{ $_.LastWriteTime = $zoStamp }}
+          # Hard gate: a third setup on the finished tree must be a no-op.
+          Start-Sleep -Seconds 3
+          $gateMarker = Get-Date
+          & $racketExe -N raco -l- raco setup --no-user -D --no-pkg-deps --no-launcher
+          if ($LASTEXITCODE -ne 0) {{
+            throw \"gate setup failed with exit $LASTEXITCODE\"
+          }}
+          $gateRebuilt = @(Get-ChildItem -LiteralPath $zipRoot -Recurse -Include *.zo,*.dep | Where-Object {{ $_.LastWriteTime -gt $gateMarker }})
+          if ($gateRebuilt.Count -gt 0) {{
+            $gateRebuilt | Select-Object -First 20 -ExpandProperty FullName | ForEach-Object {{ Write-Host \"NOT-CONVERGED: $_\" }}
+            throw \"cached zip tree did not converge: $($gateRebuilt.Count) rewrites on the builder\"
+          }}
           $cachedZipPath = Join-Path \"artifacts\" $env:CACHED_ZIP_NAME
           # bsdtar, not Compress-Archive: full-fidelity mtimes so the shipped
           # in-tree zo/dep pairs revalidate exactly after extraction (DOS
