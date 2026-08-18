@@ -1430,7 +1430,8 @@ write_staged_config() {{
   local prefix=\"$3\"
   local runtime_cache_root=\"$4\"
   local staged_cache_root=\"$5\"
-  replace_config_value \"$config_file\" compiled-file-system-cache-root \"$runtime_cache_root\" \"$staged_cache_root\" required
+  # compiled-file-system-cache-root stays at its runtime value: the setup
+  # invocation overrides it with --compiled-cache-root (racket >= 9.3.5)
   replace_config_value \"$config_file\" share-dir \"$prefix/share/racket\" \"$stage_root$prefix/share/racket\"
   replace_config_value \"$config_file\" pkgs-dir \"$prefix/share/racket/pkgs\" \"$stage_root$prefix/share/racket/pkgs\"
   replace_config_value \"$config_file\" doc-dir \"$prefix/share/doc/racket\" \"$stage_root$prefix/share/doc/racket\"
@@ -1524,7 +1525,18 @@ build_staged_system_cache() {{
   cp \"$config_file\" \"$backup\"
   write_staged_config \"$config_file\" \"$stage_root\" \"$prefix\" \"$runtime_cache_root\" \"$staged_cache_root\"
   mkdir -p \"$staged_cache_root\"
-  if ! \"$racket_bin\" -X \"$collects_dir\" -G \"$config_dir\" -N raco -l- raco setup --system --no-user --reset-cache -D --no-pkg-deps --no-launcher; then
+  # Two passes: on a zo-stripped stage the first setup bootstraps from
+  # source and its dep bookkeeping does not self-validate; the second pass
+  # converges the cache so an installed system's later raco setup no-ops.
+  # PLTCOMPILEDROOTS puts the staged cache first on the LOAD side too (the
+  # trailing colon appends the default roots), so the converge pass boots
+  # setup from the pass-1 cache instead of re-bootstrapping from source.
+  if ! PLTCOMPILEDROOTS=\"$staged_cache_root:\" \"$racket_bin\" -X \"$collects_dir\" -G \"$config_dir\" -N raco -l- raco setup --system --no-user --compiled-cache-root \"$staged_cache_root\" --reset-cache -D --no-pkg-deps --no-launcher; then
+    cp \"$backup\" \"$config_file\"
+    rm -f \"$backup\"
+    return 1
+  fi
+  if ! PLTCOMPILEDROOTS=\"$staged_cache_root:\" \"$racket_bin\" -X \"$collects_dir\" -G \"$config_dir\" -N raco -l- raco setup --system --no-user --compiled-cache-root \"$staged_cache_root\" -D --no-pkg-deps --no-launcher; then
     cp \"$backup\" \"$config_file\"
     rm -f \"$backup\"
     return 1
@@ -2029,7 +2041,9 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
 		                                      "pkgs-dir"
 		                                      "racket-compiled-cache.log"
 		                                      "-X \"$collects_dir\" -G \"$config_dir\""
-		                                      "raco setup --system --no-user --reset-cache -D --no-pkg-deps --no-launcher"
+		                                      "PLTCOMPILEDROOTS"
+		                                      "raco setup --system --no-user --compiled-cache-root \"$staged_cache_root\" --reset-cache -D --no-pkg-deps --no-launcher"
+		                                      "raco setup --system --no-user --compiled-cache-root \"$staged_cache_root\" -D --no-pkg-deps --no-launcher"
 		                                      "replace_config_value"
 		                                      "LEGACY_CACHED_PACKAGE_NAME="
 		                                      "racket9-cached"
@@ -5650,6 +5664,9 @@ jobs:
 (define (windows-ci-cached-installer-exe-name c arch)
   f"{(cfg-package-name c)}-{(cfg-formula-version c)}-windows-{arch}-setup-cached.exe")
 
+(define (windows-ci-cached-zip-name c arch)
+  f"{(cfg-package-name c)}-{(cfg-formula-version c)}-windows-{arch}-cached.zip")
+
 (define (windows-ci-artifact-name artifact-prefix arch)
   f"{artifact-prefix}-{arch}")
 
@@ -5670,6 +5687,8 @@ jobs:
       (string-join (map (lambda (t) f"`{(windows-ci-installer-exe-name c (hash-ref t 'arch))}`") targets) ", "))
     (define cached-exe-name
       (string-join (map (lambda (t) f"`{(windows-ci-cached-installer-exe-name c (hash-ref t 'arch))}`") targets) ", "))
+    (define cached-zip-name*
+      (string-join (map (lambda (t) f"`{(windows-ci-cached-zip-name c (hash-ref t 'arch))}`") targets) ", "))
     (define release-note
       (if (config-required-boolean 'windows-ci-config config 'publish-release)
           (let ([release-repo
@@ -5681,7 +5700,7 @@ jobs:
                 [token-secret
                  (assert-windows-ci-safe-token
                   (config-required-string 'windows-ci-config config 'token-secret))])
-            f"Release asset publishing is enabled. The workflow uploads {zip-name}, {exe-name}, and {cached-exe-name} to `{release-repo}` release `{release-tag}` using the `{token-secret}` repository secret.")
+            f"Release asset publishing is enabled. The workflow uploads {zip-name}, {cached-zip-name*}, {exe-name}, and {cached-exe-name} to `{release-repo}` release `{release-tag}` using the `{token-secret}` repository secret.")
           "Release asset publishing is disabled; successful runs retain the zips and installers as GitHub Actions artifacts."))
     f"# win-racket
 
@@ -5697,7 +5716,10 @@ and regenerate this repository instead.
 ## Build
 
 The generated workflow builds Racket on `{runner-list}` for `{arch-list}` and uploads
-{zip-name}, {exe-name}, and {cached-exe-name} as GitHub Actions artifacts. It runs
+{zip-name}, {cached-zip-name*}, {exe-name}, and {cached-exe-name} as GitHub Actions
+artifacts. The `-cached.zip` carries the whole tree compiled in-tree (classic
+`compiled/` dirs, converged with two setup passes), so it starts fast at any
+extraction path; the plain zip stays all-source and smallest. It runs
 `nmake all` before the configured `nmake` target so a clean CI checkout never tries
 to install missing build outputs. The portable archive and Inno Setup installers
 copy only the installed runtime tree, not the source/build tree. Both installers
@@ -5782,6 +5804,8 @@ racket package-racket.rkt \\
                [expected (number->string (length targets))]
                ;; per arch: one plain -setup.exe plus one -setup-cached.exe
                [expected-exes (number->string (* 2 (length targets)))]
+               ;; per arch: the plain zip plus the in-tree-compiled -cached.zip
+               [expected-zips (number->string (* 2 (length targets)))]
                [artifact-prefix (windows-ci-config-artifact-prefix config)]
                [needs-list
                 (string-append
@@ -5812,14 +5836,15 @@ racket package-racket.rkt \\
           RELEASE_NAME: {(yaml-single-quote release-name)}
           CREATE_RELEASE: {(yaml-single-quote (if create-release? "true" "false"))}
           EXPECTED_ASSETS: {(yaml-single-quote expected)}
+          EXPECTED_ZIPS: {(yaml-single-quote expected-zips)}
           EXPECTED_EXES: {(yaml-single-quote expected-exes)}
         run: |
           set -euo pipefail
           command -v gh >/dev/null 2>&1 || {{ echo 'gh CLI is required on the publish runner'; exit 1; }}
           mapfile -t zip_files < <(find \"$GITHUB_WORKSPACE/release-assets\" -maxdepth 1 -name '*.zip' -type f | sort)
           mapfile -t exe_files < <(find \"$GITHUB_WORKSPACE/release-assets\" -maxdepth 1 -name '*.exe' -type f | sort)
-          if [ \"${{#zip_files[@]}}\" -ne \"$EXPECTED_ASSETS\" ]; then
-            printf 'Expected %s Windows portable zips, got %s\\n' \"$EXPECTED_ASSETS\" \"${{#zip_files[@]}}\"
+          if [ \"${{#zip_files[@]}}\" -ne \"$EXPECTED_ZIPS\" ]; then
+            printf 'Expected %s Windows portable zips, got %s\\n' \"$EXPECTED_ZIPS\" \"${{#zip_files[@]}}\"
             printf '  %s\\n' \"${{zip_files[@]}}\"
             exit 1
           fi
@@ -5859,6 +5884,7 @@ racket package-racket.rkt \\
                               #:msvc-arch msvc-arch
                               #:inno-arch inno-arch
                               #:zip-name zip-name
+                              #:cached-zip-name cached-zip-name
                               #:exe-name exe-name
                               #:cached-exe-name cached-exe-name
                               #:artifact-name artifact-name
@@ -5882,6 +5908,7 @@ racket package-racket.rkt \\
       SOURCE_URL: {(yaml-single-quote source-url)}
       SOURCE_SHA256: {(yaml-single-quote source-sha)}
       ZIP_NAME: {(yaml-single-quote zip-name)}
+      CACHED_ZIP_NAME: {(yaml-single-quote cached-zip-name)}
       EXE_NAME: {(yaml-single-quote exe-name)}
       CACHED_EXE_NAME: {(yaml-single-quote cached-exe-name)}
       PORTABLE_DIR: {(yaml-single-quote portable-dir)}
@@ -6135,6 +6162,40 @@ racket package-racket.rkt \\
             throw \"portable zip is empty: $artifactPath\"
           }}
           Get-FileHash $artifactPath -Algorithm SHA256
+
+      - name: Build cached portable zip (in-tree compiled)
+        shell: pwsh
+        run: |
+          # A portable zip must work at ANY extraction path, so unlike the
+          # cached installer's path-keyed system cache this variant uses the
+          # classic in-tree compiled/ model: zo next to sources, config left
+          # pristine, location-independent. Two setup passes: the first
+          # bootstraps from source on the zo-less tree and does not
+          # self-validate; the second converges the deps.
+          $portableRoot = Join-Path \"portable\" $env:PORTABLE_DIR
+          New-Item -ItemType Directory -Force \"portable-zipcached\" | Out-Null
+          $zipRoot = Join-Path \"portable-zipcached\" $env:PORTABLE_DIR
+          Copy-Item -LiteralPath $portableRoot -Destination $zipRoot -Recurse
+          $racketExe = Join-Path $zipRoot 'Racket.exe'
+          & $racketExe -N raco -l- raco setup --no-user -D --no-pkg-deps --no-launcher
+          if ($LASTEXITCODE -ne 0) {{
+            throw \"in-tree setup pass 1 failed with exit $LASTEXITCODE\"
+          }}
+          & $racketExe -N raco -l- raco setup --no-user -D --no-pkg-deps --no-launcher
+          if ($LASTEXITCODE -ne 0) {{
+            throw \"in-tree setup pass 2 failed with exit $LASTEXITCODE\"
+          }}
+          $zos = (Get-ChildItem -LiteralPath $zipRoot -Recurse -Filter *.zo | Measure-Object).Count
+          if ($zos -lt 500) {{
+            throw \"suspiciously few in-tree zos: $zos\"
+          }}
+          Write-Host \"cached zip payload: $zos in-tree zos\"
+          $cachedZipPath = Join-Path \"artifacts\" $env:CACHED_ZIP_NAME
+          Compress-Archive -Path $zipRoot -DestinationPath $cachedZipPath -Force
+          if ((Get-Item $cachedZipPath).Length -le 0) {{
+            throw \"cached portable zip is empty: $cachedZipPath\"
+          }}
+          Get-FileHash $cachedZipPath -Algorithm SHA256
 
       - name: Build Inno Setup installer
         shell: pwsh
@@ -6547,6 +6608,7 @@ racket package-racket.rkt \\
           #:msvc-arch (hash-ref target 'msvc-arch)
           #:inno-arch (hash-ref target 'inno-arch)
           #:zip-name (windows-ci-portable-zip-name c arch)
+          #:cached-zip-name (windows-ci-cached-zip-name c arch)
           #:exe-name (windows-ci-installer-exe-name c arch)
           #:cached-exe-name (windows-ci-cached-installer-exe-name c arch)
           #:artifact-name (windows-ci-artifact-name artifact-prefix arch)
@@ -6703,6 +6765,7 @@ jobs:{build-jobs-yaml}{(windows-ci-publish-job-content config)}"
       (println/flush f"Would configure Windows portable zip: {(windows-ci-portable-zip-name c arch)}")
       (println/flush f"Would configure Windows Inno installer: {(windows-ci-installer-exe-name c arch)}")
       (println/flush f"Would configure Windows cached Inno installer: {(windows-ci-cached-installer-exe-name c arch)}")
+      (println/flush f"Would configure Windows cached portable zip: {(windows-ci-cached-zip-name c arch)}")
     ) ; end for each windows target
     (println/flush f"Would publish Windows release asset: {(if (config-required-boolean 'windows-ci-config config 'publish-release) "yes" "no")}")
   ) ; end begin print-windows-ci-dry-run-plan!
