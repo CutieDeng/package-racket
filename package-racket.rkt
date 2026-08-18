@@ -6188,7 +6188,13 @@ racket package-racket.rkt \\
           }}
           Write-Host \"cached zip payload: $zos in-tree zos\"
           $cachedZipPath = Join-Path \"artifacts\" $env:CACHED_ZIP_NAME
-          Compress-Archive -Path $zipRoot -DestinationPath $cachedZipPath -Force
+          # bsdtar, not Compress-Archive: full-fidelity mtimes so the shipped
+          # in-tree zo/dep pairs revalidate exactly after extraction (DOS
+          # 2-second zip timestamps can reorder same-second dep/zo writes)
+          & C:\\Windows\\System32\\tar.exe -a -cf $cachedZipPath -C \"portable-zipcached\" $env:PORTABLE_DIR
+          if ($LASTEXITCODE -ne 0) {{
+            throw \"cached zip creation failed with exit $LASTEXITCODE\"
+          }}
           if ((Get-Item $cachedZipPath).Length -le 0) {{
             throw \"cached portable zip is empty: $cachedZipPath\"
           }}
