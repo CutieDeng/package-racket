@@ -6350,6 +6350,15 @@ racket package-racket.rkt \\
           if ($LASTEXITCODE -ne 0) {{
             throw \"CI system-cache raco setup failed with exit $LASTEXITCODE\"
           }}
+          # The portable tree ships no in-tree .zo, so the first setup
+          # bootstraps from source and its cache does not self-validate; a
+          # second pass converges the deps so installed caches no-op under
+          # any later raco setup.
+          $racketExe = Join-Path $installRoot 'Racket.exe'
+          & $racketExe -N raco -l- raco setup --system --no-user -D --no-pkg-deps
+          if ($LASTEXITCODE -ne 0) {{
+            throw \"CI system-cache converge setup failed with exit $LASTEXITCODE\"
+          }}
           $count = (Get-ChildItem -LiteralPath $cacheRoot -Recurse -File | Measure-Object).Count
           if ($count -lt 100) {{
             throw \"suspiciously small system cache: $count files\"
