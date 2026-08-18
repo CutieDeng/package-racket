@@ -5647,6 +5647,9 @@ jobs:
 (define (windows-ci-installer-exe-name c arch)
   f"{(cfg-package-name c)}-{(cfg-formula-version c)}-windows-{arch}-setup.exe")
 
+(define (windows-ci-cached-installer-exe-name c arch)
+  f"{(cfg-package-name c)}-{(cfg-formula-version c)}-windows-{arch}-setup-cached.exe")
+
 (define (windows-ci-artifact-name artifact-prefix arch)
   f"{artifact-prefix}-{arch}")
 
@@ -5665,6 +5668,8 @@ jobs:
       (string-join (map (lambda (t) f"`{(windows-ci-portable-zip-name c (hash-ref t 'arch))}`") targets) ", "))
     (define exe-name
       (string-join (map (lambda (t) f"`{(windows-ci-installer-exe-name c (hash-ref t 'arch))}`") targets) ", "))
+    (define cached-exe-name
+      (string-join (map (lambda (t) f"`{(windows-ci-cached-installer-exe-name c (hash-ref t 'arch))}`") targets) ", "))
     (define release-note
       (if (config-required-boolean 'windows-ci-config config 'publish-release)
           (let ([release-repo
@@ -5676,7 +5681,7 @@ jobs:
                 [token-secret
                  (assert-windows-ci-safe-token
                   (config-required-string 'windows-ci-config config 'token-secret))])
-            f"Release asset publishing is enabled. The workflow uploads {zip-name} and {exe-name} to `{release-repo}` release `{release-tag}` using the `{token-secret}` repository secret.")
+            f"Release asset publishing is enabled. The workflow uploads {zip-name}, {exe-name}, and {cached-exe-name} to `{release-repo}` release `{release-tag}` using the `{token-secret}` repository secret.")
           "Release asset publishing is disabled; successful runs retain the zips and installers as GitHub Actions artifacts."))
     f"# win-racket
 
@@ -5692,12 +5697,17 @@ and regenerate this repository instead.
 ## Build
 
 The generated workflow builds Racket on `{runner-list}` for `{arch-list}` and uploads
-{zip-name} and {exe-name} as GitHub Actions artifacts. It runs `nmake all` before the
-configured `nmake` target so a clean CI checkout never tries to install missing
-build outputs. The portable archive and Inno Setup installer copy only the
-installed runtime tree, not the source/build tree. The installer accepts
-`/DIR=...` for the install path and `/CACHEPATH=...` for the Racket cache path;
-the default cache path is inside the install directory. {release-note}
+{zip-name}, {exe-name}, and {cached-exe-name} as GitHub Actions artifacts. It runs
+`nmake all` before the configured `nmake` target so a clean CI checkout never tries
+to install missing build outputs. The portable archive and Inno Setup installers
+copy only the installed runtime tree, not the source/build tree. Both installers
+accept `/DIR=...` for the install path and `/CACHEPATH=...` for the Racket cache
+path; the default cache path is inside the install directory. The `-setup-cached`
+installer additionally embeds the system compiled cache prebuilt for the default
+install directory, so installs that keep the defaults skip the install-time
+`raco setup` entirely (recommended for slower machines); the cache is keyed by
+absolute path, so custom `/DIR=`/`/CACHEPATH=` installs fall back to rebuilding
+the cache exactly like the plain installer. {release-note}
 
 ## Regenerate
 
@@ -5770,6 +5780,8 @@ racket package-racket.rkt \\
                 (string-append "${{ secrets." token-secret " }}")]
                [targets (windows-ci-targets config)]
                [expected (number->string (length targets))]
+               ;; per arch: one plain -setup.exe plus one -setup-cached.exe
+               [expected-exes (number->string (* 2 (length targets)))]
                [artifact-prefix (windows-ci-config-artifact-prefix config)]
                [needs-list
                 (string-append
@@ -5800,6 +5812,7 @@ racket package-racket.rkt \\
           RELEASE_NAME: {(yaml-single-quote release-name)}
           CREATE_RELEASE: {(yaml-single-quote (if create-release? "true" "false"))}
           EXPECTED_ASSETS: {(yaml-single-quote expected)}
+          EXPECTED_EXES: {(yaml-single-quote expected-exes)}
         run: |
           set -euo pipefail
           command -v gh >/dev/null 2>&1 || {{ echo 'gh CLI is required on the publish runner'; exit 1; }}
@@ -5810,8 +5823,8 @@ racket package-racket.rkt \\
             printf '  %s\\n' \"${{zip_files[@]}}\"
             exit 1
           fi
-          if [ \"${{#exe_files[@]}}\" -ne \"$EXPECTED_ASSETS\" ]; then
-            printf 'Expected %s Windows installer exes, got %s\\n' \"$EXPECTED_ASSETS\" \"${{#exe_files[@]}}\"
+          if [ \"${{#exe_files[@]}}\" -ne \"$EXPECTED_EXES\" ]; then
+            printf 'Expected %s Windows installer exes, got %s\\n' \"$EXPECTED_EXES\" \"${{#exe_files[@]}}\"
             printf '  %s\\n' \"${{exe_files[@]}}\"
             exit 1
           fi
@@ -5847,6 +5860,7 @@ racket package-racket.rkt \\
                               #:inno-arch inno-arch
                               #:zip-name zip-name
                               #:exe-name exe-name
+                              #:cached-exe-name cached-exe-name
                               #:artifact-name artifact-name
                               #:nmake-target nmake-target
                               #:portable-dir portable-dir
@@ -5869,6 +5883,7 @@ racket package-racket.rkt \\
       SOURCE_SHA256: {(yaml-single-quote source-sha)}
       ZIP_NAME: {(yaml-single-quote zip-name)}
       EXE_NAME: {(yaml-single-quote exe-name)}
+      CACHED_EXE_NAME: {(yaml-single-quote cached-exe-name)}
       PORTABLE_DIR: {(yaml-single-quote portable-dir)}
       BUILD_JOBS: {(yaml-single-quote (number->string jobs))}
       MSVC_ARCH: {(yaml-single-quote msvc-arch)}
@@ -6169,7 +6184,9 @@ racket package-racket.rkt \\
           $configText = $configText.Replace('\"../../share/racket/self-catalog\"', '\"../share/self-catalog\"')
           $cacheForConfig = $CacheRoot.Replace('\\', '/').Replace('\"', '\\\"')
           $entries = ' (default-scope . \"installation\") (compiled-file-cache-roots . (user system)) (compiled-file-system-cache-root . \"' + $cacheForConfig + '\")'
-          $configText = [regex]::Replace($configText, '\\s*\\)\\)\\s*$', $entries + \"))`r`n\")
+          # The final \"))\" is <last-entry-close><hash-close>: re-close the
+          # last entry BEFORE splicing the new entries, then close the hash.
+          $configText = [regex]::Replace($configText, '\\s*\\)\\)\\s*$', ')' + $entries + \")`r`n\")
           if ($configText -notmatch '\\(compiled-file-system-cache-root \\.' ) {{
             throw 'Unable to configure Racket system cache root'
           }}
@@ -6177,6 +6194,13 @@ racket package-racket.rkt \\
 
           $racoExe = Join-Path $InstallRoot 'raco.exe'
           $racketExe = Join-Path $InstallRoot 'Racket.exe'
+          if (Test-Path -LiteralPath $racketExe) {{
+            $cfgForRacket = $configPath.Replace('\\', '/')
+            & $racketExe -e \"(void (call-with-input-file `\"$cfgForRacket`\" read))\"
+            if ($LASTEXITCODE -ne 0) {{
+              throw \"rewritten config.rktd is not readable Racket data: $configPath\"
+            }}
+          }}
           if (Test-Path -LiteralPath $racoExe) {{
             & $racoExe setup --system --no-user --reset-cache -D --no-pkg-deps
           }} elseif (Test-Path -LiteralPath $racketExe) {{
@@ -6307,6 +6331,164 @@ racket package-racket.rkt \\
           }}
           Get-FileHash $installerPath -Algorithm SHA256
 
+      - name: Build cached installer (prebuilt system cache)
+        shell: pwsh
+        run: |
+          $portableRoot = Join-Path \"portable\" $env:PORTABLE_DIR
+          # The runtime-keyed system compiled cache is keyed by absolute
+          # source path (setup/compiled-cache.rkt), so the shipped cache is
+          # valid only for the default install location. Stage the payload
+          # there, run the SAME configure script the plain installer runs on
+          # the user's machine, and package the result.
+          $installRoot = 'C:\\Program Files\\Racket9'
+          if (Test-Path -LiteralPath $installRoot) {{
+            throw \"unexpected existing install root: $installRoot\"
+          }}
+          Copy-Item -LiteralPath $portableRoot -Destination $installRoot -Recurse
+          $cacheRoot = Join-Path $installRoot 'var\\cache\\racket\\compiled'
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installRoot 'installer-configure.ps1') -InstallRoot $installRoot -CacheRoot $cacheRoot
+          if ($LASTEXITCODE -ne 0) {{
+            throw \"CI system-cache raco setup failed with exit $LASTEXITCODE\"
+          }}
+          $count = (Get-ChildItem -LiteralPath $cacheRoot -Recurse -File | Measure-Object).Count
+          if ($count -lt 100) {{
+            throw \"suspiciously small system cache: $count files\"
+          }}
+          Write-Host \"cached payload: $count system-cache files\"
+          New-Item -ItemType Directory -Force \"portable-cached\" | Out-Null
+          $cachedRoot = Join-Path \"portable-cached\" $env:PORTABLE_DIR
+          Copy-Item -LiteralPath $installRoot -Destination $cachedRoot -Recurse
+          Remove-Item -Recurse -Force -LiteralPath $installRoot
+          $outputBase = [IO.Path]::GetFileNameWithoutExtension($env:CACHED_EXE_NAME)
+          @\"
+          [Setup]
+          AppId={(cfg-package-name c)}
+          AppName=Racket
+          AppVersion=$env:FORMULA_VERSION
+          DefaultDirName={{autopf}}\\Racket9
+          DefaultGroupName=Racket 9
+          DisableProgramGroupPage=yes
+          OutputDir=artifacts
+          OutputBaseFilename=$outputBase
+          Compression=lzma2
+          SolidCompression=yes
+          ArchitecturesAllowed={inno-arch}
+          ArchitecturesInstallIn64BitMode={inno-arch}
+          PrivilegesRequired=admin
+          WizardStyle=modern
+
+          [Files]
+          Source: \"portable-cached\\$env:PORTABLE_DIR\\*\"; DestDir: \"{{app}}\"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Icons]
+          Name: \"{{group}}\\Racket\"; Filename: \"{{app}}\\Racket.exe\"
+          Name: \"{{group}}\\Uninstall Racket\"; Filename: \"{{uninstallexe}}\"
+
+          [Code]
+          var
+            CachePage: TInputDirWizardPage;
+            CacheDefaultRoot: String;
+
+          function DefaultCacheRoot(): String;
+          begin
+            Result := ExpandConstant('{{app}}\\var\\cache\\racket\\compiled');
+          end;
+
+          function GetCacheRoot(Param: String): String;
+          var
+            Value: String;
+          begin
+            Value := ExpandConstant('{{param:CACHEPATH|}}');
+            if Value <> '' then
+              Result := Value
+            else if Assigned(CachePage) then
+              Result := CachePage.Values[0]
+            else
+              Result := DefaultCacheRoot();
+          end;
+
+          procedure InitializeWizard;
+          begin
+            CachePage := CreateInputDirPage(wpSelectDir, 'Racket Cache Directory',
+              'Choose the compiled cache directory.',
+              'This installer ships a prebuilt cache for the default install directory; keeping the defaults skips the cache build. A custom directory rebuilds the cache during installation. For unattended installs, pass /CACHEPATH=...',
+              False, '');
+            CachePage.Add('');
+            CacheDefaultRoot := DefaultCacheRoot();
+            CachePage.Values[0] := CacheDefaultRoot;
+          end;
+
+          procedure CurPageChanged(CurPageID: Integer);
+          begin
+            if Assigned(CachePage) and (CurPageID = CachePage.ID) then
+              if (CachePage.Values[0] = '') or (CachePage.Values[0] = CacheDefaultRoot) then begin
+                CacheDefaultRoot := DefaultCacheRoot();
+                CachePage.Values[0] := CacheDefaultRoot;
+              end;
+          end;
+
+          function NextButtonClick(CurPageID: Integer): Boolean;
+          begin
+            Result := True;
+            if Assigned(CachePage) and (CurPageID = CachePage.ID) and (Trim(CachePage.Values[0]) = '') then begin
+              MsgBox('Cache path is required.', mbError, MB_OK);
+              Result := False;
+            end;
+          end;
+
+          procedure CurStepChanged(CurStep: TSetupStep);
+          var
+            ResultCode: Integer;
+            Params: String;
+            CacheRoot: String;
+          begin
+            if CurStep = ssPostInstall then begin
+              CacheRoot := GetCacheRoot('');
+              if not RegWriteStringValue(HKLM, 'Software\\Racket9', 'CacheRoot', CacheRoot) then
+                RaiseException('Failed to save Racket cache path.');
+              if (ExpandConstant('{{app}}') = ExpandConstant('{{autopf}}\\Racket9'))
+                 and (CacheRoot = DefaultCacheRoot())
+                 and FileExists(ExpandConstant('{{app}}\\var\\cache\\racket\\compiled\\.racket-installer-cache')) then begin
+                Log('Prebuilt system cache matches this install path; skipping raco setup.');
+                exit;
+              end;
+              // The shipped cache is keyed to the default path; drop it and
+              // rebuild against the chosen locations.
+              if DirExists(ExpandConstant('{{app}}\\var\\cache\\racket\\compiled')) then
+                DelTree(ExpandConstant('{{app}}\\var\\cache\\racket\\compiled'), True, True, True);
+              Params := '-NoProfile -ExecutionPolicy Bypass -File \"' + ExpandConstant('{{app}}\\installer-configure.ps1') +
+                '\" -InstallRoot \"' + ExpandConstant('{{app}}') + '\" -CacheRoot \"' + CacheRoot + '\"';
+              if not Exec('powershell.exe', Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+                RaiseException('Failed to run Racket cache setup.');
+              if ResultCode <> 0 then
+                RaiseException('Racket cache setup failed with exit code ' + IntToStr(ResultCode) + '.');
+            end;
+          end;
+
+          procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+          var
+            CacheRoot: String;
+          begin
+            if CurUninstallStep = usUninstall then begin
+              if RegQueryStringValue(HKLM, 'Software\\Racket9', 'CacheRoot', CacheRoot) then begin
+                if FileExists(AddBackslash(CacheRoot) + '.racket-installer-cache') then
+                  DelTree(CacheRoot, True, True, True);
+              end;
+              RegDeleteKeyIncludingSubkeys(HKLM, 'Software\\Racket9');
+            end;
+          end;
+          \"@ | Set-Content -Path racket-installer-cached.iss -Encoding UTF8
+
+          & $env:ISCC_EXE racket-installer-cached.iss
+          if ($LASTEXITCODE -ne 0) {{
+            throw \"Inno Setup (cached) failed with exit $LASTEXITCODE\"
+          }}
+          $cachedInstallerPath = Join-Path \"artifacts\" $env:CACHED_EXE_NAME
+          if (!(Test-Path $cachedInstallerPath) -or (Get-Item $cachedInstallerPath).Length -le 0) {{
+            throw \"cached installer exe missing or empty: $cachedInstallerPath\"
+          }}
+          Get-FileHash $cachedInstallerPath -Algorithm SHA256
+
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v6
         with:
@@ -6348,6 +6530,7 @@ racket package-racket.rkt \\
           #:inno-arch (hash-ref target 'inno-arch)
           #:zip-name (windows-ci-portable-zip-name c arch)
           #:exe-name (windows-ci-installer-exe-name c arch)
+          #:cached-exe-name (windows-ci-cached-installer-exe-name c arch)
           #:artifact-name (windows-ci-artifact-name artifact-prefix arch)
           #:nmake-target nmake-target
           #:portable-dir portable-dir
@@ -6501,6 +6684,7 @@ jobs:{build-jobs-yaml}{(windows-ci-publish-job-content config)}"
       (define arch (hash-ref target 'arch))
       (println/flush f"Would configure Windows portable zip: {(windows-ci-portable-zip-name c arch)}")
       (println/flush f"Would configure Windows Inno installer: {(windows-ci-installer-exe-name c arch)}")
+      (println/flush f"Would configure Windows cached Inno installer: {(windows-ci-cached-installer-exe-name c arch)}")
     ) ; end for each windows target
     (println/flush f"Would publish Windows release asset: {(if (config-required-boolean 'windows-ci-config config 'publish-release) "yes" "no")}")
   ) ; end begin print-windows-ci-dry-run-plan!

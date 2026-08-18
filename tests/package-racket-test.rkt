@@ -1146,6 +1146,7 @@ actual output:
        (check-contains text "Would configure Windows runner: windows-2022")
        (check-contains text "Would configure Windows portable zip: racket9-9.3.3.1-windows-x86_64.zip")
        (check-contains text "Would configure Windows Inno installer: racket9-9.3.3.1-windows-x86_64-setup.exe")
+       (check-contains text "Would configure Windows cached Inno installer: racket9-9.3.3.1-windows-x86_64-setup-cached.exe")
        (check-contains text "Would publish Windows release asset: no")
        (check-false (file-exists? (build-path windows-repo-root "README.md")))
        (check-false (file-exists? (build-path windows-repo-root ".github" "workflows" "build-windows-portable.yml")))
@@ -1176,6 +1177,7 @@ actual output:
        (check-contains (file->string readme-file) "build-windows-portable.yml")
        (check-contains (file->string readme-file) "racket9-9.3.3.1-windows-x86_64.zip")
        (check-contains (file->string readme-file) "racket9-9.3.3.1-windows-x86_64-setup.exe")
+       (check-contains (file->string readme-file) "racket9-9.3.3.1-windows-x86_64-setup-cached.exe")
        (check-contains (file->string readme-file) "/CACHEPATH")
        (check-contains (file->string readme-file) "Release asset publishing is enabled")
        (check-contains (file->string readme-file) "CutieDeng/racket")
@@ -1188,6 +1190,7 @@ actual output:
        (check-contains workflow-content "SOURCE_SHA256: '")
        (check-contains workflow-content "ZIP_NAME: 'racket9-9.3.3.1-windows-x86_64.zip'")
        (check-contains workflow-content "EXE_NAME: 'racket9-9.3.3.1-windows-x86_64-setup.exe'")
+       (check-contains workflow-content "CACHED_EXE_NAME: 'racket9-9.3.3.1-windows-x86_64-setup-cached.exe'")
        (check-contains workflow-content "NMAKE_TARGET: 'plain-install'")
        (check-contains workflow-content "dir src\\Makefile.nt")
        (check-contains workflow-content "dir src\\buildmain.zuo")
@@ -1247,6 +1250,9 @@ actual output:
        ;; arm64 artifact names
        (check-contains workflow-content "ZIP_NAME: 'racket9-9.3.3.1-windows-arm64.zip'")
        (check-contains workflow-content "EXE_NAME: 'racket9-9.3.3.1-windows-arm64-setup.exe'")
+       (check-contains workflow-content "CACHED_EXE_NAME: 'racket9-9.3.3.1-windows-arm64-setup-cached.exe'")
+       (check-contains workflow-content "racket-installer-cached.iss")
+       (check-contains workflow-content "EXPECTED_EXES: '4'")
        ;; per-arch Inno architectures
        (check-contains workflow-content "ArchitecturesAllowed=x64compatible")
        (check-contains workflow-content "ArchitecturesAllowed=arm64")
