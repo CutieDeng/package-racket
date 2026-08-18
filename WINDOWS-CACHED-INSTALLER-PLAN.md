@@ -1,9 +1,27 @@
 # Windows cached installer — Requirements & Design
 
-Status: PLANNED (design settled, PoC not yet run).
-Audience: whoever implements the `cached` install variant for Windows.
-Written 2026-08-18 against the 9.3.3 cycle. Verify file:line references
+Status: SHIPPED in 9.3.4 (2026-08-18), verified end to end.
+Audience: whoever maintains the Windows install variants. Written against
+the 9.3.3 cycle and updated through shipping; verify file:line references
 in `package-racket.rkt` before relying on them.
+
+## 0. Outcome (measured on the published 9.3.4 artifacts)
+
+- `-setup-cached.exe` (30/28 MB): default install takes **15-20 s**, lands
+  the full converged system cache on disk (1985 files, 86.8/90.0 MB —
+  Inno's solid LZMA2 really compresses the zo+dep corpus ~8.7:1, chiefly
+  because half the files are near-identical small .dep texts plus repeated
+  absolute-path strings), `racket -l racket/base` starts in 0.2-0.3 s, a
+  later `raco setup` no-ops with zero rewrites, and the uninstaller removes
+  the marker-guarded cache.
+- plain `-setup.exe`: post-install raco setup works end to end and takes
+  **197-207 s** — the 10-13x contrast cached installs avoid.
+- Four shipped-installer bugs were found and fixed on the way (config
+  rewrite paren-swallow; compiled-cache Unix-only path mapping; PS 5.1
+  embedded-quote mangling; `{app}` expanded in InitializeWizard — the last
+  meaning every published -setup.exe since 9.3.2 crashed at launch and had
+  evidently never been run). `poc-installer-e2e.yml` in win-racket remains
+  the permanent installer regression test.
 
 ## 1. Motivation / current state
 
