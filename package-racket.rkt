@@ -1430,8 +1430,7 @@ write_staged_config() {{
   local prefix=\"$3\"
   local runtime_cache_root=\"$4\"
   local staged_cache_root=\"$5\"
-  # compiled-file-system-cache-root stays at its runtime value: the setup
-  # invocation overrides it with --compiled-cache-root (racket >= 9.3.5)
+  replace_config_value \"$config_file\" compiled-file-system-cache-root \"$runtime_cache_root\" \"$staged_cache_root\" required
   replace_config_value \"$config_file\" share-dir \"$prefix/share/racket\" \"$stage_root$prefix/share/racket\"
   replace_config_value \"$config_file\" pkgs-dir \"$prefix/share/racket/pkgs\" \"$stage_root$prefix/share/racket/pkgs\"
   replace_config_value \"$config_file\" doc-dir \"$prefix/share/doc/racket\" \"$stage_root$prefix/share/doc/racket\"
@@ -1527,16 +1526,15 @@ build_staged_system_cache() {{
   mkdir -p \"$staged_cache_root\"
   # Two passes: on a zo-stripped stage the first setup bootstraps from
   # source and its dep bookkeeping does not self-validate; the second pass
-  # converges the cache so an installed system's later raco setup no-ops.
-  # PLTCOMPILEDROOTS puts the staged cache first on the LOAD side too (the
-  # trailing colon appends the default roots), so the converge pass boots
-  # setup from the pass-1 cache instead of re-bootstrapping from source.
-  if ! PLTCOMPILEDROOTS=\"$staged_cache_root:\" \"$racket_bin\" -X \"$collects_dir\" -G \"$config_dir\" -N raco -l- raco setup --system --no-user --compiled-cache-root \"$staged_cache_root\" --reset-cache -D --no-pkg-deps --no-launcher; then
+  # (same swapped-config environment, so it boots setup from the pass-1
+  # cache) converges the cache so an installed system's later raco setup
+  # no-ops.
+  if ! \"$racket_bin\" -X \"$collects_dir\" -G \"$config_dir\" -N raco -l- raco setup --system --no-user --reset-cache -D --no-pkg-deps --no-launcher; then
     cp \"$backup\" \"$config_file\"
     rm -f \"$backup\"
     return 1
   fi
-  if ! PLTCOMPILEDROOTS=\"$staged_cache_root:\" \"$racket_bin\" -X \"$collects_dir\" -G \"$config_dir\" -N raco -l- raco setup --system --no-user --compiled-cache-root \"$staged_cache_root\" -D --no-pkg-deps --no-launcher; then
+  if ! \"$racket_bin\" -X \"$collects_dir\" -G \"$config_dir\" -N raco -l- raco setup --system --no-user -D --no-pkg-deps --no-launcher; then
     cp \"$backup\" \"$config_file\"
     rm -f \"$backup\"
     return 1
@@ -2041,9 +2039,8 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
 		                                      "pkgs-dir"
 		                                      "racket-compiled-cache.log"
 		                                      "-X \"$collects_dir\" -G \"$config_dir\""
-		                                      "PLTCOMPILEDROOTS"
-		                                      "raco setup --system --no-user --compiled-cache-root \"$staged_cache_root\" --reset-cache -D --no-pkg-deps --no-launcher"
-		                                      "raco setup --system --no-user --compiled-cache-root \"$staged_cache_root\" -D --no-pkg-deps --no-launcher"
+		                                      "raco setup --system --no-user --reset-cache -D --no-pkg-deps --no-launcher"
+		                                      "raco setup --system --no-user -D --no-pkg-deps --no-launcher"
 		                                      "replace_config_value"
 		                                      "LEGACY_CACHED_PACKAGE_NAME="
 		                                      "racket9-cached"
