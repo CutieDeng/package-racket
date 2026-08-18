@@ -6187,6 +6187,16 @@ racket package-racket.rkt \\
             throw \"suspiciously few in-tree zos: $zos\"
           }}
           Write-Host \"cached zip payload: $zos in-tree zos\"
+          # Parallel two-pass builds can leave timestamp inversions (a
+          # dependency zo rewritten by pass 2 after its dependent was
+          # validated), which cm treats as stale. Normalize like the deb
+          # flow: every dep gets one shared timestamp, every zo a slightly
+          # later one, so no strict dependency-newer-than-dependent ordering
+          # survives and a later raco setup no-ops.
+          $depStamp = Get-Date
+          $zoStamp = $depStamp.AddSeconds(2)
+          Get-ChildItem -LiteralPath $zipRoot -Recurse -Filter *.dep | ForEach-Object {{ $_.LastWriteTime = $depStamp }}
+          Get-ChildItem -LiteralPath $zipRoot -Recurse -Filter *.zo | ForEach-Object {{ $_.LastWriteTime = $zoStamp }}
           $cachedZipPath = Join-Path \"artifacts\" $env:CACHED_ZIP_NAME
           # bsdtar, not Compress-Archive: full-fidelity mtimes so the shipped
           # in-tree zo/dep pairs revalidate exactly after extraction (DOS
