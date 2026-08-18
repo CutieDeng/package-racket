@@ -6258,7 +6258,7 @@ racket package-racket.rkt \\
             Value := ExpandConstant('{{param:CACHEPATH|}}');
             if Value <> '' then
               Result := Value
-            else if Assigned(CachePage) then
+            else if Assigned(CachePage) and (Trim(CachePage.Values[0]) <> '') then
               Result := CachePage.Values[0]
             else
               Result := DefaultCacheRoot();
@@ -6271,8 +6271,11 @@ racket package-racket.rkt \\
               'Racket builds the system cache during installation. For unattended installs, pass /CACHEPATH=...',
               False, '');
             CachePage.Add('');
-            CacheDefaultRoot := DefaultCacheRoot();
-            CachePage.Values[0] := CacheDefaultRoot;
+            // {{app}} is not initialized yet; CurPageChanged fills in the
+            // default when the page is entered (silent installs never enter
+            // it and fall back inside GetCacheRoot at ssPostInstall).
+            CacheDefaultRoot := '';
+            CachePage.Values[0] := '';
           end;
 
           procedure CurPageChanged(CurPageID: Integer);
@@ -6413,7 +6416,7 @@ racket package-racket.rkt \\
             Value := ExpandConstant('{{param:CACHEPATH|}}');
             if Value <> '' then
               Result := Value
-            else if Assigned(CachePage) then
+            else if Assigned(CachePage) and (Trim(CachePage.Values[0]) <> '') then
               Result := CachePage.Values[0]
             else
               Result := DefaultCacheRoot();
@@ -6426,8 +6429,11 @@ racket package-racket.rkt \\
               'This installer ships a prebuilt cache for the default install directory; keeping the defaults skips the cache build. A custom directory rebuilds the cache during installation. For unattended installs, pass /CACHEPATH=...',
               False, '');
             CachePage.Add('');
-            CacheDefaultRoot := DefaultCacheRoot();
-            CachePage.Values[0] := CacheDefaultRoot;
+            // {{app}} is not initialized yet; CurPageChanged fills in the
+            // default when the page is entered (silent installs never enter
+            // it and fall back inside GetCacheRoot at ssPostInstall).
+            CacheDefaultRoot := '';
+            CachePage.Values[0] := '';
           end;
 
           procedure CurPageChanged(CurPageID: Integer);
