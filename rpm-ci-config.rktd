@@ -1,5 +1,5 @@
-#hash((release-tag . "v9.3.4-r1")
-      (release-name . "Racket 9.3.4 RPM packages R1")
+#hash((release-tag . "v9.3.5-r1")
+      (release-name . "Racket 9.3.5 RPM packages R1")
       (artifact-prefix . "rpm")
       (create-release . #t)
       (targets . (#hash((id . "el9-x86_64")
