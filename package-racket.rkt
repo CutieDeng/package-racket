@@ -707,7 +707,7 @@
 ) ; end define assert-deb-release
 
 (define rpm-supported-systems
-  '("el9" "fc40" "fc43" "fc44" "openeuler2203" "openeuler2403"))
+  '("el9" "fc40" "fc41" "fc43" "fc44" "openeuler2203" "openeuler2403"))
 
 (define (assert-rpm-system system)
   (begin
@@ -733,6 +733,37 @@
 
 (define (rpm-full-release release system)
   f"{release}.{system}")
+
+; Maps an RPM target system to the /etc/os-release identity its build container
+; must report, so a matrix entry cannot pair a container image with the wrong
+; --rpm-system. Adding a supported system without extending this mapping is a
+; hard error rather than a silently skipped check.
+(define (rpm-system-os-release-expectation system)
+  (begin
+    (assert-rpm-system system)
+    (cond
+      [(string=? system "el9")
+       (cons '("centos" "rhel" "rocky" "almalinux") "9")]
+      [(regexp-match #px"^fc([0-9]+)$" system)
+       => (lambda (m) (cons '("fedora") (cadr m)))]
+      [(regexp-match #px"^openeuler([0-9]{2})([0-9]{2})$" system)
+       => (lambda (m) (cons '("openeuler") f"{(cadr m)}.{(caddr m)}"))]
+      [else
+       (raise-user-error 'rpm-system-os-release-expectation
+                         f"no /etc/os-release expectation is defined for rpm system: {system}")]
+    ) ; end cond rpm system os-release expectation
+  ) ; end begin rpm-system-os-release-expectation
+) ; end define rpm-system-os-release-expectation
+
+(define (rpm-ci-os-release-case-arms)
+  (apply
+   string-append
+   (for/list ([system (in-list rpm-supported-systems)])
+     (define expectation (rpm-system-os-release-expectation system))
+     f"            {system}) expected_ids='{(string-join (car expectation) " ")}'; expected_version_prefix='{(cdr expectation)}' ;;\n"
+   ) ; end for/list os-release case arm
+  ) ; end apply string-append os-release case arms
+) ; end define rpm-ci-os-release-case-arms
 
 (define (path-contained-in? child parent)
   (define parent-str (path->string (path->directory-path (complete-path* parent))))
@@ -3005,13 +3036,15 @@ scripts/build-rpm.sh \\
   --prefix /usr
 ```
 
-Supported RPM systems are `el9`, `fc40`, `fc43`, `fc44`, `openeuler2203`, and
-`openeuler2403`. The generic `openeuler` value is intentionally rejected for
-production artifacts. Common explicit target examples:
+Supported RPM systems are `el9`, `fc40`, `fc41`, `fc43`, `fc44`,
+`openeuler2203`, and `openeuler2403`. The generic `openeuler` value is
+intentionally rejected for production artifacts. Common explicit target
+examples:
 
 ```sh
 --rpm-system el9 --rpm-release {(cfg-rpm-release c)} --rpm-arch x86_64
 --rpm-system fc40 --rpm-release {(cfg-rpm-release c)} --rpm-arch x86_64
+--rpm-system fc41 --rpm-release {(cfg-rpm-release c)} --rpm-arch x86_64
 --rpm-system fc43 --rpm-release {(cfg-rpm-release c)} --rpm-arch x86_64
 --rpm-system fc44 --rpm-release {(cfg-rpm-release c)} --rpm-arch x86_64
 --rpm-system openeuler2203 --rpm-release {(cfg-rpm-release c)} --rpm-arch x86_64
@@ -3203,8 +3236,8 @@ normalize_arch() {{
 
 validate_rpm_system() {{
   case \"$1\" in
-    el9|fc40|fc43|fc44|openeuler2203|openeuler2403) ;;
-    *) die \"rpm system must be el9, fc40, fc43, fc44, openeuler2203, or openeuler2403: $1\" ;;
+    el9|fc40|fc41|fc43|fc44|openeuler2203|openeuler2403) ;;
+    *) die \"rpm system must be el9, fc40, fc41, fc43, fc44, openeuler2203, or openeuler2403: $1\" ;;
   esac
 }}
 
@@ -3395,7 +3428,7 @@ Options:
   --source-url URL       Source archive URL. Defaults to the generated release URL.
   --artifact-dir PATH    Directory that receives the final .rpm.
   --work-dir PATH        Build work directory for rpmbuild.
-  --rpm-system SYSTEM    el9, fc40, fc43, fc44, openeuler2203, or openeuler2403.
+  --rpm-system SYSTEM    el9, fc40, fc41, fc43, fc44, openeuler2203, or openeuler2403.
   --rpm-release RELEASE  Package release base, for example 1. The system suffix is appended separately.
   --cache-mode MODE      cached or postinstall. Defaults to cached.
   --prefix PATH          Install prefix inside the package. Defaults to generated /usr.
@@ -3530,7 +3563,7 @@ Options:
   --source-url URL       Source archive URL. Defaults to the generated release URL.
   --artifact-dir PATH    Directory that receives the final .src.rpm.
   --work-dir PATH        Build work directory for rpmbuild.
-  --rpm-system SYSTEM    el9, fc40, fc43, fc44, openeuler2203, or openeuler2403.
+  --rpm-system SYSTEM    el9, fc40, fc41, fc43, fc44, openeuler2203, or openeuler2403.
   --rpm-release RELEASE  Package release base, for example 1. The system suffix is appended separately.
   --cache-mode MODE      cached or postinstall. Defaults to cached.
   --prefix PATH          Install prefix inside the package. Defaults to generated /usr.
@@ -4293,6 +4326,34 @@ jobs:
           grep -F {(shell-single-quoted f"[{(cfg-rpm-repo-id c)}-{matrix-system}-postinstall]")} \"$repo_file\"
           test ! -d repo
 
+      - name: Check container matches target system
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_ids=''
+          expected_version_prefix=''
+          case \"{matrix-system}\" in
+{(rpm-ci-os-release-case-arms)}            *) echo 'no os-release expectation for rpm system: {matrix-system}'; exit 1 ;;
+          esac
+          test -r /etc/os-release || {{ echo '/etc/os-release is missing in the build container'; exit 1; }}
+          . /etc/os-release
+          actual_id=$(printf '%s' \"${{ID:-}}\" | tr '[:upper:]' '[:lower:]')
+          id_ok=0
+          for candidate in $expected_ids; do
+            if [ \"$actual_id\" = \"$candidate\" ]; then
+              id_ok=1
+            fi
+          done
+          if [ \"$id_ok\" -ne 1 ]; then
+            printf 'container os-release ID %s does not match rpm system {matrix-system} (expected one of: %s)\\n' \"$actual_id\" \"$expected_ids\"
+            exit 1
+          fi
+          case \"${{VERSION_ID:-}}\" in
+            \"$expected_version_prefix\"|\"$expected_version_prefix\".*|\"$expected_version_prefix\"-*) ;;
+            *) printf 'container os-release VERSION_ID %s does not match rpm system {matrix-system} (expected %s)\\n' \"${{VERSION_ID:-}}\" \"$expected_version_prefix\"; exit 1 ;;
+          esac
+          printf 'container %s %s matches rpm system {matrix-system}\\n' \"$actual_id\" \"${{VERSION_ID:-}}\"
+
       - name: Install RPM build dependencies
         shell: bash
         run: |
@@ -4313,7 +4374,20 @@ jobs:
               dnf config-manager --set-enabled crb || true
             fi
           fi
-          $pm -y install $packages
+          install_with_retry() {{
+            local attempt
+            for attempt in 1 2 3; do
+              if $pm -y install \"$@\"; then
+                return 0
+              fi
+              printf 'package install attempt %s/3 failed; cleaning metadata and retrying\\n' \"$attempt\"
+              $pm clean all >/dev/null 2>&1 || true
+              sleep $((attempt * 15))
+            done
+            printf 'package install failed after 3 attempts: %s\\n' \"$*\"
+            return 1
+          }}
+          install_with_retry $packages
 
       - name: Build RPM
         shell: bash
@@ -4402,6 +4476,9 @@ jobs:
           racket -e '(displayln (version))' | grep -F \"$PACKAGE_VERSION\"
           racket -e '(displayln f\"rpm-ci-ok\")' | grep -F 'rpm-ci-ok'
           racket -e '(require readline/readline) (displayln f\"rpm-readline-ok\")' | grep -F 'rpm-readline-ok'
+          racket -e '(require openssl) (unless ssl-available? (error \"openssl collection reports ssl unavailable\")) (void (ssl-make-client-context)) (displayln \"rpm-ssl-ok\")' | grep -F 'rpm-ssl-ok'
+          racket -e '(require openssl/libcrypto openssl/libssl) (when (or libcrypto libssl) (error \"crypto must run on the in-tree rktcrypto engine, not on a loaded OpenSSL\")) (displayln \"rpm-rktcrypto-backend-ok\")' | grep -F 'rpm-rktcrypto-backend-ok'
+          racket -e '(require db/private/pre) (unless (sqlite3-available?) (error \"core sqlite3 support is unavailable: libsqlite3 did not load\")) (displayln \"rpm-sqlite-ok\")' | grep -F 'rpm-sqlite-ok'
           empty_home=$(mktemp -d)
           HOME=\"$empty_home\" racket -e '(require racket/list racket/match racket/file) (displayln f\"rpm-empty-home-ok\")' | grep -F 'rpm-empty-home-ok'
           rm -rf \"$empty_home\"
@@ -4832,6 +4909,16 @@ jobs:
                                  "rpm -V \"$PACKAGE_NAME\""
                                  "racket -e '(displayln f\"rpm-ci-ok\")'"
                                  "racket -e '(require readline/readline) (displayln f\"rpm-readline-ok\")'"
+                                 "Check container matches target system"
+                                 "does not match rpm system"
+                                 ". /etc/os-release"
+                                 "install_with_retry $packages"
+                                 "package install failed after 3 attempts"
+                                 "rpm-ssl-ok"
+                                 "rpm-rktcrypto-backend-ok"
+                                 "rpm-sqlite-ok"
+                                 "crypto must run on the in-tree rktcrypto engine, not on a loaded OpenSSL"
+                                 "core sqlite3 support is unavailable"
                                  "EXPECTED_RPM_COUNT:"))])
       (unless (string-contains? content needle)
         (raise-user-error 'validate-rpm-ci-workflow! f"RPM CI workflow missing: {needle}")
@@ -10532,7 +10619,7 @@ jobs:
                          (set! createrepo-bin-arg path)]
    [("--deb-arch") arch "Debian architecture (default: amd64)"
                   (set! deb-arch-arg arch)]
-   [("--rpm-system") system "RPM target system: el9, fc40, fc43, fc44, openeuler2203, or openeuler2403. Required for RPM targets"
+   [("--rpm-system") system "RPM target system: el9, fc40, fc41, fc43, fc44, openeuler2203, or openeuler2403. Required for RPM targets"
                      (set! rpm-system-arg system)]
    [("--rpm-release") release "RPM release base before .rpm-system, for example 1. Required for RPM targets"
                      (set! rpm-release-arg release)]
@@ -11179,6 +11266,9 @@ jobs:
     (define fc40 (test-cfg #:rpm-system "fc40"
                            #:rpm-release "2"
                            #:rpm-arch "x86_64"))
+    (define fc41 (test-cfg #:rpm-system "fc41"
+                           #:rpm-release "2"
+                           #:rpm-arch "x86_64"))
     (define fc43 (test-cfg #:rpm-system "fc43"
                            #:rpm-release "2"
                            #:rpm-arch "x86_64"))
@@ -11196,6 +11286,8 @@ jobs:
     (check-equal? (rpm-package-name el9) "racket9-9.2.2-1.2.cached.el9.x86_64.rpm")
     (check-equal? (rpm-release fc40) "2.2.cached.fc40")
     (check-equal? (rpm-package-name fc40) "racket9-9.2.2-2.2.cached.fc40.x86_64.rpm")
+    (check-equal? (rpm-release fc41) "2.2.cached.fc41")
+    (check-equal? (rpm-package-name fc41) "racket9-9.2.2-2.2.cached.fc41.x86_64.rpm")
     (check-equal? (rpm-release fc43) "2.2.cached.fc43")
     (check-equal? (rpm-package-name fc43) "racket9-9.2.2-2.2.cached.fc43.x86_64.rpm")
     (check-equal? (rpm-release fc44) "2.2.cached.fc44")
@@ -11244,7 +11336,7 @@ jobs:
     (check-equal? (brew-source-tgz-name c) "racket-minimal-9.2.2-src.tgz")
     (check-equal? (apt-deb-name c) "racket9_9.2.2.1-1_amd64.deb")
     (check-equal? (deb-generated-package-name c "1" "ubuntu2404" "amd64")
-                  "racket9_9.2.2-1.ubuntu2404_amd64.deb")
+                  "racket9_9.2.2-1.ubuntu2404.2.cached_amd64.deb")
     (check-equal? (rpm-package-name c) "racket9-9.2.2-1.2.cached.el9.x86_64.rpm")
     (check-equal? (brew-tgz-member-path c "src/README.txt")
                   "racket-9.2.2/src/README.txt")
