@@ -1,0 +1,225 @@
+# GENERATED RELEASE WORKFLOW - DO NOT EDIT; regenerate with package-racket --target release-ci.
+# Source of truth: https://github.com/CutieDeng/package-racket
+
+name: release packages
+
+on:
+  repository_dispatch:
+    types:
+      - racket-tag
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag: vX.Y.Z (source release), vX.Y.Z-rcN (candidate, no downstream), pkg-X.Y.Z.N (packaging only)'
+        required: true
+        type: string
+  push:
+    tags:
+      - 'pkg-*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-packages
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/homebrew/brew:main
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      kind: ${{ steps.plan.outputs.kind }}
+      source_release_tag: ${{ steps.plan.outputs.source_release_tag }}
+      bottle_root_url: ${{ steps.plan.outputs.bottle_root_url }}
+      formula_version: ${{ steps.plan.outputs.formula_version }}
+    steps:
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@main
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout package-racket
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: package-racket
+
+      - name: Resolve the release tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.client_payload.tag }}"
+          if [ -z "$tag" ]; then tag="${{ inputs.tag }}"; fi
+          if [ -z "$tag" ]; then tag="$GITHUB_REF_NAME"; fi
+          echo "release tag: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Install Racket
+        shell: bash
+        run: brew install cutiedeng/racket/racket@9
+
+      - name: Plan the release
+        id: plan
+        shell: bash
+        working-directory: package-racket
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          racket package-racket.rkt --target release-plan --release-tag "$TAG" --release-plan-out .build/release-plan.rktd --artifact-dir artifacts
+          racket -e '(define plan (call-with-input-file ".build/release-plan.rktd" read)) (for ([key (in-list (quote (tag kind source-version release formula-version source-release-tag rpm-release-tag bottle-root-url source-asset)))]) (printf "~a=~a\n" (regexp-replace* #rx"-" (symbol->string key) "_") (hash-ref plan key)))' >> "$GITHUB_OUTPUT"
+
+      - name: Commit the planned configuration
+        if: steps.plan.outputs.kind != 'rc'
+        shell: bash
+        working-directory: package-racket
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "package-racket release"
+          git config user.email "package-racket@users.noreply.github.com"
+          git add -- '*.rktd'
+          if git diff --cached --quiet; then
+            echo "configuration already matches $TAG"
+            exit 0
+          fi
+          files="$(git diff --cached --name-only | sed 's/^/- /')"
+          printf '(BUILD "release-plan: %s"\n\n()\n"Config values derived from the tag %s by the release workflow.\n\nModified:\n%s\n")\n' "$TAG" "$TAG" "$files" > .git/release-commit-msg
+          git commit -F .git/release-commit-msg
+          git push origin HEAD:main
+
+  release:
+    name: release
+    needs: plan
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/homebrew/brew:main
+    env:
+      TAG: ${{ needs.plan.outputs.tag }}
+      KIND: ${{ needs.plan.outputs.kind }}
+      SOURCE_TAG: ${{ needs.plan.outputs.source_release_tag }}
+      BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle_root_url }}
+      FORMULA_VERSION: ${{ needs.plan.outputs.formula_version }}
+    steps:
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@main
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout package-racket
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: package-racket
+
+      - name: Checkout the Racket source at the release tag
+        uses: actions/checkout@v6
+        with:
+          repository: CutieDeng/racket
+          ref: ${{ needs.plan.outputs.source_release_tag }}
+          path: racket-src
+          fetch-depth: 1
+
+      - name: Checkout the Homebrew tap
+        uses: actions/checkout@v6
+        with:
+          repository: CutieDeng/homebrew-racket
+          path: tap
+          token: ${{ secrets.PACKAGING_PUSH_TOKEN }}
+
+      - name: Checkout deb-racket
+        uses: actions/checkout@v6
+        with:
+          repository: CutieDeng/deb-racket
+          path: deb-racket
+          token: ${{ secrets.PACKAGING_PUSH_TOKEN }}
+
+      - name: Checkout rpm-racket
+        uses: actions/checkout@v6
+        with:
+          repository: CutieDeng/rpm-racket
+          path: rpm-racket
+          token: ${{ secrets.PACKAGING_PUSH_TOKEN }}
+
+      - name: Checkout win-racket
+        uses: actions/checkout@v6
+        with:
+          repository: CutieDeng/win-racket
+          path: win-racket
+          token: ${{ secrets.PACKAGING_PUSH_TOKEN }}
+
+      - name: Install Racket
+        shell: bash
+        run: brew install cutiedeng/racket/racket@9
+
+      - name: Build the source archive and the Formula
+        shell: bash
+        working-directory: package-racket
+        env:
+          PACKAGING_PUSH_TOKEN: ${{ secrets.PACKAGING_PUSH_TOKEN }}
+        run: |
+          set -euo pipefail
+          targets="--target brew"
+          if [ "$KIND" != "pkg" ]; then targets="$targets --target source-release"; fi
+          prerelease=""
+          if [ "$KIND" = "rc" ]; then prerelease="--prerelease"; fi
+          racket package-racket.rkt $targets $prerelease \
+            --formula-build-mode full \
+            --racket-root ../racket-src \
+            --homebrew-tap ../tap \
+            --bottle-root-url "$BOTTLE_ROOT_URL" \
+            --artifact-dir artifacts \
+            --token-env PACKAGING_PUSH_TOKEN \
+            --create-release \
+            --replace-release-asset
+
+      - name: Regenerate the downstream repositories
+        if: needs.plan.outputs.kind != 'rc'
+        shell: bash
+        working-directory: package-racket
+        run: |
+          set -euo pipefail
+          racket package-racket.rkt \
+            --target brew-ci --target deb-spec --target deb-ci --target rpm-spec --target rpm-ci --target windows-portable-ci \
+            --racket-root ../racket-src \
+            --homebrew-tap ../tap \
+            --bottle-root-url "$BOTTLE_ROOT_URL" \
+            --deb-repo-root ../deb-racket \
+            --rpm-repo-root ../rpm-racket \
+            --windows-repo-root ../win-racket \
+            --artifact-dir artifacts
+
+      - name: Push the downstream repositories
+        if: needs.plan.outputs.kind != 'rc'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global user.name "package-racket release"
+          git config --global user.email "package-racket@users.noreply.github.com"
+          for dir in tap deb-racket rpm-racket win-racket; do
+            git -C "$dir" add -A
+            if git -C "$dir" diff --cached --quiet; then
+              echo "$dir: no changes"
+              continue
+            fi
+            files="$(git -C "$dir" diff --cached --name-only | sed 's/^/- /')"
+            printf '(BUILD "release %s: regenerated outputs"\n\n()\n"Generated by the release workflow of package-racket for %s.\n\nModified:\n%s\n")\n' "$TAG" "$TAG" "$files" > "$dir/.git/release-commit-msg"
+            git -C "$dir" commit -F .git/release-commit-msg
+            git -C "$dir" push origin HEAD:main
+            echo "$dir: pushed"
+          done
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-${{ needs.plan.outputs.tag }}
+          path: |
+            package-racket/artifacts/*
+            tap/Formula/*.rb
+          if-no-files-found: error
