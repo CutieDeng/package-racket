@@ -11574,9 +11574,9 @@ jobs:
           path: win-racket
           token: {push-token}
 
-      - name: Install Racket
+      - name: Install Racket and ruby
         shell: bash
-        run: brew install {bootstrap}
+        run: brew install {bootstrap} ruby
 
       - name: Build the source archive and the Formula
         shell: bash
