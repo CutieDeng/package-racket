@@ -2,6 +2,7 @@
 
 (require rackunit
          racket/file
+         racket/list
          racket/path
          racket/port
          racket/runtime-path
@@ -425,12 +426,73 @@ actual output:
   (and positions (caar positions)))
 
 (module+ test
+  (test-case "release-plan dry-run prints the plan and writes nothing"
+    (with-temp-dir
+      (lambda (dir)
+        (define-values (out err)
+          (run-package/success (list "--target" "release-plan" "--release-tag" "v9.4.7" "--dry-run"
+                                     "--artifact-dir" (path-arg (build-path dir "art")))))
+        (define text (combined-output out err))
+        (check-contains text "Release tag: v9.4.7 (source)")
+        (check-contains text "Release formula version: 9.4.7.1")
+        (check-contains text "Release RPM tag: v9.4.7-r1")
+        (check-contains text "Would rewrite")
+        (check-not-contains text "Rewrote"))))
+
+  (test-case "release-plan rewrites temporary config copies and reads them back"
+   (with-temp-dir
+    (lambda (dir)
+    (define names '("package-config" "source-release-config" "apt-release-config" "deb-repo-config"
+                    "deb-ci-config" "rpm-ci-config" "windows-ci-config" "brew-ci-config" "release-config"))
+    (for ([name (in-list names)])
+      (copy-file (build-path package-root (string-append name ".rktd"))
+                 (build-path dir (string-append name ".rktd"))))
+    (define (opt name) (list (string-append "--" name) (path-arg (build-path dir (string-append name ".rktd")))))
+    (define common
+      (append (opt "package-config") (opt "source-release-config") (opt "apt-release-config")
+              (opt "deb-repo-config") (opt "deb-ci-config") (opt "rpm-ci-config")
+              (opt "windows-ci-config") (opt "brew-ci-config") (opt "release-config")
+              (list "--artifact-dir" (path-arg (build-path dir "art")))))
+    (define plan-out (build-path dir "plan.rktd"))
+    (define-values (out err)
+      (run-package/success (append (list "--target" "release-plan" "--release-tag" "pkg-9.4.7.3"
+                                         "--release-plan-out" (path-arg plan-out))
+                                   common)))
+    (check-contains (combined-output out err) "Rewrote")
+    (define plan (read-config plan-out))
+    (check-equal? (hash-ref plan 'kind) 'pkg)
+    (check-equal? (hash-ref plan 'formula-version) "9.4.7.3")
+    (check-equal? (hash-ref plan 'source-asset) "racket-minimal-9.4.7-src.tgz")
+    (check-equal? (hash-ref (read-config (build-path dir "package-config.rktd")) 'source-version) "9.4.7")
+    (check-equal? (hash-ref (read-config (build-path dir "deb-repo-config.rktd")) 'deb-release) "3")
+    (for ([target (in-list (hash-ref (read-config (build-path dir "deb-ci-config.rktd")) 'targets))])
+      (check-equal? (hash-ref target 'deb-release) "3"))
+    (check-equal? (hash-ref (read-config (build-path dir "rpm-ci-config.rktd")) 'release-tag) "v9.4.7-r3")
+    (check-equal? (hash-ref (read-config (build-path dir "windows-ci-config.rktd")) 'release-name)
+                  "Racket 9.4.7 Windows portable")
+    (check-equal? (hash-ref (read-config (build-path dir "brew-ci-config.rktd")) 'bottle-rebuild) 3)
+    ;; a second run with the same tag changes nothing
+    (define-values (out2 err2)
+      (run-package/success (append (list "--target" "release-plan" "--release-tag" "pkg-9.4.7.3") common)))
+    (check-not-contains (combined-output out2 err2) "Rewrote"))))
+
+  (test-case "release-plan rejects a tag without the v prefix"
+    (with-temp-dir
+      (lambda (dir)
+        (define-values (exit-code out err)
+          (run-package (list "--target" "release-plan" "--release-tag" "9.4.7"
+                             "--artifact-dir" (path-arg (build-path dir "art")))))
+        (check-not-equal? exit-code 0)
+        (check-contains (combined-output out err) "unrecognized release tag"))))
+
   (test-case "production packaging revisions stay synchronized"
-    (define expected-release "2")
+    ;; the release number is the last component of formula-version; every
+    ;; other config must agree with it (release-plan keeps them so)
     (define package-config (read-config (build-path package-root "package-config.rktd")))
     (define source-version (hash-ref package-config 'source-version))
     (define formula-version (hash-ref package-config 'formula-version))
-    (check-equal? formula-version (string-append source-version "." expected-release))
+    (check-regexp-match (regexp (string-append "^" (regexp-quote source-version) "\\.[1-9][0-9]*$")) formula-version)
+    (define expected-release (last (string-split formula-version ".")))
 
     (define deb-repo-config (read-config (build-path package-root "deb-repo-config.rktd")))
     (check-equal? (hash-ref deb-repo-config 'deb-release) expected-release)

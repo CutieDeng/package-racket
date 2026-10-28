@@ -119,6 +119,10 @@
    rpm-repo-enabled?
    rpm-repo-gpgcheck?
    replace-release-asset
+   release-token-env
+   release-tag
+   release-config
+   release-plan-out
    ruby-bin
    with-docs?
    brew-packages
@@ -413,14 +417,14 @@
       ) ; end for*/list pieces
     ) ; end define pieces
     (when (null? pieces)
-      (raise-user-error 'main "missing --target; use brew, brew-ci, source-release, apt, apt-release, deb-spec, deb-ci, rpm, rpm-spec, rpm-ci, rpm-repo, windows-portable-ci, or all")
+      (raise-user-error 'main "missing --target; use release-plan, brew, brew-ci, source-release, apt, apt-release, deb-spec, deb-ci, rpm, rpm-spec, rpm-ci, rpm-repo, windows-portable-ci, or all")
     ) ; end when missing target
     (define expanded
       (append-map
        (lambda (target)
          (match target
            ["all" '("brew" "apt" "rpm")]
-           [(or "brew" "apt" "apt-release" "deb-spec" "deb-ci" "rpm" "rpm-spec" "rpm-ci" "rpm-repo" "brew-ci" "source-release" "windows-portable-ci") (list target)]
+           [(or "release-plan" "brew" "apt" "apt-release" "deb-spec" "deb-ci" "rpm" "rpm-spec" "rpm-ci" "rpm-repo" "brew-ci" "source-release" "windows-portable-ci") (list target)]
            [_ (raise-user-error 'main f"unknown --target: {target}")]
          ) ; end match target
        ) ; end lambda target
@@ -428,12 +432,13 @@
       ) ; end append-map
     ) ; end define expanded
     (filter (lambda (target) (member target expanded string=?))
-            '("brew-ci" "brew" "source-release" "apt" "apt-release" "deb-spec" "deb-ci" "rpm-spec" "rpm-ci" "rpm" "rpm-repo" "windows-portable-ci"))
+            '("release-plan" "brew-ci" "brew" "source-release" "apt" "apt-release" "deb-spec" "deb-ci" "rpm-spec" "rpm-ci" "rpm" "rpm-repo" "windows-portable-ci"))
   ) ; end begin normalize-targets
 ) ; end define normalize-targets
 
 (define (racket-root-free-target? target)
-  (or (string=? target "source-release")
+  (or (string=? target "release-plan")
+      (string=? target "source-release")
       (string=? target "apt-release")
       (string=? target "deb-spec")
       (string=? target "deb-ci")
@@ -9177,6 +9182,22 @@ end
 ) ; end define assert-secret-file-mode!
 
 (define (read-github-token token-file)
+  (if (and (pair? token-file) (eq? (car token-file) 'env))
+      (read-github-token/env (cdr token-file))
+      (read-github-token/file token-file)))
+
+(define (read-github-token/env name)
+  (begin
+    (define value (getenv name))
+    (unless (and value (not (string=? (string-trim value) "")))
+      (raise-user-error 'read-github-token
+                        f"environment variable named by --token-env is unset or empty: {name}")
+    ) ; end unless token present
+    (string-trim value)
+  ) ; end begin read-github-token/env
+) ; end define read-github-token/env
+
+(define (read-github-token/file token-file)
   (begin
     (assert-nonempty-file 'read-github-token token-file)
     (assert-secret-file-mode! token-file)
@@ -9196,8 +9217,8 @@ end
       (raise-user-error 'read-github-token f"token file string is empty: {(clean-path-string token-file)}")
     ) ; end when empty token
     token
-  ) ; end begin read-github-token
-) ; end define read-github-token
+  ) ; end begin read-github-token/file
+) ; end define read-github-token/file
 
 (define (github-request-path parts #:query [query ""])
   (begin
@@ -9588,7 +9609,11 @@ body: {(safe-response-body body)}")]
                            (config-optional-string who raw asset-key default-asset-name)))
     (define token-file-value (or token-file-arg
                                  (config-optional-string who raw token-key "secret/ghtoken.rktd")))
-    (define token-file (resolve-config-path config-path token-file-value))
+    ;; `token-file` is either a path or `(env . NAME)` when `--token-env` is
+    ;; given; `read-github-token` accepts both
+    (define token-file (if (cfg-release-token-env c)
+                           (cons 'env (cfg-release-token-env c))
+                           (resolve-config-path config-path token-file-value)))
     (define replace? (if (eq? (cfg-replace-release-asset c) 'unset)
                          (config-optional-boolean who raw 'replace-release-asset #f)
                          (cfg-replace-release-asset c)))
@@ -10560,6 +10585,10 @@ jobs:
   (define rpm-repo-enabled-arg 'unset)
   (define rpm-repo-gpgcheck-arg 'unset)
   (define replace-release-asset-arg 'unset)
+  (define release-token-env-arg #f)
+  (define release-tag-arg #f)
+  (define release-config-arg #f)
+  (define release-plan-out-arg #f)
   (define ruby-bin-arg "ruby")
   (define with-docs? #f)
   (define brew-package-args '())
@@ -10693,6 +10722,14 @@ jobs:
                               (set! replace-release-asset-arg #t)]
    [("--no-replace-release-asset") "Refuse to replace an existing differing GitHub release asset"
                                  (set! replace-release-asset-arg #f)]
+   [("--token-env") name "Read the GitHub token for release uploads from this environment variable instead of a token file (CI)"
+                   (set! release-token-env-arg name)]
+   [("--release-tag") tag "Release tag for --target release-plan: vX.Y.Z, vX.Y.Z-rcN, or pkg-X.Y.Z.N"
+                     (set! release-tag-arg tag)]
+   [("--release-config") path "Repositories, runner and secret names for the release workflow (default: ./release-config.rktd)"
+                        (set! release-config-arg path)]
+   [("--release-plan-out") path "Write the release plan as one Racket hash datum to this file"
+                          (set! release-plan-out-arg path)]
    [("--ruby-bin") path "Ruby executable for YAML validation (default: ruby)"
                   (set! ruby-bin-arg path)]
    [("--within-docs" "--with-docs") "Include raco docs support and the core documentation runtime package group in the Homebrew source archive"
@@ -10738,6 +10775,9 @@ jobs:
     (complete-path* (or source-release-config-arg (build-path script-dir "source-release-config.rktd"))))
   (define apt-release-config
     (complete-path* (or apt-release-config-arg (build-path script-dir "apt-release-config.rktd"))))
+  (define release-config
+    (complete-path* (or release-config-arg (build-path script-dir "release-config.rktd"))))
+  (define release-plan-out (and release-plan-out-arg (complete-path* release-plan-out-arg)))
   (define deb-repo-config
     (complete-path* (or deb-repo-config-arg (build-path script-dir "deb-repo-config.rktd"))))
   (define deb-ci-config
@@ -10911,6 +10951,10 @@ jobs:
        rpm-repo-enabled?
        rpm-repo-gpgcheck?
        replace-release-asset-arg
+       release-token-env-arg
+       release-tag-arg
+       release-config
+       release-plan-out
        ruby-bin-arg
        with-docs?
        brew-package-args
@@ -10979,10 +11023,251 @@ jobs:
   (when (member "source-release" (cfg-targets c) string=?)
     (println/flush f"Source release config: {(clean-path-string (cfg-source-release-config c))}")
   ) ; end when source release target
+  (when (member "release-plan" (cfg-targets c) string=?)
+    (println/flush f"Release config: {(clean-path-string (cfg-release-config c))}")
+  ) ; end when release-plan target
   (when (member "apt-release" (cfg-targets c) string=?)
     (println/flush f"APT release config: {(clean-path-string (cfg-apt-release-config c))}")
   ) ; end when apt release target
 ) ; end define print-config
+
+;; ---------------------------------------------------------------------------
+;; release-plan: derive every version-bearing config value from one tag
+;;
+;;   vX.Y.Z        a source release: source-version X.Y.Z, release 1
+;;   vX.Y.Z-rcN    a release candidate: same values, nothing downstream
+;;   pkg-X.Y.Z.N   packaging-only: the source archive of vX.Y.Z, release N
+;;
+;; The release number N is what the configs call deb-release, rpm-release
+;; and bottle-rebuild, and the last component of formula-version. The
+;; target rewrites the config files in place with regexps that keep their
+;; formatting, then reads them back and checks the values.
+
+(struct release-plan (tag kind source-version release formula-version
+                      source-release-tag rpm-release-tag bottle-root-url source-asset)
+  #:transparent)
+
+(define (parse-release-tag who tag)
+  (begin
+    (define m-source (regexp-match #px"^v(\\d+\\.\\d+\\.\\d+)$" tag))
+    (define m-rc (regexp-match #px"^v(\\d+\\.\\d+\\.\\d+)-rc(\\d+)$" tag))
+    (define m-pkg (regexp-match #px"^pkg-(\\d+\\.\\d+\\.\\d+)\\.([1-9]\\d*)$" tag))
+    (cond
+      [m-source (values 'source (cadr m-source) "1")]
+      [m-rc (values 'rc (cadr m-rc) "1")]
+      [m-pkg (values 'pkg (cadr m-pkg) (caddr m-pkg))]
+      [else
+       (raise-user-error who
+                         f"unrecognized release tag (expected vX.Y.Z, vX.Y.Z-rcN, or pkg-X.Y.Z.N): {tag}")]
+    ) ; end cond tag shape
+  ) ; end begin parse-release-tag
+) ; end define parse-release-tag
+
+(define (read-release-config c)
+  (read-rktd-hash 'release-config (cfg-release-config c)))
+
+(define (make-release-plan c)
+  (begin
+    (define tag (cfg-release-tag c))
+    (unless tag
+      (raise-user-error 'release-plan "--release-tag is required for --target release-plan")
+    ) ; end unless tag
+    (define-values (kind source release) (parse-release-tag 'release-plan tag))
+    (define release-config (read-release-config c))
+    (define bottle-root-base
+      (config-required-string 'release-config release-config 'bottle-root-base))
+    (release-plan tag
+                  kind
+                  source
+                  release
+                  f"{source}.{release}"
+                  f"v{source}"
+                  f"v{source}-r{release}"
+                  f"{bottle-root-base}/v{source}"
+                  f"racket-minimal-{source}-src.tgz")
+  ) ; end begin make-release-plan
+) ; end define make-release-plan
+
+(define (quoted-pair-edit key value)
+  ;; rewrite `(key . "...")` keeping everything else
+  (list (symbol->string key)
+        (pregexp f"\\({(regexp-quote (symbol->string key))} \\. \"[^\"]*\"\\)")
+        f"({(symbol->string key)} . \"{value}\")"
+        1))
+
+(define (number-pair-edit key value)
+  (list (symbol->string key)
+        (pregexp f"\\({(regexp-quote (symbol->string key))} \\. [0-9]+\\)")
+        f"({(symbol->string key)} . {value})"
+        1))
+
+(define (release-plan-edits c plan)
+  ;; -> list of (path . edits), each edit = (label regexp replacement min-count)
+  (begin
+    (define source (release-plan-source-version plan))
+    (define release (release-plan-release plan))
+    (list
+     (cons (cfg-package-config c)
+           (list (quoted-pair-edit 'source-version source)
+                 (quoted-pair-edit 'formula-version (release-plan-formula-version plan))))
+     (cons (cfg-source-release-config c)
+           (list (quoted-pair-edit 'source-release-tag (release-plan-source-release-tag plan))))
+     (cons (cfg-apt-release-config c)
+           (list (quoted-pair-edit 'apt-release-tag (release-plan-source-release-tag plan))))
+     (cons (cfg-deb-repo-config c)
+           (list (quoted-pair-edit 'deb-release release)))
+     (cons (cfg-deb-ci-config c)
+           (list (quoted-pair-edit 'release-tag (release-plan-source-release-tag plan))
+                 (quoted-pair-edit 'release-name f"Racket {source} DEB packages")
+                 (quoted-pair-edit 'deb-release release)))
+     (cons (cfg-rpm-ci-config c)
+           (list (quoted-pair-edit 'release-tag (release-plan-rpm-release-tag plan))
+                 (quoted-pair-edit 'release-name f"Racket {source} RPM packages R{release}")
+                 (quoted-pair-edit 'rpm-release release)))
+     (cons (cfg-windows-ci-config c)
+           (list (quoted-pair-edit 'release-tag (release-plan-source-release-tag plan))
+                 (quoted-pair-edit 'release-name f"Racket {source} Windows portable")))
+     (cons (cfg-brew-ci-config c)
+           (list (number-pair-edit 'bottle-rebuild release))))
+  ) ; end begin release-plan-edits
+) ; end define release-plan-edits
+
+(define (apply-config-edits! who path edits)
+  ;; -> #t when the file changed
+  (begin
+    (assert-nonempty-file who path)
+    (define original (file->string path))
+    (define updated
+      (for/fold ([content original]) ([edit (in-list edits)])
+        (define label (first edit))
+        (define rx (second edit))
+        (define replacement (third edit))
+        (define min-count (fourth edit))
+        (define count (length (regexp-match* rx content)))
+        (when (< count min-count)
+          (raise-user-error who
+                            f"expected at least {min-count} occurrence(s) of {label} in {(clean-path-string path)}, found {count}")
+        ) ; end when too few matches
+        (regexp-replace* rx content (regexp-replace-quote replacement))
+      ) ; end for/fold edits
+    ) ; end define updated
+    (define changed? (not (string=? original updated)))
+    (when changed?
+      (write-text-file! path updated)
+    ) ; end when changed
+    changed?
+  ) ; end begin apply-config-edits!
+) ; end define apply-config-edits!
+
+(define (verify-release-plan-configs! c plan)
+  ;; read every rewritten file back as data and compare with the plan
+  (begin
+    (define who 'release-plan)
+    (define (expect path key expected)
+      (define actual (hash-ref (read-rktd-hash who path) key #f))
+      (unless (equal? actual expected)
+        (raise-user-error who
+                          f"after rewriting, {key} in {(clean-path-string path)} is {(format "~s" actual)}, expected {(format "~s" expected)}")
+      ) ; end unless value matches
+    ) ; end define expect
+    (define (expect-targets path key expected)
+      (for ([target (in-list (hash-ref (read-rktd-hash who path) 'targets '()))])
+        (unless (equal? (hash-ref target key #f) expected)
+          (raise-user-error who
+                            f"after rewriting, a target in {(clean-path-string path)} has {key} {(format "~s" (hash-ref target key #f))}, expected {(format "~s" expected)}")
+        ) ; end unless target value matches
+      ) ; end for targets
+    ) ; end define expect-targets
+    (define source (release-plan-source-version plan))
+    (define release (release-plan-release plan))
+    (expect (cfg-package-config c) 'source-version source)
+    (expect (cfg-package-config c) 'formula-version (release-plan-formula-version plan))
+    (expect (cfg-source-release-config c) 'source-release-tag (release-plan-source-release-tag plan))
+    (expect (cfg-apt-release-config c) 'apt-release-tag (release-plan-source-release-tag plan))
+    (expect (cfg-deb-repo-config c) 'deb-release release)
+    (expect (cfg-deb-ci-config c) 'release-tag (release-plan-source-release-tag plan))
+    (expect-targets (cfg-deb-ci-config c) 'deb-release release)
+    (expect (cfg-rpm-ci-config c) 'release-tag (release-plan-rpm-release-tag plan))
+    (expect-targets (cfg-rpm-ci-config c) 'rpm-release release)
+    (expect (cfg-windows-ci-config c) 'release-tag (release-plan-source-release-tag plan))
+    (expect (cfg-brew-ci-config c) 'bottle-rebuild (string->number release))
+  ) ; end begin verify-release-plan-configs!
+) ; end define verify-release-plan-configs!
+
+(define (release-plan->hash plan)
+  (hash 'tag (release-plan-tag plan)
+        'kind (release-plan-kind plan)
+        'source-version (release-plan-source-version plan)
+        'release (release-plan-release plan)
+        'formula-version (release-plan-formula-version plan)
+        'source-release-tag (release-plan-source-release-tag plan)
+        'rpm-release-tag (release-plan-rpm-release-tag plan)
+        'bottle-root-url (release-plan-bottle-root-url plan)
+        'source-asset (release-plan-source-asset plan)))
+
+(define (print-release-plan! plan)
+  (begin
+    (println/flush f"Release tag: {(release-plan-tag plan)} ({(release-plan-kind plan)})")
+    (println/flush f"Release source version: {(release-plan-source-version plan)}")
+    (println/flush f"Release number: {(release-plan-release plan)}")
+    (println/flush f"Release formula version: {(release-plan-formula-version plan)}")
+    (println/flush f"Release source tag: {(release-plan-source-release-tag plan)}")
+    (println/flush f"Release RPM tag: {(release-plan-rpm-release-tag plan)}")
+    (println/flush f"Release bottle root URL: {(release-plan-bottle-root-url plan)}")
+    (println/flush f"Release source asset: {(release-plan-source-asset plan)}")
+  ) ; end begin print-release-plan!
+) ; end define print-release-plan!
+
+(define (write-release-plan-out! c plan)
+  (when (cfg-release-plan-out c)
+    (define path (cfg-release-plan-out c))
+    (define dir (path-only path))
+    (when dir
+      (make-directory* dir)
+    ) ; end when plan-out directory
+    (write-text-file! path (format "~s\n" (release-plan->hash plan)))
+    (println/flush f"Wrote release plan: {(clean-path-string path)}")
+  ) ; end when plan-out
+) ; end define write-release-plan-out!
+
+(define (build-release-plan! c)
+  (begin
+    (define plan (make-release-plan c))
+    (print-release-plan! plan)
+    (define edits (release-plan-edits c plan))
+    (cond
+      [(cfg-dry-run? c)
+       (for ([entry (in-list edits)])
+         (println/flush f"Would rewrite {(clean-path-string (car entry))}: {(string-join (map first (cdr entry)) ", ")}")
+       ) ; end for dry-run entries
+       (when (cfg-release-plan-out c)
+         (println/flush f"Would write release plan: {(clean-path-string (cfg-release-plan-out c))}")
+       ) ; end when dry-run plan-out
+      ]
+      [else
+       (for ([entry (in-list edits)])
+         (define changed? (apply-config-edits! 'release-plan (car entry) (cdr entry)))
+         (println/flush f"{(if changed? "Rewrote" "Unchanged")} {(clean-path-string (car entry))}")
+       ) ; end for entries
+       (verify-release-plan-configs! c plan)
+       (write-release-plan-out! c plan)
+      ]
+    ) ; end cond dry-run
+  ) ; end begin build-release-plan!
+) ; end define build-release-plan!
+
+(module+ test
+  (define-values (k1 s1 r1) (parse-release-tag 'test "v9.3.12"))
+  (check-equal? (list k1 s1 r1) '(source "9.3.12" "1"))
+  (define-values (k2 s2 r2) (parse-release-tag 'test "v9.3.12-rc3"))
+  (check-equal? (list k2 s2 r2) '(rc "9.3.12" "1"))
+  (define-values (k3 s3 r3) (parse-release-tag 'test "pkg-9.3.12.4"))
+  (check-equal? (list k3 s3 r3) '(pkg "9.3.12" "4"))
+  (for ([bad (in-list '("9.3.12" "v9.3" "pkg-9.3.12.0" "v9.3.12-rc" "release-1"))])
+    (check-exn exn:fail:user? (lambda () (parse-release-tag 'test bad)))
+  ) ; end for bad tags
+) ; end module+ test release-plan
+
 
 (define (main)
   (define c (make-config))
@@ -10994,6 +11279,7 @@ jobs:
     (append-map
      (lambda (target)
        (match target
+         ["release-plan" (build-release-plan! c) '()]
          ["brew" (build-brew! c)]
          ["brew-ci" (build-brew-ci! c)]
          ["source-release" (build-source-release! c)]
@@ -11109,6 +11395,10 @@ jobs:
          #t
          #f
          'unset
+         #f
+         #f
+         #f
+         #f
          "ruby"
          with-docs?
          brew-packages
