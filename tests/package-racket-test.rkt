@@ -485,6 +485,59 @@ actual output:
         (check-not-equal? exit-code 0)
         (check-contains (combined-output out err) "unrecognized release tag"))))
 
+  (test-case "release-ci dry-run names both workflows and writes nothing"
+    (with-temp-dir
+      (lambda (dir)
+        (define root (make-fake-racket-root! dir))
+        (define ci-root (build-path dir "package-racket"))
+        (make-directory* ci-root)
+        (define-values (out err)
+          (run-package/success (list "--target" "release-ci" "--dry-run"
+                                     "--notify-root" (path-arg root)
+                                     "--release-ci-root" (path-arg ci-root)
+                                     "--artifact-dir" (path-arg (build-path dir "art")))))
+        (define text (combined-output out err))
+        (check-contains text "Would generate release workflow:")
+        (check-contains text "Would generate notify workflow:")
+        (check-false (file-exists? (build-path ci-root ".github" "workflows" "release.yml")))
+        (check-false (file-exists? (build-path root ".github" "workflows" "notify-packaging.yml"))))))
+
+  (test-case "release-ci generates validated release and notify workflows"
+    (with-temp-dir
+      (lambda (dir)
+        (define root (make-fake-racket-root! dir))
+        (define ci-root (build-path dir "package-racket"))
+        (make-directory* ci-root)
+        (define args (list "--target" "release-ci"
+                           "--notify-root" (path-arg root)
+                           "--release-ci-root" (path-arg ci-root)
+                           "--artifact-dir" (path-arg (build-path dir "art"))))
+        (define-values (out err) (run-package/success args))
+        (define release-path (build-path ci-root ".github" "workflows" "release.yml"))
+        (define notify-path (build-path root ".github" "workflows" "notify-packaging.yml"))
+        (check-true (file-exists? release-path))
+        (check-true (file-exists? notify-path))
+        (define release-text (file->string release-path))
+        (define notify-text (file->string notify-path))
+        (define release-config (read-config (build-path package-root "release-config.rktd")))
+        (check-contains release-text "GENERATED RELEASE WORKFLOW")
+        (check-contains release-text (hash-ref release-config 'dispatch-event))
+        (check-contains release-text (hash-ref release-config 'bootstrap-formula))
+        (check-contains release-text (string-append "secrets." (hash-ref release-config 'push-token-secret)))
+        (check-contains release-text "--target release-plan")
+        (check-contains release-text "--create-release")
+        (check-contains release-text "if: needs.plan.outputs.kind != 'rc'")
+        (check-contains notify-text (hash-ref release-config 'package-repo))
+        (check-contains notify-text (string-append "secrets." (hash-ref release-config 'dispatch-token-secret)))
+        ;; regenerating over generated files is allowed and idempotent
+        (define-values (out2 err2) (run-package/success args))
+        (check-equal? (file->string release-path) release-text)
+        ;; a hand-written file in the way is refused
+        (write-text! release-path "name: something else\n")
+        (define-values (exit-code out3 err3) (run-package args))
+        (check-not-equal? exit-code 0)
+        (check-contains (combined-output out3 err3) "without generated marker"))))
+
   (test-case "production packaging revisions stay synchronized"
     ;; the release number is the last component of formula-version; every
     ;; other config must agree with it (release-plan keeps them so)

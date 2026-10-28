@@ -123,6 +123,10 @@
    release-tag
    release-config
    release-plan-out
+   release-ci-root
+   notify-root
+   create-release?
+   prerelease?
    ruby-bin
    with-docs?
    brew-packages
@@ -417,14 +421,14 @@
       ) ; end for*/list pieces
     ) ; end define pieces
     (when (null? pieces)
-      (raise-user-error 'main "missing --target; use release-plan, brew, brew-ci, source-release, apt, apt-release, deb-spec, deb-ci, rpm, rpm-spec, rpm-ci, rpm-repo, windows-portable-ci, or all")
+      (raise-user-error 'main "missing --target; use release-plan, release-ci, brew, brew-ci, source-release, apt, apt-release, deb-spec, deb-ci, rpm, rpm-spec, rpm-ci, rpm-repo, windows-portable-ci, or all")
     ) ; end when missing target
     (define expanded
       (append-map
        (lambda (target)
          (match target
            ["all" '("brew" "apt" "rpm")]
-           [(or "release-plan" "brew" "apt" "apt-release" "deb-spec" "deb-ci" "rpm" "rpm-spec" "rpm-ci" "rpm-repo" "brew-ci" "source-release" "windows-portable-ci") (list target)]
+           [(or "release-plan" "release-ci" "brew" "apt" "apt-release" "deb-spec" "deb-ci" "rpm" "rpm-spec" "rpm-ci" "rpm-repo" "brew-ci" "source-release" "windows-portable-ci") (list target)]
            [_ (raise-user-error 'main f"unknown --target: {target}")]
          ) ; end match target
        ) ; end lambda target
@@ -432,12 +436,13 @@
       ) ; end append-map
     ) ; end define expanded
     (filter (lambda (target) (member target expanded string=?))
-            '("release-plan" "brew-ci" "brew" "source-release" "apt" "apt-release" "deb-spec" "deb-ci" "rpm-spec" "rpm-ci" "rpm" "rpm-repo" "windows-portable-ci"))
+            '("release-plan" "release-ci" "brew-ci" "brew" "source-release" "apt" "apt-release" "deb-spec" "deb-ci" "rpm-spec" "rpm-ci" "rpm" "rpm-repo" "windows-portable-ci"))
   ) ; end begin normalize-targets
 ) ; end define normalize-targets
 
 (define (racket-root-free-target? target)
   (or (string=? target "release-plan")
+      (string=? target "release-ci")
       (string=? target "source-release")
       (string=? target "apt-release")
       (string=? target "deb-spec")
@@ -9421,6 +9426,37 @@ body: {(safe-response-body body)}")]
   ) ; end begin github-download-asset!
 ) ; end define github-download-asset!
 
+;; The release for `tag`, created when `create?` and it does not exist
+(define (github-release-by-tag/create! who owner repo tag token create? prerelease?)
+  (begin
+    (define found
+      (github-json-request! who
+                            "GET"
+                            github-api-host
+                            (github-request-path (list "repos" owner repo "releases" "tags" tag))
+                            token
+                            #:ok '(200 404)))
+    (cond
+      [(and (hash? found) (hash-ref found 'id #f)) found]
+      [create?
+       (println/flush f"Creating GitHub release for tag: {tag}")
+       (github-json-request! who
+                             "POST"
+                             github-api-host
+                             (github-request-path (list "repos" owner repo "releases"))
+                             token
+                             #:data (jsexpr->bytes (hash 'tag_name tag
+                                                         'name tag
+                                                         'prerelease (and prerelease? #t)
+                                                         'draft #f))
+                             #:content-type "application/json"
+                             #:ok '(201))]
+      [else
+       (raise-user-error who f"no GitHub release for tag {tag} in {owner}/{repo}; pass --create-release to create it")]
+    ) ; end cond found
+  ) ; end begin github-release-by-tag/create!
+) ; end define github-release-by-tag/create!
+
 (define (github-release-by-tag! owner repo tag token)
   (github-json-request!
    'github-release-by-tag!
@@ -9728,10 +9764,11 @@ body: {(safe-response-body body)}")]
 ) ; end define verify-uploaded-asset-digest!
 
 (define (upload-github-release-asset-real! who owner repo-name tag asset-name asset-path local-sha
-                                           token-file replace? content-type)
+                                           token-file replace? content-type
+                                           #:create? [create? #f] #:prerelease? [prerelease? #f])
   (begin
     (define token (read-github-token token-file))
-    (define release (github-release-by-tag! owner repo-name tag token))
+    (define release (github-release-by-tag/create! who owner repo-name tag token create? prerelease?))
     (define release-id (hash-ref release 'id))
     (define upload-url (hash-ref release 'upload_url))
     (define assets (github-release-assets! owner repo-name release-id token))
@@ -9763,7 +9800,8 @@ body: {(safe-response-body body)}")]
   ) ; end begin upload-github-release-asset-real!
 ) ; end define upload-github-release-asset-real!
 
-(define (upload-source-release-real! owner repo-name tag asset-name asset-path local-sha token-file replace?)
+(define (upload-source-release-real! owner repo-name tag asset-name asset-path local-sha token-file replace?
+                                     #:create? [create? #f] #:prerelease? [prerelease? #f])
   (upload-github-release-asset-real! 'upload-source-release!
                                      owner
                                      repo-name
@@ -9773,7 +9811,9 @@ body: {(safe-response-body body)}")]
                                      local-sha
                                      token-file
                                      replace?
-                                     "application/gzip"))
+                                     "application/gzip"
+                                     #:create? create?
+                                     #:prerelease? prerelease?))
 
 (define (upload-source-release! c)
   (begin
@@ -9810,7 +9850,8 @@ body: {(safe-response-body body)}")]
          (if dry-run-planned?
              f"Would upload source release asset from planned brew output {(clean-path-string asset-path)}"
              f"Would upload source release asset from {(clean-path-string asset-path)}"))
-        (upload-source-release-real! owner repo-name tag asset-name asset-path local-sha token-file replace?)
+        (upload-source-release-real! owner repo-name tag asset-name asset-path local-sha token-file replace?
+                                     #:create? (cfg-create-release? c) #:prerelease? (cfg-prerelease? c))
     ) ; end if dry-run
   ) ; end begin upload-source-release!
 ) ; end define upload-source-release!
@@ -10589,6 +10630,12 @@ jobs:
   (define release-tag-arg #f)
   (define release-config-arg #f)
   (define release-plan-out-arg #f)
+  (define release-ci-root-arg #f)
+  (define notify-root-arg #f)
+  (define create-release? #f)
+  (define prerelease? #f)
+  (define deb-repo-root-arg #f)
+  (define windows-repo-root-arg #f)
   (define ruby-bin-arg "ruby")
   (define with-docs? #f)
   (define brew-package-args '())
@@ -10730,6 +10777,18 @@ jobs:
                         (set! release-config-arg path)]
    [("--release-plan-out") path "Write the release plan as one Racket hash datum to this file"
                           (set! release-plan-out-arg path)]
+   [("--release-ci-root") path "Repository root that receives the generated release workflow (default: this repository)"
+                         (set! release-ci-root-arg path)]
+   [("--notify-root") path "Racket repository root that receives the generated notify-packaging workflow (release-ci)"
+                     (set! notify-root-arg path)]
+   [("--create-release") "Create the GitHub release for the tag when it does not exist yet (release uploads)"
+                        (set! create-release? #t)]
+   [("--prerelease") "Mark a release created by --create-release as a prerelease"
+                   (set! prerelease? #t)]
+   [("--deb-repo-root") path "Override the deb-racket repository root from deb-repo-config"
+                       (set! deb-repo-root-arg path)]
+   [("--windows-repo-root") path "Override the win-racket repository root from windows-ci-config"
+                           (set! windows-repo-root-arg path)]
    [("--ruby-bin") path "Ruby executable for YAML validation (default: ruby)"
                   (set! ruby-bin-arg path)]
    [("--within-docs" "--with-docs") "Include raco docs support and the core documentation runtime package group in the Homebrew source archive"
@@ -10778,6 +10837,8 @@ jobs:
   (define release-config
     (complete-path* (or release-config-arg (build-path script-dir "release-config.rktd"))))
   (define release-plan-out (and release-plan-out-arg (complete-path* release-plan-out-arg)))
+  (define release-ci-root (complete-path* (or release-ci-root-arg script-dir)))
+  (define notify-root (and notify-root-arg (complete-path* notify-root-arg)))
   (define deb-repo-config
     (complete-path* (or deb-repo-config-arg (build-path script-dir "deb-repo-config.rktd"))))
   (define deb-ci-config
@@ -10817,11 +10878,13 @@ jobs:
   (when bottle-root-url-arg
     (assert-bottle-root-url bottle-root-url-arg)
   ) ; end when bottle root url provided
-  (define-values (deb-repo-root deb-system deb-release deb-config-arch)
+  (define-values (deb-repo-root/config deb-system deb-release deb-config-arch)
     (if (needs-deb-repo-config? targets)
         (read-deb-repo-config-values deb-repo-config)
         (values #f #f #f #f))
   ) ; end define-values deb repo config
+  (define deb-repo-root
+    (if deb-repo-root-arg (complete-path* deb-repo-root-arg) deb-repo-root/config))
   (define deb-arch
     (cond
       [deb-arch-arg
@@ -10844,11 +10907,13 @@ jobs:
                                      rpm-repo-gpgcheck-arg)
         (values #f #f #f #f #t #f))
   ) ; end define-values rpm repo config
-  (define-values (windows-repo-root)
+  (define-values (windows-repo-root/config)
     (if (needs-windows-ci-config? targets)
         (read-windows-ci-config-values windows-ci-config)
         (values #f))
   ) ; end define-values windows ci config
+  (define windows-repo-root
+    (if windows-repo-root-arg (complete-path* windows-repo-root-arg) windows-repo-root/config))
   (define rpm-system
     (cond
       [(needs-rpm-target? targets)
@@ -10955,6 +11020,10 @@ jobs:
        release-tag-arg
        release-config
        release-plan-out
+       release-ci-root
+       notify-root
+       create-release?
+       prerelease?
        ruby-bin-arg
        with-docs?
        brew-package-args
@@ -11023,9 +11092,10 @@ jobs:
   (when (member "source-release" (cfg-targets c) string=?)
     (println/flush f"Source release config: {(clean-path-string (cfg-source-release-config c))}")
   ) ; end when source release target
-  (when (member "release-plan" (cfg-targets c) string=?)
+  (when (or (member "release-plan" (cfg-targets c) string=?)
+            (member "release-ci" (cfg-targets c) string=?))
     (println/flush f"Release config: {(clean-path-string (cfg-release-config c))}")
-  ) ; end when release-plan target
+  ) ; end when release targets
   (when (member "apt-release" (cfg-targets c) string=?)
     (println/flush f"APT release config: {(clean-path-string (cfg-apt-release-config c))}")
   ) ; end when apt release target
@@ -11269,6 +11339,432 @@ jobs:
 ) ; end module+ test release-plan
 
 
+;; ---------------------------------------------------------------------------
+;; release-ci: the tag-driven release workflow
+;;
+;; Two generated files: `.github/workflows/release.yml` in this repository
+;; (plan the release from a tag, build the source archive and Formula,
+;; upload the archive, regenerate and push the downstream repositories)
+;; and `.github/workflows/notify-packaging.yml` in the Racket checkout
+;; (a tag push sends a repository_dispatch here). Repositories, runner,
+;; bootstrap formula and secret names come from `release-config.rktd`.
+
+(define generated-release-ci-notice-marker
+  "GENERATED RELEASE WORKFLOW - DO NOT EDIT; regenerate with package-racket --target release-ci.")
+
+(define (generated-release-ci-notice comment-prefix)
+  f"{comment-prefix} {generated-release-ci-notice-marker}
+{comment-prefix} Source of truth: {(generated-source-root)}
+
+")
+
+(define (release-ci-workflows-dir c)
+  (build-path (cfg-release-ci-root c) ".github" "workflows"))
+
+(define (release-ci-workflow-path c)
+  (build-path (release-ci-workflows-dir c) "release.yml"))
+
+(define (notify-workflow-path c)
+  (begin
+    (unless (cfg-notify-root c)
+      (raise-user-error 'release-ci "--notify-root (the Racket repository root) is required for --target release-ci")
+    ) ; end unless notify root
+    (build-path (cfg-notify-root c) ".github" "workflows" "notify-packaging.yml")
+  ) ; end begin notify-workflow-path
+) ; end define notify-workflow-path
+
+(define (release-config-string config key)
+  (config-required-string 'release-config config key))
+
+(define (validate-release-config! config)
+  (for ([key (in-list '(racket-repo package-repo tap-repo deb-repo rpm-repo windows-repo
+                        bottle-root-base bootstrap-formula runner container
+                        push-token-secret dispatch-token-secret dispatch-event))])
+    (release-config-string config key)
+  ) ; end for required keys
+) ; end define validate-release-config!
+
+(define (release-ci-workflow-content c config)
+  (begin
+    (define runner (release-config-string config 'runner))
+    (define container (release-config-string config 'container))
+    (define bootstrap (release-config-string config 'bootstrap-formula))
+    (define racket-repo (release-config-string config 'racket-repo))
+    (define tap-repo (release-config-string config 'tap-repo))
+    (define deb-repo (release-config-string config 'deb-repo))
+    (define rpm-repo (release-config-string config 'rpm-repo))
+    (define windows-repo (release-config-string config 'windows-repo))
+    (define push-secret (release-config-string config 'push-token-secret))
+    (define dispatch-event (release-config-string config 'dispatch-event))
+    ;; GitHub expressions are kept out of the template text so that the
+    ;; braces are never read as interpolation
+    (define gh-token "${{ secrets.GITHUB_TOKEN }}")
+    (define push-token f"${{{{ secrets.{push-secret} }}}}")
+    (define payload-tag "${{ github.event.client_payload.tag }}")
+    (define input-tag "${{ inputs.tag }}")
+    (define steps-tag "${{ steps.tag.outputs.tag }}")
+    (define out-tag "${{ steps.plan.outputs.tag }}")
+    (define out-kind "${{ steps.plan.outputs.kind }}")
+    (define out-source-tag "${{ steps.plan.outputs.source_release_tag }}")
+    (define out-bottle "${{ steps.plan.outputs.bottle_root_url }}")
+    (define out-formula "${{ steps.plan.outputs.formula_version }}")
+    (define needs-tag "${{ needs.plan.outputs.tag }}")
+    (define needs-kind "${{ needs.plan.outputs.kind }}")
+    (define needs-source-tag "${{ needs.plan.outputs.source_release_tag }}")
+    (define needs-bottle "${{ needs.plan.outputs.bottle_root_url }}")
+    (define needs-formula "${{ needs.plan.outputs.formula_version }}")
+    (define plan-not-rc "steps.plan.outputs.kind != 'rc'")
+    (define kind-not-rc "needs.plan.outputs.kind != 'rc'")
+    (define export-plan
+      "racket -e '(define plan (call-with-input-file \".build/release-plan.rktd\" read)) (for ([key (in-list (quote (tag kind source-version release formula-version source-release-tag rpm-release-tag bottle-root-url source-asset)))]) (printf \"~a=~a\\n\" (regexp-replace* #rx\"-\" (symbol->string key) \"_\") (hash-ref plan key)))' >> \"$GITHUB_OUTPUT\"")
+    (define plan-commit-printf
+      "printf '(BUILD \"release-plan: %s\"\\n\\n()\\n\"Config values derived from the tag %s by the release workflow.\\n\\nModified:\\n%s\\n\")\\n' \"$TAG\" \"$TAG\" \"$files\" > .git/release-commit-msg")
+    (define downstream-commit-printf
+      "printf '(BUILD \"release %s: regenerated outputs\"\\n\\n()\\n\"Generated by the release workflow of package-racket for %s.\\n\\nModified:\\n%s\\n\")\\n' \"$TAG\" \"$TAG\" \"$files\" > \"$dir/.git/release-commit-msg\"")
+    f"{(generated-release-ci-notice "#")}name: release packages
+
+on:
+  repository_dispatch:
+    types:
+      - {dispatch-event}
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag: vX.Y.Z (source release), vX.Y.Z-rcN (candidate, no downstream), pkg-X.Y.Z.N (packaging only)'
+        required: true
+        type: string
+  push:
+    tags:
+      - 'pkg-*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-packages
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: plan
+    runs-on: {runner}
+    container:
+      image: {container}
+    outputs:
+      tag: {out-tag}
+      kind: {out-kind}
+      source_release_tag: {out-source-tag}
+      bottle_root_url: {out-bottle}
+      formula_version: {out-formula}
+    steps:
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@main
+        with:
+          token: {gh-token}
+
+      - name: Checkout package-racket
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: package-racket
+
+      - name: Resolve the release tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=\"{payload-tag}\"
+          if [ -z \"$tag\" ]; then tag=\"{input-tag}\"; fi
+          if [ -z \"$tag\" ]; then tag=\"$GITHUB_REF_NAME\"; fi
+          echo \"release tag: $tag\"
+          echo \"tag=$tag\" >> \"$GITHUB_OUTPUT\"
+
+      - name: Install Racket
+        shell: bash
+        run: brew install {bootstrap}
+
+      - name: Plan the release
+        id: plan
+        shell: bash
+        working-directory: package-racket
+        env:
+          TAG: {steps-tag}
+        run: |
+          set -euo pipefail
+          racket package-racket.rkt --target release-plan --release-tag \"$TAG\" --release-plan-out .build/release-plan.rktd --artifact-dir artifacts
+          {export-plan}
+
+      - name: Commit the planned configuration
+        if: {plan-not-rc}
+        shell: bash
+        working-directory: package-racket
+        env:
+          TAG: {steps-tag}
+        run: |
+          set -euo pipefail
+          git config user.name \"package-racket release\"
+          git config user.email \"package-racket@users.noreply.github.com\"
+          git add -- '*.rktd'
+          if git diff --cached --quiet; then
+            echo \"configuration already matches $TAG\"
+            exit 0
+          fi
+          files=\"$(git diff --cached --name-only | sed 's/^/- /')\"
+          {plan-commit-printf}
+          git commit -F .git/release-commit-msg
+          git push origin HEAD:main
+
+  release:
+    name: release
+    needs: plan
+    runs-on: {runner}
+    container:
+      image: {container}
+    env:
+      TAG: {needs-tag}
+      KIND: {needs-kind}
+      SOURCE_TAG: {needs-source-tag}
+      BOTTLE_ROOT_URL: {needs-bottle}
+      FORMULA_VERSION: {needs-formula}
+    steps:
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@main
+        with:
+          token: {gh-token}
+
+      - name: Checkout package-racket
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: package-racket
+
+      - name: Checkout the Racket source at the release tag
+        uses: actions/checkout@v6
+        with:
+          repository: {racket-repo}
+          ref: {needs-source-tag}
+          path: racket-src
+          fetch-depth: 1
+
+      - name: Checkout the Homebrew tap
+        uses: actions/checkout@v6
+        with:
+          repository: {tap-repo}
+          path: tap
+          token: {push-token}
+
+      - name: Checkout deb-racket
+        uses: actions/checkout@v6
+        with:
+          repository: {deb-repo}
+          path: deb-racket
+          token: {push-token}
+
+      - name: Checkout rpm-racket
+        uses: actions/checkout@v6
+        with:
+          repository: {rpm-repo}
+          path: rpm-racket
+          token: {push-token}
+
+      - name: Checkout win-racket
+        uses: actions/checkout@v6
+        with:
+          repository: {windows-repo}
+          path: win-racket
+          token: {push-token}
+
+      - name: Install Racket
+        shell: bash
+        run: brew install {bootstrap}
+
+      - name: Build the source archive and the Formula
+        shell: bash
+        working-directory: package-racket
+        env:
+          PACKAGING_PUSH_TOKEN: {push-token}
+        run: |
+          set -euo pipefail
+          targets=\"--target brew\"
+          if [ \"$KIND\" != \"pkg\" ]; then targets=\"$targets --target source-release\"; fi
+          prerelease=\"\"
+          if [ \"$KIND\" = \"rc\" ]; then prerelease=\"--prerelease\"; fi
+          racket package-racket.rkt $targets $prerelease \\
+            --formula-build-mode full \\
+            --racket-root ../racket-src \\
+            --homebrew-tap ../tap \\
+            --bottle-root-url \"$BOTTLE_ROOT_URL\" \\
+            --artifact-dir artifacts \\
+            --token-env PACKAGING_PUSH_TOKEN \\
+            --create-release \\
+            --replace-release-asset
+
+      - name: Regenerate the downstream repositories
+        if: {kind-not-rc}
+        shell: bash
+        working-directory: package-racket
+        run: |
+          set -euo pipefail
+          racket package-racket.rkt \\
+            --target brew-ci --target deb-spec --target deb-ci --target rpm-spec --target rpm-ci --target windows-portable-ci \\
+            --racket-root ../racket-src \\
+            --homebrew-tap ../tap \\
+            --bottle-root-url \"$BOTTLE_ROOT_URL\" \\
+            --deb-repo-root ../deb-racket \\
+            --rpm-repo-root ../rpm-racket \\
+            --windows-repo-root ../win-racket \\
+            --artifact-dir artifacts
+
+      - name: Push the downstream repositories
+        if: {kind-not-rc}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global user.name \"package-racket release\"
+          git config --global user.email \"package-racket@users.noreply.github.com\"
+          for dir in tap deb-racket rpm-racket win-racket; do
+            git -C \"$dir\" add -A
+            if git -C \"$dir\" diff --cached --quiet; then
+              echo \"$dir: no changes\"
+              continue
+            fi
+            files=\"$(git -C \"$dir\" diff --cached --name-only | sed 's/^/- /')\"
+            {downstream-commit-printf}
+            git -C \"$dir\" commit -F .git/release-commit-msg
+            git -C \"$dir\" push origin HEAD:main
+            echo \"$dir: pushed\"
+          done
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-{needs-tag}
+          path: |
+            package-racket/artifacts/*
+            tap/Formula/*.rb
+          if-no-files-found: error
+"
+  ) ; end begin release-ci-workflow-content
+) ; end define release-ci-workflow-content
+
+(define (notify-workflow-content c config)
+  (begin
+    (define package-repo (release-config-string config 'package-repo))
+    (define dispatch-event (release-config-string config 'dispatch-event))
+    (define dispatch-secret (release-config-string config 'dispatch-token-secret))
+    (define runner (release-config-string config 'runner))
+    (define token-expr f"${{{{ secrets.{dispatch-secret} }}}}")
+    (define ref-name "${{ github.ref_name }}")
+    f"{(generated-release-ci-notice "#")}name: notify packaging
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    name: dispatch to package-racket
+    runs-on: {runner}
+    steps:
+      - name: Send the tag to package-racket
+        shell: bash
+        env:
+          GH_TOKEN: {token-expr}
+          TAG: {ref-name}
+        run: |
+          set -euo pipefail
+          gh api \"repos/{package-repo}/dispatches\" -f event_type={dispatch-event} -F \"client_payload[tag]=$TAG\"
+          echo \"dispatched {dispatch-event} for $TAG to {package-repo}\"
+"
+  ) ; end begin notify-workflow-content
+) ; end define notify-workflow-content
+
+(define (assert-release-ci-workflow-replaceable! who path)
+  (when (file-exists? path)
+    (unless (string-contains? (file->string path) generated-release-ci-notice-marker)
+      (raise-user-error who
+                        f"refusing to overwrite workflow without generated marker: {(clean-path-string path)}")
+    ) ; end unless marker present
+  ) ; end when file exists
+) ; end define assert-release-ci-workflow-replaceable!
+
+(define (validate-release-ci-workflow! c config path)
+  (begin
+    (validate-yaml! c path)
+    (define content (file->string path))
+    (for ([needle (in-list (list "name: release packages"
+                                 "repository_dispatch:"
+                                 (release-config-string config 'dispatch-event)
+                                 (release-config-string config 'bootstrap-formula)
+                                 (release-config-string config 'racket-repo)
+                                 (release-config-string config 'tap-repo)
+                                 (release-config-string config 'deb-repo)
+                                 (release-config-string config 'rpm-repo)
+                                 (release-config-string config 'windows-repo)
+                                 (release-config-string config 'push-token-secret)
+                                 "--target release-plan"
+                                 "--target source-release"
+                                 "--token-env PACKAGING_PUSH_TOKEN"
+                                 "--create-release"
+                                 "git push origin HEAD:main"))])
+      (unless (string-contains? content needle)
+        (raise-user-error 'validate-release-ci-workflow!
+                          f"generated release workflow is missing required content: {needle}")
+      ) ; end unless needle present
+    ) ; end for needles
+  ) ; end begin validate-release-ci-workflow!
+) ; end define validate-release-ci-workflow!
+
+(define (validate-notify-workflow! c config path)
+  (begin
+    (validate-yaml! c path)
+    (define content (file->string path))
+    (for ([needle (in-list (list "name: notify packaging"
+                                 (release-config-string config 'package-repo)
+                                 (release-config-string config 'dispatch-event)
+                                 (release-config-string config 'dispatch-token-secret)
+                                 "gh api"))])
+      (unless (string-contains? content needle)
+        (raise-user-error 'validate-notify-workflow!
+                          f"generated notify workflow is missing required content: {needle}")
+      ) ; end unless needle present
+    ) ; end for needles
+  ) ; end begin validate-notify-workflow!
+) ; end define validate-notify-workflow!
+
+(define (build-release-ci! c)
+  (begin
+    (define config (read-release-config c))
+    (validate-release-config! config)
+    (define release-path (release-ci-workflow-path c))
+    (define notify-path (notify-workflow-path c))
+    (cond
+      [(cfg-dry-run? c)
+       (println/flush f"Would read release config: {(clean-path-string (cfg-release-config c))}")
+       (println/flush f"Would generate release workflow: {(clean-path-string release-path)}")
+       (println/flush f"Would generate notify workflow: {(clean-path-string notify-path)}")
+       (println/flush f"Would validate workflow YAML with: {(cfg-ruby-bin c)}")]
+      [else
+       (assert-executable 'build-release-ci! (cfg-ruby-bin c))
+       (assert-release-ci-workflow-replaceable! 'build-release-ci! release-path)
+       (assert-release-ci-workflow-replaceable! 'build-release-ci! notify-path)
+       (make-directory* (release-ci-workflows-dir c))
+       (make-directory* (build-path (cfg-notify-root c) ".github" "workflows"))
+       (write-text-file! release-path (release-ci-workflow-content c config))
+       (write-text-file! notify-path (notify-workflow-content c config))
+       (validate-release-ci-workflow! c config release-path)
+       (validate-notify-workflow! c config notify-path)
+       (println/flush f"Generated release workflow: {(clean-path-string release-path)}")
+       (println/flush f"Generated notify workflow: {(clean-path-string notify-path)}")]
+    ) ; end cond dry-run
+  ) ; end begin build-release-ci!
+) ; end define build-release-ci!
+
+
 (define (main)
   (define c (make-config))
   (print-config c)
@@ -11280,6 +11776,7 @@ jobs:
      (lambda (target)
        (match target
          ["release-plan" (build-release-plan! c) '()]
+         ["release-ci" (build-release-ci! c) '()]
          ["brew" (build-brew! c)]
          ["brew-ci" (build-brew-ci! c)]
          ["source-release" (build-source-release! c)]
@@ -11395,6 +11892,10 @@ jobs:
          #t
          #f
          'unset
+         #f
+         #f
+         #f
+         #f
          #f
          #f
          #f

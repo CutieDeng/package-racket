@@ -3,6 +3,23 @@
 Packaging helper for a local Racket checkout. The command supports named
 packaging flows:
 
+- `release-plan`: derives every version-bearing config value from one
+  release tag (`--release-tag vX.Y.Z` for a source release, `vX.Y.Z-rcN`
+  for a candidate, `pkg-X.Y.Z.N` for a packaging-only release N of the same
+  source) and rewrites `package-config.rktd` and the release, deb, rpm,
+  windows and brew CI configs in place, keeping their formatting and reading
+  them back to check. `--release-plan-out` writes the plan as one Racket hash
+  for a workflow to read. The release number N is deb-release, rpm-release,
+  bottle-rebuild and the last component of formula-version.
+- `release-ci`: generates `.github/workflows/release.yml` for this repository
+  (plan from the tag, build and upload the source archive, write the Formula,
+  regenerate and push the tap, deb-racket, rpm-racket and win-racket
+  repositories, whose own workflows then build the packages) and
+  `.github/workflows/notify-packaging.yml` for the Racket repository named by
+  `--notify-root` (a `v*` tag push sends a `repository_dispatch` here).
+  Repositories, runner, bootstrap formula and secret names come from
+  `release-config.rktd`. A release candidate tag runs only the source part and
+  marks the GitHub release as a prerelease.
 - `brew`: creates the Homebrew source `.tgz`, generates a staged
   `brew/Formula/racket@9.rb`, validates it, then replaces the formula in the
   Homebrew tap at the end of a successful script run unless disabled.
@@ -10,8 +27,10 @@ packaging flows:
   to generate the complete Formula from the package-racket template instead of
   using the tap Formula as a starting point.
 - `source-release`: uploads the Homebrew source `.tgz` to the configured
-  GitHub release with the GitHub REST API. This is a local tool action, not a
-  CI workflow.
+  GitHub release with the GitHub REST API. The token comes from the configured
+  token file, or from an environment variable named by `--token-env` (what the
+  generated release workflow uses); `--create-release` creates the release for
+  the tag when it does not exist yet, and `--prerelease` marks it as such.
 - `brew-ci`: generates Homebrew tap GitHub Actions workflows from
   `brew-ci-config.rktd`, validates them, then replaces the workflow files in
   the Homebrew tap. The generated release workflow builds and publishes bottles
@@ -66,11 +85,10 @@ checks package metadata files, verifies `.deb` archive members, verifies RPM
 metadata with `rpm -qip`, and compares the generated Homebrew formula sha256
 against the generated source `.tgz`. The `brew` flow also verifies that the
 source `.tgz` contains this fork's custom core language profile:
-`at-exp-lib` with its `base` dependency, plus `sandbox-lib`, `errortrace-lib`,
-`source-syntax`, and a trimmed Rhombus v1.0 runtime profile. The Rhombus
-profile includes `rhombus-lib`, `rhombus-exe`, `shrubbery-lib`,
-`enforest-lib`, and `pretty-expressive-lib`, including the collection links
-needed for `#lang rhombus` and the `rhombus` launcher. The `brew-ci` flow also validates
+`at-exp-lib` with its `base` dependency, plus `sandbox-lib`, `errortrace-lib`
+and `source-syntax`. Since Racket 9.3.12 every package of the profile is
+carried in the Racket repository's `pkgs/`, so a checkout of a release tag is
+the complete input of the archive. The `brew-ci` flow also validates
 generated workflow YAML and required workflow content before replacing files in
 the tap. The publish workflow updates release assets and the Formula only after
 every bottle runner succeeds.
@@ -449,10 +467,9 @@ tag embedded in `--bottle-root-url`.
 For this fork, the brew source archive intentionally includes `at-exp-lib`
 and its `base` dependency so `#lang at-exp` and `@`-expression readers are
 available as part of the custom minimal profile. It also includes `sandbox-lib`
-and its transitive runtime packages so `racket/sandbox` is available. Rhombus
-is included as a trimmed runtime language profile, not as the full
-`rhombus-main-distribution`; GUI, draw, pict, HTML, XML, JSON, HTTP, Scribble,
-and documentation-oriented Rhombus packages stay outside the default core set.
+and its transitive runtime packages so `racket/sandbox` is available. GUI,
+pict, HTML, XML, HTTP and documentation-oriented packages stay outside the
+default core set (the documentation packages are added with `--with-docs`).
 By default, the brew source archive does not include the `raco docs` command
 or its documentation runtime package group. Pass `--within-docs` to include
 `racket-index`, `scribble-lib`, `net-lib`, `draw-lib`, and their required
