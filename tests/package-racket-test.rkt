@@ -60,6 +60,12 @@
 #define MZSCHEME_VERSION_Z 5
 #define MZSCHEME_VERSION_W 0
 ")
+    ;; pb boot files, which the brew target requires in the checkout
+    (define pb-dir (build-path root "racket" "src" "ChezScheme" "boot" "pb"))
+    (make-directory* pb-dir)
+    (for ([name (in-list '("petite.boot" "scheme.boot" "equates.h" "scheme.h"))])
+      (write-text! (build-path pb-dir name) f"fake {name}\n")
+    ) ; end for fake pb files
     root
   ) ; end begin make-fake-racket-root!
 ) ; end define make-fake-racket-root!
@@ -1843,3 +1849,22 @@ actual output:
              (check-regexp-match #rx"^(GET|DELETE|POST) /repos/x/y/assets[?]name=a([+]|%20)b.tgz HTTP/1.1\n" (caddr via-curl))))
          stop)]))
   ) ; end module+ test transport
+
+(module+ test
+  (test-case "brew refuses a racket root without pb boot files"
+    (with-temp-dir
+     (lambda (tmp)
+       (define racket-root (make-fake-racket-root! tmp))
+       (delete-file (build-path racket-root "racket" "src" "ChezScheme" "boot" "pb" "petite.boot"))
+       (define tap (make-fake-homebrew-tap! tmp))
+       (define-values (exit-code out err)
+         (run-package (list "--target" "brew" "--dry-run"
+                            "--racket-root" (path-arg racket-root)
+                            "--homebrew-tap" (path-arg tap)
+                            "--bottle-root-url" "https://example.invalid/bottles"
+                            "--artifact-dir" (path-arg (build-path tmp "artifacts")))))
+       (check-equal? exit-code 1)
+       (check-contains err "racket-root has no pb boot files")
+       (check-contains err "make pb-fetch")
+       (check-contains err "boot/pb/petite.boot"))))
+  ) ; end module+ test pb guard

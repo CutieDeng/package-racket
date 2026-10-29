@@ -35,6 +35,11 @@ packaging flows:
   API call through curl(1) instead of net/url; the release workflow uses it
   because the bootstrap bottle's TLS stack may predate the tree being
   released (9.3.5 cannot verify the RSA certificate of uploads.github.com).
+  The `brew` target requires the pb boot files in the Racket checkout
+  (`racket/src/ChezScheme/boot/pb`, populated by `make pb-fetch`; the release
+  workflow fetches the commit pinned as `pb-commit` in `release-config.rktd`)
+  and refuses to stage a tree without them, since the resulting archive could
+  not be bootstrapped by any consumer.
   `--create-release` creates the release for
   the tag when it does not exist yet, and `--prerelease` marks it as such.
 - `brew-ci`: generates Homebrew tap GitHub Actions workflows from

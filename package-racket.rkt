@@ -7746,8 +7746,31 @@ information.
   ) ; end begin copy-brew-licenses!
 ) ; end define copy-brew-licenses!
 
+(define brew-required-pb-files
+  '("src/ChezScheme/boot/pb/petite.boot"
+    "src/ChezScheme/boot/pb/scheme.boot"
+    "src/ChezScheme/boot/pb/equates.h"
+    "src/ChezScheme/boot/pb/scheme.h"))
+
+;; The pb boot files are not tracked by the Racket repository: `make
+;; pb-fetch` clones them from racket/pb into racket/src/ChezScheme/boot/pb.
+;; A checkout without them yields an archive that no consumer can
+;; bootstrap (release-9.3.12 run 40859205315: deb, rpm, Windows and the
+;; bottle build all stopped at configure), so the brew target refuses to
+;; stage such a tree.
+(define (assert-brew-pb-boot-files! c)
+  (for ([relative-path (in-list brew-required-pb-files)])
+    (define path (build-path (cfg-racket-root c) "racket" relative-path))
+    (unless (file-exists? path)
+      (raise-user-error 'brew "~a"
+                        f"racket-root has no pb boot files (run `make pb-fetch` in the Racket checkout): missing {(clean-path-string path)}")
+    ) ; end unless pb file present
+  ) ; end for required pb files
+) ; end define assert-brew-pb-boot-files!
+
 (define (stage-brew-source! c packages)
   (begin
+    (assert-brew-pb-boot-files! c)
     (define stage-root (brew-source-stage-root c))
     (define dist-root (brew-source-dist-root c))
     (reset-managed-dir! 'stage-brew-source! stage-root)
@@ -7867,6 +7890,9 @@ information.
     (for ([relative-path (in-list (brew-required-package-files c))])
       (validate-brew-tgz-file! c relative-path)
     ) ; end for required package files
+    (for ([relative-path (in-list brew-required-pb-files)])
+      (validate-brew-tgz-file! c relative-path)
+    ) ; end for required pb boot files
     (define links-content (brew-tgz-file-content c "share/links.rktd"))
     (for ([needle (in-list (brew-required-link-needles c))])
       (unless (string-contains? links-content needle)
@@ -8840,6 +8866,7 @@ end
 
 (define (print-brew-dry-run-plan! c packages)
   (begin
+    (assert-brew-pb-boot-files! c)
     (println/flush f"Would stage brew source root: {(clean-path-string (brew-source-stage-root c))}")
     (println/flush f"Would stage brew source directory: {(clean-path-string (brew-source-dist-root c))}")
     (println/flush f"Would create brew source tgz: {(clean-path-string (brew-output-tgz c))}")
@@ -11459,7 +11486,8 @@ jobs:
 (define (validate-release-config! config)
   (for ([key (in-list '(racket-repo package-repo tap-repo deb-repo rpm-repo windows-repo
                         bottle-root-base bootstrap-formula runner
-                        push-token-secret dispatch-token-secret dispatch-event))])
+                        push-token-secret dispatch-token-secret dispatch-event
+                        pb-repo pb-commit))])
     (release-config-string config key)
   ) ; end for required keys
 ) ; end define validate-release-config!
@@ -11470,6 +11498,11 @@ jobs:
     (define bootstrap (release-config-string config 'bootstrap-formula))
     (define racket-repo (release-config-string config 'racket-repo))
     (define tap-repo (release-config-string config 'tap-repo))
+    (define pb-repo (release-config-string config 'pb-repo))
+    (define pb-commit (release-config-string config 'pb-commit))
+    (unless (regexp-match? #px"^[0-9a-f]{40}$" pb-commit)
+      (raise-user-error 'release-ci "~a" f"pb-commit must be a full 40-hex commit id: {pb-commit}")
+    ) ; end unless pb commit shape
     ;; brew-ci derives the tap name (`owner/name`) from the checkout path
     ;; `<owner>/homebrew-<name>`, so the tap is checked out under that
     ;; layout rather than a flat `tap/` directory.
@@ -11631,6 +11664,21 @@ jobs:
           ref: {needs-source-tag}
           path: racket-src
           fetch-depth: 1
+
+      # The pb boot files are not in the Racket repository (make pb-fetch
+      # clones racket/pb).  Pinned to one commit so the archive is the
+      # same bytes on every run of the same tag.
+      - name: Fetch the pb boot files
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir=racket-src/racket/src/ChezScheme/boot/pb
+          git init -q \"$dir\"
+          git -C \"$dir\" remote add origin {pb-repo}
+          git -C \"$dir\" fetch -q --depth 1 origin {pb-commit}
+          git -C \"$dir\" checkout -q FETCH_HEAD
+          test -f \"$dir/petite.boot\" && test -f \"$dir/scheme.boot\"
+          echo \"pb boot files at $(git -C \"$dir\" rev-parse HEAD)\"
 
       - name: Checkout the Homebrew tap
         uses: actions/checkout@v6
@@ -11817,6 +11865,7 @@ jobs:
                                  "--token-env PACKAGING_PUSH_TOKEN"
                                  "--http-client curl"
                                  "--rpm-release \"$RELEASE\""
+                                 "ChezScheme/boot/pb"
                                  "--create-release"
                                  "git push origin HEAD:main"))])
       (unless (string-contains? content needle)

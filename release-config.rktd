@@ -9,4 +9,6 @@
       (runner . "ubuntu-24.04")
       (push-token-secret . "PACKAGING_PUSH_TOKEN")
       (dispatch-token-secret . "PACKAGING_DISPATCH_TOKEN")
-      (dispatch-event . "racket-tag"))
+      (dispatch-event . "racket-tag")
+      (pb-repo . "https://github.com/racket/pb")
+      (pb-commit . "d8c788e335876838463fdc226a84026f61cd5c45"))

@@ -123,6 +123,21 @@ jobs:
           path: racket-src
           fetch-depth: 1
 
+      # The pb boot files are not in the Racket repository (make pb-fetch
+      # clones racket/pb).  Pinned to one commit so the archive is the
+      # same bytes on every run of the same tag.
+      - name: Fetch the pb boot files
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir=racket-src/racket/src/ChezScheme/boot/pb
+          git init -q "$dir"
+          git -C "$dir" remote add origin https://github.com/racket/pb
+          git -C "$dir" fetch -q --depth 1 origin d8c788e335876838463fdc226a84026f61cd5c45
+          git -C "$dir" checkout -q FETCH_HEAD
+          test -f "$dir/petite.boot" && test -f "$dir/scheme.boot"
+          echo "pb boot files at $(git -C "$dir" rev-parse HEAD)"
+
       - name: Checkout the Homebrew tap
         uses: actions/checkout@v6
         with:
