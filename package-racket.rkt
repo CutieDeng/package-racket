@@ -10771,7 +10771,7 @@ jobs:
                                  (set! replace-release-asset-arg #f)]
    [("--token-env") name "Read the GitHub token for release uploads from this environment variable instead of a token file (CI)"
                    (set! release-token-env-arg name)]
-   [("--release-tag") tag "Release tag for --target release-plan: vX.Y.Z, vX.Y.Z-rcN, or pkg-X.Y.Z.N"
+   [("--release-tag") tag "Release tag for --target release-plan: release-X.Y.Z, release-X.Y.Z-rcN, or pkg-X.Y.Z.N"
                      (set! release-tag-arg tag)]
    [("--release-config") path "Repositories, runner and secret names for the release workflow (default: ./release-config.rktd)"
                         (set! release-config-arg path)]
@@ -11104,9 +11104,13 @@ jobs:
 ;; ---------------------------------------------------------------------------
 ;; release-plan: derive every version-bearing config value from one tag
 ;;
-;;   vX.Y.Z        a source release: source-version X.Y.Z, release 1
-;;   vX.Y.Z-rcN    a release candidate: same values, nothing downstream
-;;   pkg-X.Y.Z.N   packaging-only: the source archive of vX.Y.Z, release N
+;;   release-X.Y.Z      a source release: source-version X.Y.Z, release 1
+;;   release-X.Y.Z-rcN  a release candidate: same values, nothing downstream
+;;   pkg-X.Y.Z.N        packaging-only: the archive of release-X.Y.Z, release N
+;;
+;; The `release-` namespace is this fork's own; upstream Racket tags are
+;; `vX.Y` / `vX.Y.Z.W`, and a `v*` trigger could catch those if they are
+;; ever pushed to the fork, so `v*` tags are rejected here.
 ;;
 ;; The release number N is what the configs call deb-release, rpm-release
 ;; and bottle-rebuild, and the last component of formula-version. The
@@ -11119,8 +11123,8 @@ jobs:
 
 (define (parse-release-tag who tag)
   (begin
-    (define m-source (regexp-match #px"^v(\\d+\\.\\d+\\.\\d+)$" tag))
-    (define m-rc (regexp-match #px"^v(\\d+\\.\\d+\\.\\d+)-rc(\\d+)$" tag))
+    (define m-source (regexp-match #px"^release-(\\d+\\.\\d+\\.\\d+)$" tag))
+    (define m-rc (regexp-match #px"^release-(\\d+\\.\\d+\\.\\d+)-rc(\\d+)$" tag))
     (define m-pkg (regexp-match #px"^pkg-(\\d+\\.\\d+\\.\\d+)\\.([1-9]\\d*)$" tag))
     (cond
       [m-source (values 'source (cadr m-source) "1")]
@@ -11128,7 +11132,7 @@ jobs:
       [m-pkg (values 'pkg (cadr m-pkg) (caddr m-pkg))]
       [else
        (raise-user-error who
-                         f"unrecognized release tag (expected vX.Y.Z, vX.Y.Z-rcN, or pkg-X.Y.Z.N): {tag}")]
+                         f"unrecognized release tag (expected release-X.Y.Z, release-X.Y.Z-rcN, or pkg-X.Y.Z.N; upstream-style v* tags are not release triggers): {tag}")]
     ) ; end cond tag shape
   ) ; end begin parse-release-tag
 ) ; end define parse-release-tag
@@ -11151,9 +11155,9 @@ jobs:
                   source
                   release
                   f"{source}.{release}"
-                  f"v{source}"
-                  f"v{source}-r{release}"
-                  f"{bottle-root-base}/v{source}"
+                  f"release-{source}"
+                  f"release-{source}-r{release}"
+                  f"{bottle-root-base}/release-{source}"
                   f"racket-minimal-{source}-src.tgz")
   ) ; end begin make-release-plan
 ) ; end define make-release-plan
@@ -11327,13 +11331,13 @@ jobs:
 ) ; end define build-release-plan!
 
 (module+ test
-  (define-values (k1 s1 r1) (parse-release-tag 'test "v9.3.12"))
+  (define-values (k1 s1 r1) (parse-release-tag 'test "release-9.3.12"))
   (check-equal? (list k1 s1 r1) '(source "9.3.12" "1"))
-  (define-values (k2 s2 r2) (parse-release-tag 'test "v9.3.12-rc3"))
+  (define-values (k2 s2 r2) (parse-release-tag 'test "release-9.3.12-rc3"))
   (check-equal? (list k2 s2 r2) '(rc "9.3.12" "1"))
   (define-values (k3 s3 r3) (parse-release-tag 'test "pkg-9.3.12.4"))
   (check-equal? (list k3 s3 r3) '(pkg "9.3.12" "4"))
-  (for ([bad (in-list '("9.3.12" "v9.3" "pkg-9.3.12.0" "v9.3.12-rc" "release-1"))])
+  (for ([bad (in-list '("9.3.12" "v9.3" "v9.3.12" "v9.3.12.1" "pkg-9.3.12.0" "release-9.3.12-rc" "release-1" "release-9.3"))])
     (check-exn exn:fail:user? (lambda () (parse-release-tag 'test bad)))
   ) ; end for bad tags
 ) ; end module+ test release-plan
@@ -11430,7 +11434,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag: vX.Y.Z (source release), vX.Y.Z-rcN (candidate, no downstream), pkg-X.Y.Z.N (packaging only)'
+        description: 'Release tag: release-X.Y.Z (source release), release-X.Y.Z-rcN (candidate, no downstream), pkg-X.Y.Z.N (packaging only)'
         required: true
         type: string
   push:
@@ -11660,7 +11664,7 @@ jobs:
 on:
   push:
     tags:
-      - 'v*'
+      - 'release-*'
 
 permissions:
   contents: read

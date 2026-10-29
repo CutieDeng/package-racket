@@ -91,3 +91,6 @@ git tag v9.3.12 && git push pri-github v9.3.12
 - 验证过：`brew` 流程从新树 staging 20/20 默认包（文档包随 `--with-docs`）；`release-plan` 对临时拷贝改写/回读/幂等；两份 workflow 经 ruby YAML 校验与内容断言。
 - **未做（需要你）**：① 建细粒度 PAT：contents:write 于 racket、homebrew-racket、deb-racket、rpm-racket、win-racket，actions:write 于 package-racket；存为 package-racket 仓 secret `PACKAGING_PUSH_TOKEN`，racket 仓 secret `PACKAGING_DISPATCH_TOKEN`（可同一枚）。② 推送 package-racket main、racket v9.3-dev（force）。③ 验收序列：`v9.3.12-rc1` → `v9.3.12` → 重跑 → `pkg-9.3.12.2`。
 - 已知限制：CI 的源码包由 GNU tar 产出，与本机 bsdtar 的字节可能不同（各自确定性）；首次 rc 跑前无法在本地验证 `Homebrew/actions/setup-homebrew` 容器内 `brew install racket@9` 的耗时。
+
+## 6. tag 命名空间（2026-10-29 改）
+`v*` 可能撞上游（上游 racket 用 `vX.Y`、`vX.Y.Z.W`，fork 里也带着这些 tag；一旦 `git push --tags` 就会误触发）。改为 fork 专用前缀：源码发布 `release-X.Y.Z`、候选 `release-X.Y.Z-rcN`、打包改版 `pkg-X.Y.Z.N`（package-racket 仓）。`release-plan` 明确拒绝 `v*`；notify 只监听 `release-*`；GitHub release、源码包 URL、bottle 根 URL、deb/rpm/win 的 release tag 全部用 `release-X.Y.Z`（rpm 为 `release-X.Y.Z-rN`）。旧的 v9.3.5 等 release 原样保留，旧 Formula/脚手架继续指向旧 URL。

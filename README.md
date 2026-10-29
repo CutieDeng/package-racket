@@ -4,9 +4,11 @@ Packaging helper for a local Racket checkout. The command supports named
 packaging flows:
 
 - `release-plan`: derives every version-bearing config value from one
-  release tag (`--release-tag vX.Y.Z` for a source release, `vX.Y.Z-rcN`
-  for a candidate, `pkg-X.Y.Z.N` for a packaging-only release N of the same
-  source) and rewrites `package-config.rktd` and the release, deb, rpm,
+  release tag (`--release-tag release-X.Y.Z` for a source release,
+  `release-X.Y.Z-rcN` for a candidate, `pkg-X.Y.Z.N` for a packaging-only
+  release N of the same source; the `release-` namespace is this fork's own,
+  upstream-style `v*` tags are rejected so that an upstream tag pushed to the
+  fork can never start a release) and rewrites `package-config.rktd` and the release, deb, rpm,
   windows and brew CI configs in place, keeping their formatting and reading
   them back to check. `--release-plan-out` writes the plan as one Racket hash
   for a workflow to read. The release number N is deb-release, rpm-release,
@@ -16,7 +18,7 @@ packaging flows:
   regenerate and push the tap, deb-racket, rpm-racket and win-racket
   repositories, whose own workflows then build the packages) and
   `.github/workflows/notify-packaging.yml` for the Racket repository named by
-  `--notify-root` (a `v*` tag push sends a `repository_dispatch` here).
+  `--notify-root` (a `release-*` tag push sends a `repository_dispatch` here).
   Repositories, runner, bootstrap formula and secret names come from
   `release-config.rktd`. A release candidate tag runs only the source part and
   marks the GitHub release as a prerelease.

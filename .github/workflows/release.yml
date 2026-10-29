@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag: vX.Y.Z (source release), vX.Y.Z-rcN (candidate, no downstream), pkg-X.Y.Z.N (packaging only)'
+        description: 'Release tag: release-X.Y.Z (source release), release-X.Y.Z-rcN (candidate, no downstream), pkg-X.Y.Z.N (packaging only)'
         required: true
         type: string
   push:

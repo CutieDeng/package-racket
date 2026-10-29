@@ -430,12 +430,12 @@ actual output:
     (with-temp-dir
       (lambda (dir)
         (define-values (out err)
-          (run-package/success (list "--target" "release-plan" "--release-tag" "v9.4.7" "--dry-run"
+          (run-package/success (list "--target" "release-plan" "--release-tag" "release-9.4.7" "--dry-run"
                                      "--artifact-dir" (path-arg (build-path dir "art")))))
         (define text (combined-output out err))
-        (check-contains text "Release tag: v9.4.7 (source)")
+        (check-contains text "Release tag: release-9.4.7 (source)")
         (check-contains text "Release formula version: 9.4.7.1")
-        (check-contains text "Release RPM tag: v9.4.7-r1")
+        (check-contains text "Release RPM tag: release-9.4.7-r1")
         (check-contains text "Would rewrite")
         (check-not-contains text "Rewrote"))))
 
@@ -467,7 +467,7 @@ actual output:
     (check-equal? (hash-ref (read-config (build-path dir "deb-repo-config.rktd")) 'deb-release) "3")
     (for ([target (in-list (hash-ref (read-config (build-path dir "deb-ci-config.rktd")) 'targets))])
       (check-equal? (hash-ref target 'deb-release) "3"))
-    (check-equal? (hash-ref (read-config (build-path dir "rpm-ci-config.rktd")) 'release-tag) "v9.4.7-r3")
+    (check-equal? (hash-ref (read-config (build-path dir "rpm-ci-config.rktd")) 'release-tag) "release-9.4.7-r3")
     (check-equal? (hash-ref (read-config (build-path dir "windows-ci-config.rktd")) 'release-name)
                   "Racket 9.4.7 Windows portable")
     (check-equal? (hash-ref (read-config (build-path dir "brew-ci-config.rktd")) 'bottle-rebuild) 3)
@@ -476,11 +476,11 @@ actual output:
       (run-package/success (append (list "--target" "release-plan" "--release-tag" "pkg-9.4.7.3") common)))
     (check-not-contains (combined-output out2 err2) "Rewrote"))))
 
-  (test-case "release-plan rejects a tag without the v prefix"
+  (test-case "release-plan rejects an upstream-style v tag"
     (with-temp-dir
       (lambda (dir)
         (define-values (exit-code out err)
-          (run-package (list "--target" "release-plan" "--release-tag" "9.4.7"
+          (run-package (list "--target" "release-plan" "--release-tag" "v9.4.7"
                              "--artifact-dir" (path-arg (build-path dir "art")))))
         (check-not-equal? exit-code 0)
         (check-contains (combined-output out err) "unrecognized release tag"))))
@@ -557,8 +557,9 @@ actual output:
     (define rpm-ci-config (read-config (build-path package-root "rpm-ci-config.rktd")))
     (for ([target (in-list (hash-ref rpm-ci-config 'targets))])
       (check-equal? (hash-ref target 'rpm-release) expected-release))
+    (define source-release-config (read-config (build-path package-root "source-release-config.rktd")))
     (check-equal? (hash-ref rpm-ci-config 'release-tag)
-                  (string-append "v" source-version "-r" expected-release))
+                  (string-append (hash-ref source-release-config 'source-release-tag) "-r" expected-release))
 
     (define brew-ci-config (read-config (build-path package-root "brew-ci-config.rktd")))
     (check-equal? (hash-ref brew-ci-config 'bottle-rebuild) (string->number expected-release))
