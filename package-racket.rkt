@@ -4303,7 +4303,10 @@ permissions:
 
 concurrency:
   group: rpm-build-and-release-{github-ref}
-  cancel-in-progress: false
+  # a newer push supersedes a run still building the previous state;
+  # without this a job hung in dependency installation blocks every
+  # later release (release-9.3.13 and 9.3.14 queued behind one for hours)
+  cancel-in-progress: true
 
 jobs:
   build-rpm:
@@ -4884,7 +4887,7 @@ jobs:
                                  "Deleting stale release asset"
                                  "Immutable release tag"
                                  "--target \"$BUILD_SHA\""
-                                 "cancel-in-progress: false"
+                                 "cancel-in-progress: true"
                                  "primary metadata lacks Release base URL"
                                  "Pages repository must contain metadata only"
                                  "diff -u \"$expected_assets\" \"$actual_assets\""
