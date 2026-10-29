@@ -1,5 +1,5 @@
-#hash((release-tag . "release-9.3.12")
-      (release-name . "Racket 9.3.12 DEB packages")
+#hash((release-tag . "release-9.3.13")
+      (release-name . "Racket 9.3.13 DEB packages")
       (artifact-prefix . "deb")
       (create-release . #t)
       (targets . (#hash((id . "debian12-amd64")
