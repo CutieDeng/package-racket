@@ -37,16 +37,17 @@ jobs:
       bottle_root_url: ${{ steps.plan.outputs.bottle_root_url }}
       formula_version: ${{ steps.plan.outputs.formula_version }}
     steps:
-      - name: Set up Homebrew
-        uses: Homebrew/actions/setup-homebrew@main
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
+      # checkouts come before setup-homebrew: that action configures a
+      # global git credential header, and a checkout after it sends two
+      # Authorization headers, which GitHub rejects (HTTP 400)
       - name: Checkout package-racket
         uses: actions/checkout@v6
         with:
           ref: main
           path: package-racket
+
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@main
 
       - name: Resolve the release tag
         id: tag
@@ -82,6 +83,7 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
+          git config --global --unset-all http.https://github.com/.extraheader || true
           git config user.name "package-racket release"
           git config user.email "package-racket@users.noreply.github.com"
           git add -- '*.rktd'
@@ -107,11 +109,6 @@ jobs:
       BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle_root_url }}
       FORMULA_VERSION: ${{ needs.plan.outputs.formula_version }}
     steps:
-      - name: Set up Homebrew
-        uses: Homebrew/actions/setup-homebrew@main
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Checkout package-racket
         uses: actions/checkout@v6
         with:
@@ -153,6 +150,9 @@ jobs:
           repository: CutieDeng/win-racket
           path: win-racket
           token: ${{ secrets.PACKAGING_PUSH_TOKEN }}
+
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@main
 
       - name: Install Racket and ruby
         shell: bash
@@ -200,6 +200,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git config --global --unset-all http.https://github.com/.extraheader || true
           git config --global user.name "package-racket release"
           git config --global user.email "package-racket@users.noreply.github.com"
           for dir in tap deb-racket rpm-racket win-racket; do

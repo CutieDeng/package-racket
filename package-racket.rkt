@@ -11402,7 +11402,6 @@ jobs:
     (define dispatch-event (release-config-string config 'dispatch-event))
     ;; GitHub expressions are kept out of the template text so that the
     ;; braces are never read as interpolation
-    (define gh-token "${{ secrets.GITHUB_TOKEN }}")
     (define push-token f"${{{{ secrets.{push-secret} }}}}")
     (define payload-tag "${{ github.event.client_payload.tag }}")
     (define input-tag "${{ inputs.tag }}")
@@ -11461,16 +11460,17 @@ jobs:
       bottle_root_url: {out-bottle}
       formula_version: {out-formula}
     steps:
-      - name: Set up Homebrew
-        uses: Homebrew/actions/setup-homebrew@main
-        with:
-          token: {gh-token}
-
+      # checkouts come before setup-homebrew: that action configures a
+      # global git credential header, and a checkout after it sends two
+      # Authorization headers, which GitHub rejects (HTTP 400)
       - name: Checkout package-racket
         uses: actions/checkout@v6
         with:
           ref: main
           path: package-racket
+
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@main
 
       - name: Resolve the release tag
         id: tag
@@ -11506,6 +11506,7 @@ jobs:
           TAG: {steps-tag}
         run: |
           set -euo pipefail
+          git config --global --unset-all http.https://github.com/.extraheader || true
           git config user.name \"package-racket release\"
           git config user.email \"package-racket@users.noreply.github.com\"
           git add -- '*.rktd'
@@ -11531,11 +11532,6 @@ jobs:
       BOTTLE_ROOT_URL: {needs-bottle}
       FORMULA_VERSION: {needs-formula}
     steps:
-      - name: Set up Homebrew
-        uses: Homebrew/actions/setup-homebrew@main
-        with:
-          token: {gh-token}
-
       - name: Checkout package-racket
         uses: actions/checkout@v6
         with:
@@ -11577,6 +11573,9 @@ jobs:
           repository: {windows-repo}
           path: win-racket
           token: {push-token}
+
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@main
 
       - name: Install Racket and ruby
         shell: bash
@@ -11624,6 +11623,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git config --global --unset-all http.https://github.com/.extraheader || true
           git config --global user.name \"package-racket release\"
           git config --global user.email \"package-racket@users.noreply.github.com\"
           for dir in tap deb-racket rpm-racket win-racket; do
