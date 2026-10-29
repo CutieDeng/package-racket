@@ -34,6 +34,7 @@ jobs:
       source_release_tag: ${{ steps.plan.outputs.source_release_tag }}
       bottle_root_url: ${{ steps.plan.outputs.bottle_root_url }}
       formula_version: ${{ steps.plan.outputs.formula_version }}
+      release: ${{ steps.plan.outputs.release }}
     steps:
       # Plain runner with Linuxbrew: inside the ghcr.io/homebrew/brew
       # container the runner's temp directory is root-owned, so a checkout
@@ -106,6 +107,7 @@ jobs:
       SOURCE_TAG: ${{ needs.plan.outputs.source_release_tag }}
       BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle_root_url }}
       FORMULA_VERSION: ${{ needs.plan.outputs.formula_version }}
+      RELEASE: ${{ needs.plan.outputs.release }}
     steps:
       - name: Checkout package-racket
         uses: actions/checkout@v6
@@ -125,7 +127,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: CutieDeng/homebrew-racket
-          path: tap
+          path: cutiedeng/homebrew-racket
           token: ${{ secrets.PACKAGING_PUSH_TOKEN }}
 
       - name: Checkout deb-racket
@@ -178,7 +180,7 @@ jobs:
           racket package-racket.rkt $targets $prerelease \
             --formula-build-mode full \
             --racket-root ../racket-src \
-            --homebrew-tap ../tap \
+            --homebrew-tap ../cutiedeng/homebrew-racket \
             --bottle-root-url "$BOTTLE_ROOT_URL" \
             --artifact-dir artifacts \
             --token-env PACKAGING_PUSH_TOKEN \
@@ -192,13 +194,20 @@ jobs:
         working-directory: package-racket
         run: |
           set -euo pipefail
+          # rpm-spec validates the scaffold against one representative
+          # system/arch; the per-system matrix itself comes from
+          # rpm-ci-config.rktd, whose rpm-release the plan already rewrote.
           racket package-racket.rkt \
             --target brew-ci --target deb-spec --target deb-ci --target rpm-spec --target rpm-ci --target windows-portable-ci \
+            --prefix /usr \
             --racket-root ../racket-src \
-            --homebrew-tap ../tap \
+            --homebrew-tap ../cutiedeng/homebrew-racket \
             --bottle-root-url "$BOTTLE_ROOT_URL" \
             --deb-repo-root ../deb-racket \
             --rpm-repo-root ../rpm-racket \
+            --rpm-system el9 \
+            --rpm-release "$RELEASE" \
+            --rpm-arch x86_64 \
             --windows-repo-root ../win-racket \
             --artifact-dir artifacts
 
@@ -210,7 +219,7 @@ jobs:
           git config --global --unset-all http.https://github.com/.extraheader || true
           git config --global user.name "package-racket release"
           git config --global user.email "package-racket@users.noreply.github.com"
-          for dir in tap deb-racket rpm-racket win-racket; do
+          for dir in cutiedeng/homebrew-racket deb-racket rpm-racket win-racket; do
             git -C "$dir" add -A
             if git -C "$dir" diff --cached --quiet; then
               echo "$dir: no changes"
@@ -229,5 +238,5 @@ jobs:
           name: release-${{ needs.plan.outputs.tag }}
           path: |
             package-racket/artifacts/*
-            tap/Formula/*.rb
+            cutiedeng/homebrew-racket/Formula/*.rb
           if-no-files-found: error

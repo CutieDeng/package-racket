@@ -11470,6 +11470,15 @@ jobs:
     (define bootstrap (release-config-string config 'bootstrap-formula))
     (define racket-repo (release-config-string config 'racket-repo))
     (define tap-repo (release-config-string config 'tap-repo))
+    ;; brew-ci derives the tap name (`owner/name`) from the checkout path
+    ;; `<owner>/homebrew-<name>`, so the tap is checked out under that
+    ;; layout rather than a flat `tap/` directory.
+    (define tap-path
+      (match (string-split tap-repo "/")
+        [(list owner repo) f"{(string-downcase owner)}/{repo}"]
+        [_ (raise-user-error 'release-ci "~a" f"tap-repo must be owner/repo: {tap-repo}")]
+      ) ; end match tap repo
+    ) ; end define tap-path
     (define deb-repo (release-config-string config 'deb-repo))
     (define rpm-repo (release-config-string config 'rpm-repo))
     (define windows-repo (release-config-string config 'windows-repo))
@@ -11486,11 +11495,13 @@ jobs:
     (define out-source-tag "${{ steps.plan.outputs.source_release_tag }}")
     (define out-bottle "${{ steps.plan.outputs.bottle_root_url }}")
     (define out-formula "${{ steps.plan.outputs.formula_version }}")
+    (define out-release "${{ steps.plan.outputs.release }}")
     (define needs-tag "${{ needs.plan.outputs.tag }}")
     (define needs-kind "${{ needs.plan.outputs.kind }}")
     (define needs-source-tag "${{ needs.plan.outputs.source_release_tag }}")
     (define needs-bottle "${{ needs.plan.outputs.bottle_root_url }}")
     (define needs-formula "${{ needs.plan.outputs.formula_version }}")
+    (define needs-release "${{ needs.plan.outputs.release }}")
     (define plan-not-rc "steps.plan.outputs.kind != 'rc'")
     (define kind-not-rc "needs.plan.outputs.kind != 'rc'")
     (define export-plan
@@ -11532,6 +11543,7 @@ jobs:
       source_release_tag: {out-source-tag}
       bottle_root_url: {out-bottle}
       formula_version: {out-formula}
+      release: {out-release}
     steps:
       # Plain runner with Linuxbrew: inside the ghcr.io/homebrew/brew
       # container the runner's temp directory is root-owned, so a checkout
@@ -11604,6 +11616,7 @@ jobs:
       SOURCE_TAG: {needs-source-tag}
       BOTTLE_ROOT_URL: {needs-bottle}
       FORMULA_VERSION: {needs-formula}
+      RELEASE: {needs-release}
     steps:
       - name: Checkout package-racket
         uses: actions/checkout@v6
@@ -11623,7 +11636,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: {tap-repo}
-          path: tap
+          path: {tap-path}
           token: {push-token}
 
       - name: Checkout deb-racket
@@ -11676,7 +11689,7 @@ jobs:
           racket package-racket.rkt $targets $prerelease \\
             --formula-build-mode full \\
             --racket-root ../racket-src \\
-            --homebrew-tap ../tap \\
+            --homebrew-tap ../{tap-path} \\
             --bottle-root-url \"$BOTTLE_ROOT_URL\" \\
             --artifact-dir artifacts \\
             --token-env PACKAGING_PUSH_TOKEN \\
@@ -11690,13 +11703,20 @@ jobs:
         working-directory: package-racket
         run: |
           set -euo pipefail
+          # rpm-spec validates the scaffold against one representative
+          # system/arch; the per-system matrix itself comes from
+          # rpm-ci-config.rktd, whose rpm-release the plan already rewrote.
           racket package-racket.rkt \\
             --target brew-ci --target deb-spec --target deb-ci --target rpm-spec --target rpm-ci --target windows-portable-ci \\
+            --prefix /usr \\
             --racket-root ../racket-src \\
-            --homebrew-tap ../tap \\
+            --homebrew-tap ../{tap-path} \\
             --bottle-root-url \"$BOTTLE_ROOT_URL\" \\
             --deb-repo-root ../deb-racket \\
             --rpm-repo-root ../rpm-racket \\
+            --rpm-system el9 \\
+            --rpm-release \"$RELEASE\" \\
+            --rpm-arch x86_64 \\
             --windows-repo-root ../win-racket \\
             --artifact-dir artifacts
 
@@ -11708,7 +11728,7 @@ jobs:
           git config --global --unset-all http.https://github.com/.extraheader || true
           git config --global user.name \"package-racket release\"
           git config --global user.email \"package-racket@users.noreply.github.com\"
-          for dir in tap deb-racket rpm-racket win-racket; do
+          for dir in {tap-path} deb-racket rpm-racket win-racket; do
             git -C \"$dir\" add -A
             if git -C \"$dir\" diff --cached --quiet; then
               echo \"$dir: no changes\"
@@ -11727,7 +11747,7 @@ jobs:
           name: release-{needs-tag}
           path: |
             package-racket/artifacts/*
-            tap/Formula/*.rb
+            {tap-path}/Formula/*.rb
           if-no-files-found: error
 "
   ) ; end begin release-ci-workflow-content
@@ -11796,6 +11816,7 @@ jobs:
                                  "--target source-release"
                                  "--token-env PACKAGING_PUSH_TOKEN"
                                  "--http-client curl"
+                                 "--rpm-release \"$RELEASE\""
                                  "--create-release"
                                  "git push origin HEAD:main"))])
       (unless (string-contains? content needle)

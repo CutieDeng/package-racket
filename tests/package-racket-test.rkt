@@ -372,22 +372,63 @@ stderr:
   ) ; end begin make-fake-deb!
 ) ; end define make-fake-deb!
 
-(define (run-package args)
+;; The repository's own package-config.rktd and source-release-config.rktd
+;; are rewritten by the release workflow on every release, so tests never
+;; read them: unless a test passes its own, run-package supplies fixtures
+;; pinned to the 9.3.5 era that the fake racket root and the expected
+;; strings below describe.
+(define fixture-source-version "9.3.5")
+(define fixture-formula-version "9.3.5.2")
+(define fixture-source-release-tag "v9.3.5")
+
+(define (write-fixture-configs! dir)
   (begin
-    (define out (open-output-string))
-    (define err (open-output-string))
-    (define exit-code
-      (parameterize ([current-output-port out]
-                     [current-error-port err]
-                     [current-input-port (open-input-string "")]
-                     [current-directory package-root])
-        (apply system*/exit-code
-               racket-bin
-               (cons (path-arg package-script) args))
-      ) ; end parameterize package run
-    ) ; end define exit-code
-    (values exit-code (get-output-string out) (get-output-string err))
-  ) ; end begin run-package
+    (write-text!
+     (build-path dir "package-config.rktd")
+     f"#hash((source-version . \"{fixture-source-version}\")
+      (formula-version . \"{fixture-formula-version}\"))
+")
+    (write-text!
+     (build-path dir "source-release-config.rktd")
+     f"#hash((source-release-repo . \"CutieDeng/racket\")
+      (source-release-tag . \"{fixture-source-release-tag}\")
+      (source-release-token-file . \"missing-token.rktd\")
+      (replace-release-asset . #t))
+")
+  ) ; end begin write-fixture-configs!
+) ; end define write-fixture-configs!
+
+(define (with-fixture-config-args args proc)
+  (with-temp-dir
+   (lambda (dir)
+     (write-fixture-configs! dir)
+     (define (supplied? option) (member option args))
+     (proc (append (if (supplied? "--package-config")
+                       '()
+                       (list "--package-config" (path-arg (build-path dir "package-config.rktd"))))
+                   (if (supplied? "--source-release-config")
+                       '()
+                       (list "--source-release-config" (path-arg (build-path dir "source-release-config.rktd"))))
+                   args)))))
+
+(define (run-package args)
+  (with-fixture-config-args
+   args
+   (lambda (full-args)
+     (define out (open-output-string))
+     (define err (open-output-string))
+     (define exit-code
+       (parameterize ([current-output-port out]
+                      [current-error-port err]
+                      [current-input-port (open-input-string "")]
+                      [current-directory package-root])
+         (apply system*/exit-code
+                racket-bin
+                (cons (path-arg package-script) full-args))
+       ) ; end parameterize package run
+     ) ; end define exit-code
+     (values exit-code (get-output-string out) (get-output-string err)))
+  ) ; end with-fixture-config-args
 ) ; end define run-package
 
 (define (run-package/success args)
