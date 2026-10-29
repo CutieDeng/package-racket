@@ -1815,7 +1815,7 @@ Priority: optional
 Architecture: $NORMALIZED_ARCH
 Maintainer: $PACKAGE_MAINTAINER
 Homepage: $PACKAGE_HOMEPAGE
-Conflicts: $LEGACY_CACHED_PACKAGE_NAME
+Conflicts: $LEGACY_CACHED_PACKAGE_NAME, racket, racket-common
 Replaces: $LEGACY_CACHED_PACKAGE_NAME
 Provides: $LEGACY_CACHED_PACKAGE_NAME (= $DEB_VERSION)
 CONTROL
@@ -2103,7 +2103,7 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
 	                                      "raco setup --system --no-user --reset-cache -D --no-pkg-deps --no-launcher"
 	                                      "$DEBIAN_DIR/prerm"
 	                                      "raco setup --system --delete-cache"
-	                                      "Conflicts: $LEGACY_CACHED_PACKAGE_NAME"
+	                                      "Conflicts: $LEGACY_CACHED_PACKAGE_NAME, racket, racket-common"
 	                                      "Replaces: $LEGACY_CACHED_PACKAGE_NAME"
 	                                      "Provides: $LEGACY_CACHED_PACKAGE_NAME (= $DEB_VERSION)"
 	                                      "$DEBIAN_DIR/postrm"
@@ -2268,6 +2268,14 @@ BuildRequires: perl
 BuildRequires: sqlite-devel
 BuildRequires: zlib-devel
 Requires: libedit
+# The distribution's own Racket packages install under the same
+# /usr/share/racket tree; declare the conflict so that dnf reports it
+# instead of a file-level clash (Fedora 41: racket-8.15 racket-minimal
+# racket-collects racket-pkgs).
+Conflicts: racket
+Conflicts: racket-minimal
+Conflicts: racket-collects
+Conflicts: racket-pkgs
 Provides: {(rpm-cache-mode-capability c cache-mode)} = %{{version}}-%{{release}}
 # Bounded migration from the previously published split-name cached package.
 Obsoletes: {(cached-package-name (cfg-package-name c))} < %{{version}}-%{{package_release}}
@@ -2592,8 +2600,12 @@ exit 0
       (raise-user-error 'validate-rpm-spec!
                         "generated RPM spec must not claim the shared /usr directory")
     ) ; end when owns /usr
+    ;; a conflict with our own names would break the cache-mode
+    ;; migration; conflicts with the distribution's racket packages are
+    ;; intended
     (for ([forbidden (in-list (list "AutoReqProv: no"
-                                    "Conflicts:"
+                                    f"Conflicts: {(cfg-package-name c)}"
+                                    f"Conflicts: {(cached-package-name (cfg-package-name c))}"
                                     f"Provides: {(cached-package-name (cfg-package-name c))}"
                                     "%preun"
                                     "other_package="
