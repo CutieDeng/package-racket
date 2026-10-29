@@ -145,3 +145,17 @@ run 13 结果（已验证）：
 遗留：
 - 9.3.12 的 release/deb/bottle 保留；win 无 9.3.12 产物；rpm 9.3.12/9.3.13 待队列。
 - 建议：deb/rpm/win 生成的工作流 concurrency 改 `cancel-in-progress: true`（新推送取代旧构建）；`pkg-X.Y.Z.N` 路径未试；rc1 预发布的旧归档（无 pb）未替换。
+
+## 10. `release-9.3.14` 与 `pkg-9.3.14.{2,3}`（2026-10-29）
+
+- 9.3.13 的 rpm postinstall 变体在 `check-buildroot` 失败：`share/startup.pack` v4 记录构建时绝对路径。racket 侧 0abc291856 改为 v5 相对路径（根：collects / pkgs-dir / 绝对兜底），260d66aa6f 抬 9.3.14，`release-9.3.14`（run 40883953321）一次通过；tap/deb/win 成功，rpm 仍被 9.3.13 卡住的 run 堵住。
+- dac42b9：rpm 工作流 `cancel-in-progress: true`；**pkg 路径首次实跑** `pkg-9.3.14.2`（package-racket tag，run 40893685026）：formula 9.3.14.2、deb/rpm release 2、不做源码 release、四仓再生推送；新 rpm run 自动取消了卡住的两次旧 run。rpm 这轮 `check-buildroot` 过，但 postinstall 变体在冒烟测试 `rpm -V` 报 `S.5....T. /usr/share/racket/startup.pack`：`%posttrans` 的 `raco setup` 在缓存根配置下把包重写成 0 成员。
+- edc92aa：spec 清单对 `startup.pack` 加 `%verify(not size md5 mtime)`；`pkg-9.3.14.3`（run 40898017518）：deb ✓ win ✓；rpm fedora 全部 postinstall/cached ✓（openEuler/el9 尾部仍在 dnf 依赖安装阶段慢）；tap 的 macos-26 job 因 `brew audit --online` 碰到 racket-lang.org HTTP 520 失败一次（bottle 本身构建测试均过），空提交 0c04e1b 重跑后 bottle rebuild 3 三平台发布。
+- 终态资产：tap `release-9.3.14` 9 个 bottle（.1/.2/.3 × 3 平台，formula 指 .3）；deb 36 个 .deb（release 1/2/3）；win 24 件；racket `release-9.3.14` 源码包 `44cef938…`。
+
+发现与待办：
+- **启动包在缓存根布局下从未启用**（deb 容器实测：`compiled-file-roots` 含 `/var/cache/racket/compiled`，读端门禁要求 `(same)`）；且 `%posttrans`/postinst 的 setup 会写出 0 成员的包。属启动包工程后续：缓存根下的写端解析与读端放宽。
+- `brew audit --online` 对外部站点可达性敏感；tap 工作流可考虑去掉 `--online` 或允许重试。
+- deb/win 工作流无 concurrency 组（并行 run 可能同时写同一 release）；可按 rpm 的方式加组 + cancel-in-progress。
+- 9.3.12（无 Windows 产物）、9.3.13（无 rpm postinstall）两个 release 保留原样；rc1 预发布仍是旧无 pb 归档。
+- PAT 对下游仓无 actions:write：卡住的 run 只能靠新推送的 cancel-in-progress 或网页取消。
