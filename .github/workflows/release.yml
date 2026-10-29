@@ -63,7 +63,14 @@ jobs:
 
       - name: Install Racket
         shell: bash
-        run: brew install cutiedeng/racket/racket@9
+        run: |
+          set -euo pipefail
+          brew tap cutiedeng/racket https://github.com/CutieDeng/homebrew-racket
+          repo="$(brew --repo cutiedeng/racket)"
+          git -C "$repo" fetch -q origin 97c47c5f565354735944c3d700f9fc4fa8e2c7bf
+          git -C "$repo" checkout -q 97c47c5f565354735944c3d700f9fc4fa8e2c7bf
+          echo "bootstrap tap at $(git -C "$repo" rev-parse HEAD)"
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install cutiedeng/racket/racket@9
 
       - name: Plan the release
         id: plan
@@ -171,7 +178,14 @@ jobs:
 
       - name: Install Racket and ruby
         shell: bash
-        run: brew install cutiedeng/racket/racket@9 ruby
+        run: |
+          set -euo pipefail
+          brew tap cutiedeng/racket https://github.com/CutieDeng/homebrew-racket
+          repo="$(brew --repo cutiedeng/racket)"
+          git -C "$repo" fetch -q origin 97c47c5f565354735944c3d700f9fc4fa8e2c7bf
+          git -C "$repo" checkout -q 97c47c5f565354735944c3d700f9fc4fa8e2c7bf
+          echo "bootstrap tap at $(git -C "$repo" rev-parse HEAD)"
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install cutiedeng/racket/racket@9 ruby
 
       - name: Apply the release plan to this checkout
         shell: bash

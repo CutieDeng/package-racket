@@ -11,4 +11,5 @@
       (dispatch-token-secret . "PACKAGING_DISPATCH_TOKEN")
       (dispatch-event . "racket-tag")
       (pb-repo . "https://github.com/racket/pb")
-      (pb-commit . "d8c788e335876838463fdc226a84026f61cd5c45"))
+      (pb-commit . "d8c788e335876838463fdc226a84026f61cd5c45")
+      (bootstrap-tap-commit . "97c47c5f565354735944c3d700f9fc4fa8e2c7bf"))

@@ -11487,7 +11487,7 @@ jobs:
   (for ([key (in-list '(racket-repo package-repo tap-repo deb-repo rpm-repo windows-repo
                         bottle-root-base bootstrap-formula runner
                         push-token-secret dispatch-token-secret dispatch-event
-                        pb-repo pb-commit))])
+                        pb-repo pb-commit bootstrap-tap-commit))])
     (release-config-string config key)
   ) ; end for required keys
 ) ; end define validate-release-config!
@@ -11498,6 +11498,10 @@ jobs:
     (define bootstrap (release-config-string config 'bootstrap-formula))
     (define racket-repo (release-config-string config 'racket-repo))
     (define tap-repo (release-config-string config 'tap-repo))
+    (define bootstrap-tap-commit (release-config-string config 'bootstrap-tap-commit))
+    (unless (regexp-match? #px"^[0-9a-f]{40}$" bootstrap-tap-commit)
+      (raise-user-error 'release-ci "~a" f"bootstrap-tap-commit must be a full 40-hex commit id: {bootstrap-tap-commit}")
+    ) ; end unless bootstrap tap commit shape
     (define pb-repo (release-config-string config 'pb-repo))
     (define pb-commit (release-config-string config 'pb-commit))
     (unless (regexp-match? #px"^[0-9a-f]{40}$" pb-commit)
@@ -11512,6 +11516,26 @@ jobs:
         [_ (raise-user-error 'release-ci "~a" f"tap-repo must be owner/repo: {tap-repo}")]
       ) ; end match tap repo
     ) ; end define tap-path
+    ;; `brew tap` name: owner lower-cased, `homebrew-` prefix dropped
+    (define tap-short
+      (match (string-split tap-repo "/")
+        [(list owner repo)
+         f"{(string-downcase owner)}/{(if (string-prefix? repo "homebrew-") (substring repo 9) repo)}"]
+      ) ; end match tap short name
+    ) ; end define tap-short
+    ;; Bootstrap Racket from the tap at a pinned commit: the tap head is
+    ;; rewritten by this very workflow, and a head whose formula has no
+    ;; bottle yet (or points at a broken archive, as release-9.3.12 did)
+    ;; would make the bootstrap build from source or fail outright.
+    (define install-bootstrap
+      (string-append
+       "set -euo pipefail\n"
+       f"          brew tap {tap-short} https://github.com/{tap-repo}\n"
+       f"          repo=\"$(brew --repo {tap-short})\"\n"
+       f"          git -C \"$repo\" fetch -q origin {bootstrap-tap-commit}\n"
+       f"          git -C \"$repo\" checkout -q {bootstrap-tap-commit}\n"
+       f"          echo \"bootstrap tap at $(git -C \"$repo\" rev-parse HEAD)\"\n"
+       f"          HOMEBREW_NO_AUTO_UPDATE=1 brew install {bootstrap}"))
     (define deb-repo (release-config-string config 'deb-repo))
     (define rpm-repo (release-config-string config 'rpm-repo))
     (define windows-repo (release-config-string config 'windows-repo))
@@ -11605,7 +11629,8 @@ jobs:
 
       - name: Install Racket
         shell: bash
-        run: brew install {bootstrap}
+        run: |
+          {install-bootstrap}
 
       - name: Plan the release
         id: plan
@@ -11713,7 +11738,8 @@ jobs:
 
       - name: Install Racket and ruby
         shell: bash
-        run: brew install {bootstrap} ruby
+        run: |
+          {install-bootstrap} ruby
 
       - name: Apply the release plan to this checkout
         shell: bash
@@ -11866,6 +11892,7 @@ jobs:
                                  "--http-client curl"
                                  "--rpm-release \"$RELEASE\""
                                  "ChezScheme/boot/pb"
+                                 "HOMEBREW_NO_AUTO_UPDATE=1 brew install"
                                  "--create-release"
                                  "git push origin HEAD:main"))])
       (unless (string-contains? content needle)
