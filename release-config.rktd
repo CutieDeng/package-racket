@@ -7,7 +7,6 @@
       (bottle-root-base . "https://github.com/CutieDeng/homebrew-racket/releases/download")
       (bootstrap-formula . "cutiedeng/racket/racket@9")
       (runner . "ubuntu-24.04")
-      (container . "ghcr.io/homebrew/brew:main")
       (push-token-secret . "PACKAGING_PUSH_TOKEN")
       (dispatch-token-secret . "PACKAGING_DISPATCH_TOKEN")
       (dispatch-event . "racket-tag"))

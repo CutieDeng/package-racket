@@ -11382,7 +11382,7 @@ jobs:
 
 (define (validate-release-config! config)
   (for ([key (in-list '(racket-repo package-repo tap-repo deb-repo rpm-repo windows-repo
-                        bottle-root-base bootstrap-formula runner container
+                        bottle-root-base bootstrap-formula runner
                         push-token-secret dispatch-token-secret dispatch-event))])
     (release-config-string config key)
   ) ; end for required keys
@@ -11391,7 +11391,6 @@ jobs:
 (define (release-ci-workflow-content c config)
   (begin
     (define runner (release-config-string config 'runner))
-    (define container (release-config-string config 'container))
     (define bootstrap (release-config-string config 'bootstrap-formula))
     (define racket-repo (release-config-string config 'racket-repo))
     (define tap-repo (release-config-string config 'tap-repo))
@@ -11451,8 +11450,6 @@ jobs:
   plan:
     name: plan
     runs-on: {runner}
-    container:
-      image: {container}
     outputs:
       tag: {out-tag}
       kind: {out-kind}
@@ -11460,9 +11457,11 @@ jobs:
       bottle_root_url: {out-bottle}
       formula_version: {out-formula}
     steps:
-      # checkouts come before setup-homebrew: that action configures a
-      # global git credential header, and a checkout after it sends two
-      # Authorization headers, which GitHub rejects (HTTP 400)
+      # Plain runner with Linuxbrew: inside the ghcr.io/homebrew/brew
+      # container the runner's temp directory is root-owned, so a checkout
+      # before setup-homebrew cannot write its state, while a checkout after
+      # it sends two Authorization headers (setup-homebrew's global git
+      # credential header plus its own) and GitHub answers HTTP 400.
       - name: Checkout package-racket
         uses: actions/checkout@v6
         with:
@@ -11523,8 +11522,6 @@ jobs:
     name: release
     needs: plan
     runs-on: {runner}
-    container:
-      image: {container}
     env:
       TAG: {needs-tag}
       KIND: {needs-kind}

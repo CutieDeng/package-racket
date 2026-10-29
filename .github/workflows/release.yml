@@ -28,8 +28,6 @@ jobs:
   plan:
     name: plan
     runs-on: ubuntu-24.04
-    container:
-      image: ghcr.io/homebrew/brew:main
     outputs:
       tag: ${{ steps.plan.outputs.tag }}
       kind: ${{ steps.plan.outputs.kind }}
@@ -37,9 +35,11 @@ jobs:
       bottle_root_url: ${{ steps.plan.outputs.bottle_root_url }}
       formula_version: ${{ steps.plan.outputs.formula_version }}
     steps:
-      # checkouts come before setup-homebrew: that action configures a
-      # global git credential header, and a checkout after it sends two
-      # Authorization headers, which GitHub rejects (HTTP 400)
+      # Plain runner with Linuxbrew: inside the ghcr.io/homebrew/brew
+      # container the runner's temp directory is root-owned, so a checkout
+      # before setup-homebrew cannot write its state, while a checkout after
+      # it sends two Authorization headers (setup-homebrew's global git
+      # credential header plus its own) and GitHub answers HTTP 400.
       - name: Checkout package-racket
         uses: actions/checkout@v6
         with:
@@ -100,8 +100,6 @@ jobs:
     name: release
     needs: plan
     runs-on: ubuntu-24.04
-    container:
-      image: ghcr.io/homebrew/brew:main
     env:
       TAG: ${{ needs.plan.outputs.tag }}
       KIND: ${{ needs.plan.outputs.kind }}
