@@ -8982,6 +8982,64 @@ end
 (define github-api-version "2022-11-28")
 (define github-max-request-attempts 5)
 
+;; HTTP transport for the GitHub API: 'racket uses net/url over the running
+;; Racket's own TLS stack; 'curl shells out to curl(1).  The release
+;; workflow builds with a bootstrap bottle whose TLS stack may predate the
+;; running source tree (9.3.5 cannot verify the RSA certificate of
+;; uploads.github.com: its librktcrypto keep table lacked
+;; rktcrypto_rsa_verify_msg), so CI selects curl with --http-client curl.
+(define current-http-client (make-parameter 'racket))
+(define http-client-names '("racket" "curl"))
+
+;; Issues one request through curl and returns an input port carrying the
+;; same bytes net/url's impure ports do: status line, header lines, blank
+;; line, body.  Headers travel through a mode-600 temporary file (`-H
+;; @file`) so the token never appears on a command line; `Expect:` is
+;; cleared and HTTP/1.1 forced so the response holds exactly one header
+;; block.  Redirects are not followed, matching the net/url path.
+(define (curl-response-port method url headers data)
+  (begin
+    (define curl (or (find-executable-path "curl")
+                     (raise-user-error 'curl-response-port "curl not found on PATH")))
+    (define header-file (make-temporary-file "package-racket-headers-~a"))
+    (define data-file (and data (make-temporary-file "package-racket-body-~a")))
+    (dynamic-wind
+      void
+      (lambda ()
+        (file-or-directory-permissions header-file #o600)
+        (call-with-output-file header-file #:exists 'truncate
+          (lambda (out)
+            (for ([header (in-list headers)])
+              (displayln header out)
+            ) ; end for headers
+            (displayln "Expect:" out)))
+        (when data
+          (call-with-output-file data-file #:exists 'truncate
+            (lambda (out) (write-bytes data out))))
+        (define args
+          (append (list "-sS" "--http1.1" "-i" "-X" method "-H" f"@{header-file}")
+                  (if data (list "--data-binary" f"@{data-file}") '())
+                  (list (url->string url))))
+        (define-values (sp out in err) (apply subprocess #f #f #f curl args))
+        (close-output-port in)
+        (define response (port->bytes out))
+        (define err-text (port->string err))
+        (close-input-port out)
+        (close-input-port err)
+        (subprocess-wait sp)
+        (unless (zero? (subprocess-status sp))
+          (raise-user-error 'curl-response-port "~a"
+                            f"curl exited with status {(subprocess-status sp)}: {method} {(url->string url)}
+{(string-trim err-text)}")
+        ) ; end unless curl ok
+        (open-input-bytes response))
+      (lambda ()
+        (when (file-exists? header-file) (delete-file header-file))
+        (when (and data-file (file-exists? data-file)) (delete-file data-file)))
+    ) ; end dynamic-wind curl request
+  ) ; end begin curl-response-port
+) ; end define curl-response-port
+
 (define (read-single-rktd who path)
   (begin
     (assert-nonempty-file who path)
@@ -9296,16 +9354,24 @@ end
   (regexp-replace #rx"\r$" line ""))
 
 (define (github-response-port method url headers data)
-  (match method
-    ["GET" (get-impure-port url headers)]
-    ["DELETE" (delete-impure-port url headers)]
-    ["POST"
-     (unless data
-       (raise-user-error 'github-response-port "POST requires request data")
-     ) ; end unless post data
-     (post-impure-port url data headers)]
-    [_ (raise-user-error 'github-response-port "~a" f"unsupported HTTP method: {method}")]
-  ) ; end match method
+  (begin
+    (unless (member method '("GET" "DELETE" "POST"))
+      (raise-user-error 'github-response-port "~a" f"unsupported HTTP method: {method}")
+    ) ; end unless known method
+    (when (and (string=? method "POST") (not data))
+      (raise-user-error 'github-response-port "POST requires request data")
+    ) ; end when post without data
+    (case (current-http-client)
+      [(curl) (curl-response-port method url headers data)]
+      [else
+       (match method
+         ["GET" (get-impure-port url headers)]
+         ["DELETE" (delete-impure-port url headers)]
+         ["POST" (post-impure-port url data headers)]
+       ) ; end match method
+      ]
+    ) ; end case http client
+  ) ; end begin github-response-port
 ) ; end define github-response-port
 
 (define (read-github-impure-response! who port)
@@ -10771,6 +10837,11 @@ jobs:
                                  (set! replace-release-asset-arg #f)]
    [("--token-env") name "Read the GitHub token for release uploads from this environment variable instead of a token file (CI)"
                    (set! release-token-env-arg name)]
+   [("--http-client") name "HTTP transport for the GitHub API: racket (net/url, default) or curl (CI with a bootstrap Racket)"
+                     (unless (member name http-client-names)
+                       (raise-user-error 'main "~a" f"--http-client must be racket or curl: {name}")
+                     ) ; end unless known client
+                     (current-http-client (string->symbol name))]
    [("--release-tag") tag "Release tag for --target release-plan: release-X.Y.Z, release-X.Y.Z-rcN, or pkg-X.Y.Z.N"
                      (set! release-tag-arg tag)]
    [("--release-config") path "Repositories, runner and secret names for the release workflow (default: ./release-config.rktd)"
@@ -11609,6 +11680,7 @@ jobs:
             --bottle-root-url \"$BOTTLE_ROOT_URL\" \\
             --artifact-dir artifacts \\
             --token-env PACKAGING_PUSH_TOKEN \\
+            --http-client curl \\
             --create-release \\
             --replace-release-asset
 
@@ -11723,6 +11795,7 @@ jobs:
                                  "--target release-plan"
                                  "--target source-release"
                                  "--token-env PACKAGING_PUSH_TOKEN"
+                                 "--http-client curl"
                                  "--create-release"
                                  "git push origin HEAD:main"))])
       (unless (string-contains? content needle)

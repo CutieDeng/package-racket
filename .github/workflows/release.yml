@@ -182,6 +182,7 @@ jobs:
             --bottle-root-url "$BOTTLE_ROOT_URL" \
             --artifact-dir artifacts \
             --token-env PACKAGING_PUSH_TOKEN \
+            --http-client curl \
             --create-release \
             --replace-release-asset
 

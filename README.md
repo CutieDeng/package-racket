@@ -31,7 +31,11 @@ packaging flows:
 - `source-release`: uploads the Homebrew source `.tgz` to the configured
   GitHub release with the GitHub REST API. The token comes from the configured
   token file, or from an environment variable named by `--token-env` (what the
-  generated release workflow uses); `--create-release` creates the release for
+  generated release workflow uses).  `--http-client curl` routes every GitHub
+  API call through curl(1) instead of net/url; the release workflow uses it
+  because the bootstrap bottle's TLS stack may predate the tree being
+  released (9.3.5 cannot verify the RSA certificate of uploads.github.com).
+  `--create-release` creates the release for
   the tag when it does not exist yet, and `--prerelease` marks it as such.
 - `brew-ci`: generates Homebrew tap GitHub Actions workflows from
   `brew-ci-config.rktd`, validates them, then replaces the workflow files in

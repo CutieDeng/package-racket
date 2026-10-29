@@ -1723,3 +1723,82 @@ actual output:
     ) ; end with-temp-dir
   ) ; end test-case mismatch guard
 ) ; end module+ test
+
+;; --http-client curl must deliver the same (status, headers, body) view as
+;; the net/url transport.  A local plain-HTTP echo server stands in for
+;; GitHub; curl absent on PATH skips the comparison.
+(module+ test
+  (require racket/tcp net/url)
+  (define package-racket-module `(file ,(path->string (build-path package-root "package-racket.rkt"))))
+  (define (echo-server-start)
+    (define listener (tcp-listen 0 4 #t "127.0.0.1"))
+    (define-values (_h port _rh _rp) (tcp-addresses listener #t))
+    (define worker
+      (thread
+       (lambda ()
+         (let loop ()
+           (define-values (in out) (tcp-accept listener))
+           (thread
+            (lambda ()
+              (define request-line (read-line in 'return-linefeed))
+              (define headers
+                (let hloop ([acc '()])
+                  (define line (read-line in 'return-linefeed))
+                  (if (or (eof-object? line) (string=? line ""))
+                      (reverse acc)
+                      (hloop (cons line acc)))))
+              (define length
+                (for/or ([h (in-list headers)])
+                  (define m (regexp-match #px"^(?i:content-length):[ \t]*([0-9]+)$" h))
+                  (and m (string->number (cadr m)))))
+              (define body (if length (read-bytes length in) #""))
+              (define wanted (filter (lambda (h) (regexp-match? #px"^(?i:x-probe|content-type):" h)) headers))
+              (define reply
+                (string->bytes/utf-8
+                 (string-append request-line "\n"
+                                (string-join (sort wanted string<?) "\n") "\n"
+                                (number->string (bytes-length body)) "\n")))
+              (write-bytes #"HTTP/1.1 201 Created\r\n" out)
+              (write-bytes #"X-Echo: yes\r\n" out)
+              (write-bytes (string->bytes/utf-8 f"Content-Length: {(bytes-length reply)}\r\n") out)
+              (write-bytes #"\r\n" out)
+              (write-bytes reply out)
+              (close-output-port out)
+              (close-input-port in)))
+           (loop)))))
+    (values port (lambda () (kill-thread worker) (tcp-close listener))))
+
+  (test-case "curl transport matches the net/url transport"
+    (cond
+      [(not (find-executable-path "curl"))
+       (printf "curl not on PATH; skipping transport comparison\n")]
+      [else
+       (dynamic-require package-racket-module #f)
+       (define ns (module->namespace package-racket-module))
+       (define github-response-port (eval 'github-response-port ns))
+       (define read-response (eval 'read-github-impure-response! ns))
+       (define current-http-client (eval 'current-http-client ns))
+       (define-values (port stop) (echo-server-start))
+       (dynamic-wind
+         void
+         (lambda ()
+           (define (exchange client method body)
+             (parameterize ([current-http-client client])
+               (define url (string->url f"http://127.0.0.1:{port}/repos/x/y/assets?name=a%20b.tgz"))
+               (define headers (list "X-Probe: one" "Content-Type: application/octet-stream" "User-Agent: package-racket-test"))
+               (define p (github-response-port method url headers body))
+               (define-values (status header-lines body-port) (read-response 'test p))
+               (define text (port->string body-port))
+               (close-input-port body-port)
+               (list status
+                     (sort (filter (lambda (h) (regexp-match? #rx#"^(?i:x-echo|content-length):" h)) header-lines) bytes<?)
+                     text)))
+           (define big (make-bytes 300000 (char->integer #\z)))
+           (for ([method+body (in-list (list (list "GET" #f) (list "DELETE" #f) (list "POST" #"abc") (list "POST" big)))])
+             (define via-racket (apply exchange 'racket method+body))
+             (define via-curl (apply exchange 'curl method+body))
+             (check-equal? via-curl via-racket (car method+body))
+             (check-equal? (car via-curl) #"HTTP/1.1 201 Created")
+             (check-regexp-match #rx"^(GET|DELETE|POST) /repos/x/y/assets[?]name=a([+]|%20)b.tgz HTTP/1.1\n" (caddr via-curl))))
+         stop)]))
+  ) ; end module+ test transport
