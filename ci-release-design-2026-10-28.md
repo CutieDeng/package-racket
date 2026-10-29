@@ -94,3 +94,25 @@ git tag v9.3.12 && git push pri-github v9.3.12
 
 ## 6. tag 命名空间（2026-10-29 改）
 `v*` 可能撞上游（上游 racket 用 `vX.Y`、`vX.Y.Z.W`，fork 里也带着这些 tag；一旦 `git push --tags` 就会误触发）。改为 fork 专用前缀：源码发布 `release-X.Y.Z`、候选 `release-X.Y.Z-rcN`、打包改版 `pkg-X.Y.Z.N`（package-racket 仓）。`release-plan` 明确拒绝 `v*`；notify 只监听 `release-*`；GitHub release、源码包 URL、bottle 根 URL、deb/rpm/win 的 release tag 全部用 `release-X.Y.Z`（rpm 为 `release-X.Y.Z-rN`）。旧的 v9.3.5 等 release 原样保留，旧 Formula/脚手架继续指向旧 URL。
+
+## 7. 试跑记录（2026-10-29，tag `release-9.3.12-rc1`，racket 9baf1c00e6）
+
+事件链：racket 推 tag → `notify packaging`（40848669980 成功）→ `repository_dispatch racket-tag` → package-racket `release packages`。rc 路径 = plan 不提交配置 + 只做 A（源码 release，prerelease），跳过下游再生与推送。
+
+| 次 | run | 失败步 | 根因 | 修复（package-racket 提交） |
+|---|---|---|---|---|
+| 1 | 40845…(手动 dispatch) | Set up Homebrew | setup-homebrew 的 token 与 checkout 的 extraheader 重复 `Authorization` | 818a076：先 checkout，setup-homebrew 不给 token，推送前 unset extraheader |
+| 2 | — | brew install | brew 容器内 runner 临时目录 root 属主，EACCES | 4b1cbfd：去容器，ubuntu-24.04 + Linuxbrew |
+| 3 | — | Checkout racket source | rc 去 checkout 不存在的 `release-9.3.12` | 5a179c5：候选用自身 tag |
+| 4 | 40848688898 | Build the source archive | rc 不提交 plan 改写，release job 新 checkout main 仍是 9.3.5 配置 → `source-version 9.3.5 does not match 9.3.12` | 6a404d8：release job 在自己的 checkout 上重跑 `release-plan`（幂等；也消除正式 tag 下 checkout 早于 plan 提交的竞态） |
+| 5 | 40849586359 | Build（上传资产） | 真错误被 `raise-user-error` 把消息当格式串吞掉（`tag ~g not allowed`） | a350eb3：190 处改为 `"~a"` 传参 |
+| 6 | 40850501892 | Build（上传资产） | `rktcrypto_rsa_verify_msg: implementation not found`：引导 bottle 9.3.5.1 的 librktcrypto keep 表（38 项）无此符号，Linux 链接器丢弃该归档成员，in-tree TLS 无法验 uploads.github.com 的 RSA 证书；api.github.com 为 ECDSA 故建 release 成功。9.3.12 已导出（lan-11 x86-64 `nm -D` 确认，keep 表 126 项，541fd38089 加入） | 7cc7575：`--http-client curl`，release job 全部 GitHub API 走 curl(1)；token 经 0600 文件 `-H @file` |
+| 7 | 40851850919 | — | **成功**：plan 41 s，release 2 min 27 s | — |
+
+结果（已验证）：
+- `https://github.com/CutieDeng/racket/releases/tag/release-9.3.12-rc1`，prerelease，资产 `racket-minimal-9.3.12-src.tgz` 21 350 301 B，sha256 `82fc5372…86639c`，GitHub digest 与本地一致。
+- 该 sha256 与 run 5/6 本地构建值相同（确定性 tar 成立）。
+- Formula 写入 tap checkout 但 rc 不推送；bottle root `homebrew-racket/releases/download/release-9.3.12-rc1` 尚无 bottle（rc 不产 bottle）。
+
+未做：`release-9.3.12` 正式 tag（A+B，推 tap/deb/rpm/win）、重跑幂等、`pkg-9.3.12.2`。
+racket 侧待办：无（9.3.12 已含 keep 表修复）；以后引导 bottle ≥ 9.3.12 后 `--http-client curl` 仍保留，作为引导栈与被发布树解耦的保险。
