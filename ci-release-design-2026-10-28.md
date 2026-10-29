@@ -116,3 +116,20 @@ git tag v9.3.12 && git push pri-github v9.3.12
 
 未做：`release-9.3.12` 正式 tag（A+B，推 tap/deb/rpm/win）、重跑幂等、`pkg-9.3.12.2`。
 racket 侧待办：无（9.3.12 已含 keep 表修复）；以后引导 bottle ≥ 9.3.12 后 `--http-client curl` 仍保留，作为引导栈与被发布树解耦的保险。
+
+## 8. 正式 tag `release-9.3.12` 试跑记录（2026-10-29）
+
+| 次 | run | 失败处 | 根因 | 修复 |
+|---|---|---|---|---|
+| 8 | 40857857888 | Regenerate downstream | rpm-spec 需代表性 `--rpm-system/--rpm-release/--rpm-arch` | b54713c：加 `--prefix /usr --rpm-system el9 --rpm-release $RELEASE --rpm-arch x86_64`（新 plan 输出 `release`）；本地干跑另暴露 brew-ci 由 tap 路径推 tap 名 → tap 改 checkout 到 `cutiedeng/homebrew-racket`；测试改为不读仓库活 config |
+| 9 | 40859205315 | 成功，但产物有缺陷 | 归档无 `racket/src/ChezScheme/boot/pb`（不在 git，`make pb-fetch` 产物；CI 浅 checkout 没有）→ 下游 deb 12 job / win 2 job / tap bottle 全在 configure 失败 | 59f9ed6：`release-config.rktd` 钉 `pb-repo`/`pb-commit`（d8c788e3，与本地逐字节同），workflow `git fetch --depth 1 <commit>`；brew 目标断言四个 pb 文件 + 归档校验 |
+| 10/11 | 40861409236 / 40861486549 | plan: Install Racket | run 9 已把 tap head 推成 9.3.12 formula 且无 bottle → 引导从缺陷归档源码编译 | 89743b8：引导改为 tap 钉 `bootstrap-tap-commit`（97c47c5=9.3.5.1 有 bottle）+ `HOMEBREW_NO_AUTO_UPDATE=1`（两个误发：commit 校验失败后 `;` 仍链了 dispatch） |
+| 12 | 40861758578 | 同上 | 同上（误发） | — |
+| 13 | 40861816108 | — | **成功** | — |
+
+run 13 结果（已验证）：
+- pb 取到 d8c788e3，引导 tap 在 97c47c5；归档 `racket-minimal-9.3.12-src.tgz` 23 736 115 B，sha256 `624f8ecf…8d228a`，`boot/pb` 8 个成员，`petite.boot` 与本地逐字节相同；旧资产（21 350 301 B，`82fc5372…`，无 pb）已原位替换。
+- 下游四仓已推：tap 1ea0a9f、deb 6ed069c、rpm 2515dfe、win 64e7850，各自 CI 已触发（tap 40862293603 / deb 40862296560 / rpm 40862300511 / win 40862302809）。
+- rc1 的 `release-9.3.12-rc1` 预发布资产仍是无 pb 的旧归档（rc 不再重跑；如需可 dispatch rc1 替换）。
+
+待办：下游四仓构建结果；bottle 出来后抬 `bootstrap-tap-commit`；`pkg-9.3.12.2` 路径未试。
