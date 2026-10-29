@@ -8341,11 +8341,6 @@ information.
            \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"
   end
 
-  def post_install
-    setup_system_cache unless system_cache_populated?
-    remove_precompiled_cache
-  end
-
   def preserve_compiled_cache_dir?(path)
     path = Pathname(path).cleanpath
     preserved_roots = [system_cache_root].map(&:cleanpath)
@@ -8388,11 +8383,6 @@ information.
   def setup_system_cache
     system bin/\"racket\", \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
            \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\"
-  end
-
-  def post_install
-    setup_system_cache unless system_cache_populated?
-    remove_precompiled_cache
   end"))
     ) ; end define with-system-cache-methods/fallback
     (define with-bottle-cache-setup
@@ -8401,10 +8391,12 @@ information.
     remove_precompiled_cache
   end"
                       "    system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
-    if build.bottle?
-      setup_system_cache
-      remove_precompiled_cache
-    end
+    # Bottles and source builds alike populate the system compiled cache and
+    # prune ordinary compiled directories here: Homebrew rejects
+    # `post_install` (FormulaAudit/InstallSteps) and its step DSL cannot
+    # express the globbing and filtered removal below.
+    setup_system_cache
+    remove_precompiled_cache
   end")
     ) ; end define with-bottle-cache-setup
     (define with-cache-test
@@ -8452,10 +8444,10 @@ information.
 	(define with-installed-configure-call
 	  (string-replace without-source-configure-call
 	                  "    system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
-    if build.bottle?"
+    # Bottles and source builds alike"
 	                  "    system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
     configure_racket
-    if build.bottle?")
+    # Bottles and source builds alike")
 	) ; end define with-installed-configure-call
 		(define with-configure-method
 		  (if (string-contains? with-installed-configure-call "def configure_racket")
@@ -8660,10 +8652,12 @@ information.
 
     system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"
     configure_racket
-    if build.bottle?
-      setup_system_cache
-      remove_precompiled_cache
-    end
+    # Bottles and source builds alike populate the system compiled cache and
+    # prune ordinary compiled directories here: Homebrew rejects
+    # `post_install` (FormulaAudit/InstallSteps) and its step DSL cannot
+    # express the globbing and filtered removal below.
+    setup_system_cache
+    remove_precompiled_cache
   end
 
   def system_cache_roots
@@ -8698,11 +8692,6 @@ information.
       system bin/\"racket\", \"-U\", \"-G\", config_dir.to_s, \"-N\", \"raco\", \"-l-\", \"raco\", \"setup\",
              \"--system\", \"--no-user\", \"--reset-cache\", \"-D\", \"--no-pkg-deps\", \"--no-launcher\"
     end
-  end
-
-  def post_install
-    setup_system_cache unless system_cache_populated?
-    remove_precompiled_cache
   end
 
   def preserve_compiled_cache_dir?(path)
@@ -12434,14 +12423,16 @@ end
         (check-true (string-contains? content f"sha256 \"{test-sha256}\""))
         (check-true (string-contains? content "(compiled-file-system-cache-root . \\\"#{system_cache_root}\\\")"))
         (check-true (string-contains? content "content.sub!(/\\)\\s*\\z/"))
-	        (check-true (string-contains? content "system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"\n    configure_racket\n    if build.bottle?"))
+	        (check-true (string-contains? content "system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"\n    configure_racket\n    # Bottles and source builds alike"))
 	        (check-false (string-contains? content "source_racket_config"))
 	        (check-false (string-contains? content "configure_racket source_racket_config"))
 	        (check-true (string-contains? content "racket_config.atomic_write content"))
 	        (check-false (string-contains? content "inreplace racket_config"))
 	        (check-false (string-contains? content "inreplace \"etc/config.rktd\""))
 	        (check-false (string-contains? content "racket_config.write"))
-	        (check-true (string-contains? content "if build.bottle?"))
+	        (check-false (string-contains? content "if build.bottle?"))
+	        (check-false (string-contains? content "def post_install"))
+	        (check-true (string-contains? content "configure_racket\n    # Bottles and source builds alike"))
 	        (check-true (string-contains? content "preserve_compiled_cache_dir?"))
 	        (check-true (string-contains? content "system_cache_populated?"))
 		        (check-true (string-contains? content "prefix/\"var/cache/racket/compiled#{share}/racket/collects\""))
@@ -12486,7 +12477,7 @@ end
 	                                 "(compiled-file-system-cache-root . \\\"#{system_cache_root}\\\")"
 		                                 "system bin/\"raco\", \"setup\", \"--no-user\", \"--no-zo\"\n    configure_racket"
 		                                 "racket_config.atomic_write content"
-		                                 "if build.bottle?"
+		                                 "configure_racket\n    # Bottles and source builds alike"
 			                                 "system_cache_populated?"
 			                                 "with_setup_bootstrap_config"
 			                                 "could not prepare Racket setup bootstrap config"
