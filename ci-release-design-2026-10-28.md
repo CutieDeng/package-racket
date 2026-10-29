@@ -133,3 +133,15 @@ run 13 结果（已验证）：
 - rc1 的 `release-9.3.12-rc1` 预发布资产仍是无 pb 的旧归档（rc 不再重跑；如需可 dispatch rc1 替换）。
 
 待办：下游四仓构建结果；bottle 出来后抬 `bootstrap-tap-commit`；`pkg-9.3.12.2` 路径未试。
+
+## 9. `release-9.3.13`（2026-10-29，racket 8a22b52f8a）
+
+起因：9.3.12 的 Windows 构建在源码层失败（`c/vfasl.c(251) CLOCK_MONOTONIC_RAW` 无 WIN32 分支，75ce6ff1ff6 引入）。racket 侧 ab1157c105 修复、3c672fc148 抬 9.3.13、8a22b52f8a 摘要；tag 推送后链路一次通过：
+
+- 9.3.12 bottle 发布后，`bootstrap-tap-commit` 抬到 b30f7b21（064bb2b）；tap-syntax 的 `FormulaAudit/InstallSteps` 由 b49e9b3 解决（install 阶段无条件建缓存，去掉 `post_install`）。
+- release run 40869339151：plan 提交 fa49e9b，pb d8c788e3，源码包 `racket-minimal-9.3.13-src.tgz` 23 736 892 B，sha256 `bdf20fa2…0a15d0`，四仓推送。
+- 下游（已验证资产）：tap 3 bottle（arm64_tahoe/arm64_linux/x86_64_linux，9.3.13.1）；deb 12 个 .deb；win 8 件（x86_64/arm64 × zip/cached zip/setup/setup-cached）；rpm 仍排队——rpm-racket 的旧 run 40859551132（9.3.12 无 pb 归档）6 个 openEuler job 卡在依赖安装 2 h+，concurrency `cancel-in-progress: false` 使 40862300511（9.3.12）与 40869745547（9.3.13）顺序排队；PAT 对 rpm-racket 无 actions:write，须网页取消。
+
+遗留：
+- 9.3.12 的 release/deb/bottle 保留；win 无 9.3.12 产物；rpm 9.3.12/9.3.13 待队列。
+- 建议：deb/rpm/win 生成的工作流 concurrency 改 `cancel-in-progress: true`（新推送取代旧构建）；`pkg-X.Y.Z.N` 路径未试；rc1 预发布的旧归档（无 pb）未替换。
