@@ -38,7 +38,7 @@
 (define (validate-package-cache-mode who cache-mode)
   (begin
     (unless (member cache-mode package-cache-modes)
-      (raise-user-error who
+      (raise-user-error who "~a"
                         f"cache mode must be postinstall or cached: {cache-mode}")
     ) ; end unless supported cache mode
     cache-mode
@@ -179,7 +179,7 @@
   (begin
     (define tap-dir (complete-path* tap-path))
     (define owner-dir (or (path-only tap-dir)
-                          (raise-user-error 'homebrew-tap-name f"tap path has no parent: {(clean-path-string tap-dir)}")))
+                          (raise-user-error 'homebrew-tap-name "~a" f"tap path has no parent: {(clean-path-string tap-dir)}")))
     (define owner (path-basename owner-dir))
     (define repo-dir (path-basename tap-dir))
     (define repo
@@ -218,12 +218,12 @@
          [(empty-directory? d)
           (delete-directory d)]
          [else
-          (raise-user-error who
+          (raise-user-error who "~a"
                             f"directory exists and is not managed by this tool: {(clean-path-string d)}")]
        ) ; end cond existing directory
       ]
       [(file-exists? d)
-       (raise-user-error who
+       (raise-user-error who "~a"
                          f"path exists but is not a directory: {(clean-path-string d)}")]
       [else
        (void)]
@@ -249,21 +249,21 @@
 
 (define (assert-directory who p)
   (unless (directory-exists? p)
-    (raise-user-error who f"directory does not exist: {(clean-path-string p)}")))
+    (raise-user-error who "~a" f"directory does not exist: {(clean-path-string p)}")))
 
 (define (assert-file who p)
   (unless (file-exists? p)
-    (raise-user-error who f"file does not exist: {(clean-path-string p)}")))
+    (raise-user-error who "~a" f"file does not exist: {(clean-path-string p)}")))
 
 (define (assert-nonempty-file who p)
   (assert-file who p)
   (when (zero? (file-size p))
-    (raise-user-error who f"file is empty: {(clean-path-string p)}")))
+    (raise-user-error who "~a" f"file is empty: {(clean-path-string p)}")))
 
 (define (assert-nonempty-directory who p)
   (assert-directory who p)
   (when (empty-directory? p)
-    (raise-user-error who f"directory is empty: {(clean-path-string p)}")))
+    (raise-user-error who "~a" f"directory is empty: {(clean-path-string p)}")))
 
 (define (assert-writable-directory who p)
   (assert-directory who p)
@@ -272,7 +272,7 @@
 
 (define (resolve-executable who program)
   (or (find-executable-path program)
-      (raise-user-error who f"executable not found in PATH: {program}")))
+      (raise-user-error who "~a" f"executable not found in PATH: {program}")))
 
 (define (assert-executable who program)
   (resolve-executable who program)
@@ -308,7 +308,7 @@
       (define executable (resolve-executable who program))
       (define ok? (apply system* executable args))
       (unless ok?
-        (raise-user-error who f"command failed: {(command-line-string program args)}")
+        (raise-user-error who "~a" f"command failed: {(command-line-string program args)}")
       ) ; end unless command ok
     ) ; end unless dry-run
   ) ; end begin run!
@@ -328,7 +328,7 @@
     (close-input-port out)
     (close-input-port err)
     (unless (zero? status)
-      (raise-user-error who
+      (raise-user-error who "~a"
                         f"command failed with exit {status}: {(command-line-string program args)}
 {stderr}")
     ) ; end unless command success
@@ -357,7 +357,7 @@
     (define rx (pregexp f"#define[ \t]+{(regexp-quote name)}[ \t]+([0-9]+)"))
     (match (regexp-match rx content)
       [(list _ n) (string->number n)]
-      [_ (raise-user-error 'read-racket-version
+      [_ (raise-user-error 'read-racket-version "~a"
                            f"could not find {name} in {(clean-path-string version-file)}")]))
   (define x (macro-int "MZSCHEME_VERSION_X"))
   (define y (macro-int "MZSCHEME_VERSION_Y"))
@@ -372,7 +372,7 @@
   (begin
     (unless (and (string? version)
                  (regexp-match? #px"^[0-9]+([.][0-9]+)*$" version))
-      (raise-user-error who
+      (raise-user-error who "~a"
                         f"{label} must be a dotted numeric version such as 9.2.2 or 9.2.2.1: {version}")
     ) ; end unless dotted numeric version
     version
@@ -429,7 +429,7 @@
          (match target
            ["all" '("brew" "apt" "rpm")]
            [(or "release-plan" "release-ci" "brew" "apt" "apt-release" "deb-spec" "deb-ci" "rpm" "rpm-spec" "rpm-ci" "rpm-repo" "brew-ci" "source-release" "windows-portable-ci") (list target)]
-           [_ (raise-user-error 'main f"unknown --target: {target}")]
+           [_ (raise-user-error 'main "~a" f"unknown --target: {target}")]
          ) ; end match target
        ) ; end lambda target
        pieces
@@ -501,7 +501,7 @@
 
 (define (assert-prefix prefix)
   (unless (absolute-path? (string->path prefix))
-    (raise-user-error 'main f"--prefix must be absolute: {prefix}"))
+    (raise-user-error 'main "~a" f"--prefix must be absolute: {prefix}"))
   (void))
 
 (define rpm-shared-directories
@@ -555,7 +555,7 @@
     (when (or (absolute-path? rel)
               (string=? rel-str "")
               (string-prefix? rel-str ".."))
-      (raise-user-error 'rpm-file-list
+      (raise-user-error 'rpm-file-list "~a"
                         f"path is outside install root: {(clean-path-string path)}")
     ) ; end when unsafe relative path
     (string-append "/" rel-str)
@@ -585,7 +585,7 @@
       (begin
         (define installed (installed-path-string root path))
         (unless (installed-path-under-prefix? installed prefix)
-          (raise-user-error 'rpm-file-list
+          (raise-user-error 'rpm-file-list "~a"
                             f"staged path is outside --prefix {prefix}: {installed}")
         ) ; end unless path under prefix
         (match type
@@ -598,7 +598,7 @@
            (set! entries (cons (rpm-file-list-quote installed) entries))
           ]
           [other
-           (raise-user-error 'rpm-file-list
+           (raise-user-error 'rpm-file-list "~a"
                              f"unsupported staged file type {other}: {(clean-path-string path)}")]
         ) ; end match type
       ) ; end begin record
@@ -623,7 +623,7 @@
     ) ; end for root child
     (define sorted-entries (sort entries string<?))
     (when (null? sorted-entries)
-      (raise-user-error 'rpm-file-list
+      (raise-user-error 'rpm-file-list "~a"
                         f"RPM file list is empty under {(clean-path-string root)}")
     ) ; end when empty file list
     sorted-entries
@@ -644,15 +644,15 @@
       (raise-user-error 'main "--bottle-root-url must be a non-empty string")
     ) ; end unless non-empty bottle root url
     (unless (string-prefix? root-url "https://")
-      (raise-user-error 'main f"--bottle-root-url must start with https://: {root-url}")
+      (raise-user-error 'main "~a" f"--bottle-root-url must start with https://: {root-url}")
     ) ; end unless https bottle root url
     (when (or (string-contains? root-url " ")
               (string-contains? root-url "\"")
               (string-contains? root-url "'"))
-      (raise-user-error 'main f"--bottle-root-url contains unsafe characters: {root-url}")
+      (raise-user-error 'main "~a" f"--bottle-root-url contains unsafe characters: {root-url}")
     ) ; end when unsafe bottle root url
     (when (string-suffix? root-url "/")
-      (raise-user-error 'main f"--bottle-root-url must not end with /: {root-url}")
+      (raise-user-error 'main "~a" f"--bottle-root-url must not end with /: {root-url}")
     ) ; end when trailing slash bottle root url
   ) ; end begin assert-bottle-root-url
 ) ; end define assert-bottle-root-url
@@ -662,7 +662,7 @@
 
 (define (assert-formula-build-mode mode)
   (unless (member mode formula-build-modes string=?)
-    (raise-user-error 'main
+    (raise-user-error 'main "~a"
                       f"--formula-build-mode must be incremental or full: {mode}")
   ) ; end unless valid formula build mode
 ) ; end define assert-formula-build-mode
@@ -673,7 +673,7 @@
     (match normalized
       [(or "x86_64" "x64" "amd64") "x86_64"]
       [(or "aarch64" "arm64") "aarch64"]
-      [_ (raise-user-error 'main
+      [_ (raise-user-error 'main "~a"
                            f"--rpm-arch must be x86_64, amd64, x64, aarch64, or arm64: {arch}")]
     ) ; end match normalized arch
   ) ; end begin normalize-rpm-arch
@@ -685,7 +685,7 @@
     (match normalized
       [(or "amd64" "x86_64" "x64") "amd64"]
       [(or "arm64" "aarch64") "arm64"]
-      [_ (raise-user-error 'main
+      [_ (raise-user-error 'main "~a"
                            f"--deb-arch must be amd64, x86_64, x64, arm64, or aarch64: {arch}")]
     ) ; end match normalized deb arch
   ) ; end begin normalize-deb-arch
@@ -698,7 +698,7 @@
   (begin
     (unless (and (string? system)
                  (member system deb-supported-systems string=?))
-      (raise-user-error 'main
+      (raise-user-error 'main "~a"
                         f"--deb-system must be one of {(string-join deb-supported-systems ", ")}: {system}")
     ) ; end unless supported deb system
     system
@@ -709,7 +709,7 @@
   (begin
     (unless (and (string? release)
                  (regexp-match? #px"^[0-9][A-Za-z0-9+~_-]*$" release))
-      (raise-user-error 'main
+      (raise-user-error 'main "~a"
                         f"--deb-release must start with a digit and contain only letters, digits, _, +, ~, or -: {release}")
     ) ; end unless valid deb release
     release
@@ -723,7 +723,7 @@
   (begin
     (unless (and (string? system)
                  (member system rpm-supported-systems string=?))
-      (raise-user-error 'main
+      (raise-user-error 'main "~a"
                         f"--rpm-system must be one of {(string-join rpm-supported-systems ", ")}: {system}")
     ) ; end unless supported rpm system
     system
@@ -734,7 +734,7 @@
   (begin
     (unless (and (string? release)
                  (regexp-match? #px"^[0-9][0-9A-Za-z_+~-]*$" release))
-      (raise-user-error 'main
+      (raise-user-error 'main "~a"
                         f"--rpm-release must start with a digit and use only letters, digits, _, +, ~, or -: {release}")
     ) ; end unless syntactically safe rpm release
     release
@@ -759,7 +759,7 @@
       [(regexp-match #px"^openeuler([0-9]{2})([0-9]{2})$" system)
        => (lambda (m) (cons '("openeuler") f"{(cadr m)}.{(caddr m)}"))]
       [else
-       (raise-user-error 'rpm-system-os-release-expectation
+       (raise-user-error 'rpm-system-os-release-expectation "~a"
                          f"no /etc/os-release expectation is defined for rpm system: {system}")]
     ) ; end cond rpm system os-release expectation
   ) ; end begin rpm-system-os-release-expectation
@@ -793,7 +793,7 @@
     (define version-start (regexp-first-start #px"(?m:^  version \"[^\"]+\")" content))
     (define sha-start (regexp-first-start #px"(?m:^  sha256 \"[0-9a-f]{64}\")" content))
     (when (and version-start sha-start (not (< version-start sha-start)))
-      (raise-user-error who
+      (raise-user-error who "~a"
                         f"formula version line must appear before source sha256 line: {(clean-path-string formula-path)}")
     ) ; end when version appears after sha
   ) ; end begin validate-formula-version-before-sha!
@@ -864,7 +864,7 @@ Description: {(cfg-summary c)}
                                  f"Architecture: {(cfg-deb-arch c)}"
                                  f"Description: {(cfg-summary c)}"))])
       (unless (string-contains? content needle)
-        (raise-user-error 'validate-deb-control!
+        (raise-user-error 'validate-deb-control! "~a"
                           f"generated control file is missing: {needle}")
       ) ; end unless needle present
     ) ; end for needle
@@ -879,7 +879,7 @@ Description: {(cfg-summary c)}
     (when (or (absolute-path? rel)
               (string=? rel-str "")
               (string-prefix? rel-str ".."))
-      (raise-user-error 'write-deb-md5sums!
+      (raise-user-error 'write-deb-md5sums! "~a"
                         f"path is outside deb root: {(clean-path-string path)}")
     ) ; end when unsafe relative path
     rel-str
@@ -915,7 +915,7 @@ Description: {(cfg-summary c)}
           ['link
            (void)]
           [other
-           (raise-user-error 'write-deb-md5sums!
+           (raise-user-error 'write-deb-md5sums! "~a"
                              f"unsupported staged file type {other}: {(clean-path-string path)}")]
         ) ; end match type
       ) ; end begin walk
@@ -951,7 +951,7 @@ Description: {(cfg-summary c)}
     (define expected '("debian-binary" "control.tar.xz" "data.tar.xz"))
     (define members-text (string-join members ", "))
     (unless (equal? members expected)
-      (raise-user-error 'validate-deb!
+      (raise-user-error 'validate-deb! "~a"
                         f"unexpected .deb archive members: {members-text}")
     ) ; end unless members expected
     (println/flush f"Validated .deb: {(clean-path-string deb-path)}")
@@ -996,7 +996,7 @@ Description: {(cfg-summary c)}
     ["dpkg-deb" #t]
     ["ar" #f]
     ["auto" (and (find-executable-path (cfg-dpkg-deb-bin c)) #t)]
-    [other (raise-user-error 'build-apt! f"unknown --deb-backend: {other}")]))
+    [other (raise-user-error 'build-apt! "~a" f"unknown --deb-backend: {other}")]))
 
 (define (build-deb-with-ar! c deb-root deb-path)
   (begin
@@ -2025,12 +2025,12 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
     (define content (file->string path))
     (define bits (file-or-directory-permissions path 'bits))
     (unless (not (zero? (bitwise-and bits #o111)))
-      (raise-user-error 'validate-deb-spec-scaffold!
+      (raise-user-error 'validate-deb-spec-scaffold! "~a"
                         f"generated script is not executable: {(clean-path-string path)}")
     ) ; end unless executable bit present
     (for ([needle (in-list (cons "set -euo pipefail" required-needles))])
       (unless (string-contains? content needle)
-        (raise-user-error 'validate-deb-spec-scaffold!
+        (raise-user-error 'validate-deb-spec-scaffold! "~a"
                           f"generated script {name} is missing: {needle}")
       ) ; end unless script content contains needle
     ) ; end for script needle
@@ -2056,7 +2056,7 @@ printf 'Validated DEB: %s\\n' \"$DEB_PATH\"
                                  "scripts/build-deb.sh"
                                  "scripts/verify-deb.sh"))])
       (unless (string-contains? readme-content needle)
-        (raise-user-error 'validate-deb-spec-scaffold!
+        (raise-user-error 'validate-deb-spec-scaffold! "~a"
                           f"generated README is missing: {needle}")
       ) ; end unless readme content contains needle
     ) ; end for readme needle
@@ -2572,7 +2572,7 @@ exit 0
                                  "printf '%s %s\\n' '%%dir' \"$rel\" >> \"$manifest\""
                                  "%files -f %{name}.files"))])
       (unless (string-contains? content needle)
-        (raise-user-error 'validate-rpm-spec!
+        (raise-user-error 'validate-rpm-spec! "~a"
                           f"generated RPM spec is missing: {needle}")
       ) ; end unless needle present
     ) ; end for needle
@@ -2598,7 +2598,7 @@ exit 0
                                     "config.rktd.package-racket-final"
                                     "compiled-file-system-cache-root . \"/var/cache/racket/compiled\""))])
       (when (string-contains? content forbidden)
-        (raise-user-error 'validate-rpm-spec!
+        (raise-user-error 'validate-rpm-spec! "~a"
                           f"generated RPM spec contains obsolete contract: {forbidden}")
       ) ; end when forbidden contract present
     ) ; end for forbidden contract
@@ -2617,7 +2617,7 @@ exit 0
                                  f"Release     : {(rpm-release c cache-mode)}"
                                  f"Architecture: {(cfg-rpm-arch c)}"))])
       (unless (string-contains? metadata needle)
-        (raise-user-error 'validate-rpm!
+        (raise-user-error 'validate-rpm! "~a"
                           f"RPM metadata is missing: {needle}")
       ) ; end unless metadata contains needle
     ) ; end for needle
@@ -2627,7 +2627,7 @@ exit 0
     (for ([needle (in-list (list f"rm -rf \"/var/cache/racket/{(rpm-version c)}/compiled\""
                                  "if [ \"$1\" = \"0\" ]"))])
       (unless (string-contains? scripts needle)
-        (raise-user-error 'validate-rpm!
+        (raise-user-error 'validate-rpm! "~a"
                           f"RPM scriptlets are missing: {needle}")
       ) ; end unless scripts contains needle
     ) ; end for scriptlet needle
@@ -2714,7 +2714,7 @@ exit 0
     (assert-nonempty-file 'build-rpm! dest)
     (define actual-sha256 (sha256-file dest))
     (unless (string=? actual-sha256 expected-sha256)
-      (raise-user-error 'build-rpm!
+      (raise-user-error 'build-rpm! "~a"
                         f"RPM Source0 sha256 mismatch: expected {expected-sha256} but got {actual-sha256}")
     ) ; end unless source sha256 matches
     (validate-rpm-source-archive! c dest)
@@ -2744,7 +2744,7 @@ exit 0
                 (equal? (file-name-from-path rpm) (string->path expected-name)))
               rpms))
     (unless (= (length matches) 1)
-      (raise-user-error 'build-rpm!
+      (raise-user-error 'build-rpm! "~a"
                         f"expected exactly one rpmbuild output named {expected-name}; observed: {(rpm-path-list-summary rpms)}")
     ) ; end unless exactly one expected rpm
     (define dest (rpm-package-path c cache-mode))
@@ -2921,7 +2921,7 @@ gpgcheck={(if (cfg-rpm-repo-gpgcheck? c) "1" "0")}
                                  f"baseurl={(rpm-channel-baseurl c "postinstall" system)}"
                                  "enabled=0"))])
       (unless (string-contains? content needle)
-        (raise-user-error 'validate-rpm-repository-file!
+        (raise-user-error 'validate-rpm-repository-file! "~a"
                           f"generated RPM repository file is missing: {needle}"))
     ) ; end for repo file needle
   ) ; end begin validate rpm repository file
@@ -3827,7 +3827,7 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
       (define content (file->string p))
       (unless (for/or ([marker (in-list markers)])
                 (string-contains? content marker))
-        (raise-user-error who
+        (raise-user-error who "~a"
                           f"refusing to delete file without generated marker: {(clean-path-string p)}")
       ) ; end unless generated marker present
       (delete-file p)
@@ -3875,12 +3875,12 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
     (define content (file->string path))
     (define bits (file-or-directory-permissions path 'bits))
     (unless (not (zero? (bitwise-and bits #o111)))
-      (raise-user-error 'validate-rpm-spec-scaffold!
+      (raise-user-error 'validate-rpm-spec-scaffold! "~a"
                         f"generated script is not executable: {(clean-path-string path)}")
     ) ; end unless executable bit present
     (for ([needle (in-list (cons "set -euo pipefail" required-needles))])
       (unless (string-contains? content needle)
-        (raise-user-error 'validate-rpm-spec-scaffold!
+        (raise-user-error 'validate-rpm-spec-scaffold! "~a"
                           f"generated script {name} is missing: {needle}")
       ) ; end unless script content contains needle
     ) ; end for script needle
@@ -3912,7 +3912,7 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
                                  "dnf --refresh distro-sync"
                                  "rpm -q --provides"))])
       (unless (string-contains? readme-content needle)
-        (raise-user-error 'validate-rpm-spec-scaffold!
+        (raise-user-error 'validate-rpm-spec-scaffold! "~a"
                           f"generated README is missing: {needle}")
       ) ; end unless readme content contains needle
     ) ; end for readme needle
@@ -4066,7 +4066,7 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
   (begin
     (when (or (string-contains? value "\n")
               (string-contains? value "\r"))
-      (raise-user-error who f"config key must be a single line: {key}")
+      (raise-user-error who "~a" f"config key must be a single line: {key}")
     ) ; end when newline in config value
     value
   ) ; end begin assert-single-line-string
@@ -4076,7 +4076,7 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
   (begin
     (assert-single-line-string 'rpm-ci-config 'id value)
     (unless (regexp-match? #px"^[A-Za-z0-9_.+-]+$" value)
-      (raise-user-error 'rpm-ci-config
+      (raise-user-error 'rpm-ci-config "~a"
                         f"target id must contain only letters, digits, _, ., +, or -: {value}")
     ) ; end unless safe target id
     value
@@ -4087,7 +4087,7 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
   (begin
     (assert-single-line-string 'rpm-ci-config 'runner value)
     (unless (regexp-match? #px"^[A-Za-z0-9_.:-]+$" value)
-      (raise-user-error 'rpm-ci-config
+      (raise-user-error 'rpm-ci-config "~a"
                         f"runner must contain only letters, digits, _, ., :, or -: {value}")
     ) ; end unless safe runner
     value
@@ -4098,7 +4098,7 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
   (begin
     (assert-single-line-string 'rpm-ci-config 'container value)
     (unless (regexp-match? #px"^[A-Za-z0-9._/:@-]+$" value)
-      (raise-user-error 'rpm-ci-config
+      (raise-user-error 'rpm-ci-config "~a"
                         f"container must contain only image-reference characters: {value}")
     ) ; end unless safe container
     value
@@ -4109,7 +4109,7 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
   (begin
     (assert-single-line-string 'rpm-ci-config 'setup-packages value)
     (unless (regexp-match? #px"^[A-Za-z0-9._+:@/-]+$" value)
-      (raise-user-error 'rpm-ci-config
+      (raise-user-error 'rpm-ci-config "~a"
                         f"setup package contains unsupported characters: {value}")
     ) ; end unless safe package
     value
@@ -4120,7 +4120,7 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
   (begin
     (assert-single-line-string 'rpm-ci-config 'artifact-prefix value)
     (unless (regexp-match? #px"^[A-Za-z0-9_.+-]+$" value)
-      (raise-user-error 'rpm-ci-config
+      (raise-user-error 'rpm-ci-config "~a"
                         f"artifact-prefix must contain only letters, digits, _, ., +, or -: {value}")
     ) ; end unless safe artifact prefix
     value
@@ -4131,7 +4131,7 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
   (begin
     (assert-single-line-string 'rpm-ci-config 'release-tag value)
     (unless (regexp-match? #px"^[A-Za-z0-9._/-]+$" value)
-      (raise-user-error 'rpm-ci-config
+      (raise-user-error 'rpm-ci-config "~a"
                         f"release-tag must contain only letters, digits, _, ., /, or -: {value}")
     ) ; end unless safe release tag
     value
@@ -4161,11 +4161,11 @@ printf 'Validated RPM: %s\\n' \"$RPM_PATH\"
     (define packages
       (config-required-list 'rpm-ci-config target 'setup-packages))
     (when (null? packages)
-      (raise-user-error 'rpm-ci-config f"target {id} setup-packages must not be empty")
+      (raise-user-error 'rpm-ci-config "~a" f"target {id} setup-packages must not be empty")
     ) ; end when empty setup packages
     (for ([pkg (in-list packages)])
       (unless (string? pkg)
-        (raise-user-error 'rpm-ci-config f"target {id} setup-packages must contain only strings")
+        (raise-user-error 'rpm-ci-config "~a" f"target {id} setup-packages must contain only strings")
       ) ; end unless package string
       (assert-rpm-ci-package pkg)
     ) ; end for setup package
@@ -4833,7 +4833,7 @@ jobs:
     (when (file-exists? path)
       (define content (file->string path))
       (unless (string-contains? content generated-rpm-repo-notice-marker)
-        (raise-user-error 'write-rpm-ci-workflow!
+        (raise-user-error 'write-rpm-ci-workflow! "~a"
                           f"refusing to overwrite workflow without generated marker: {(clean-path-string path)}")
       ) ; end unless generated marker present
     ) ; end when workflow exists
@@ -4931,7 +4931,7 @@ jobs:
                                  "core sqlite3 support is unavailable"
                                  "EXPECTED_RPM_COUNT:"))])
       (unless (string-contains? content needle)
-        (raise-user-error 'validate-rpm-ci-workflow! f"RPM CI workflow missing: {needle}")
+        (raise-user-error 'validate-rpm-ci-workflow! "~a" f"RPM CI workflow missing: {needle}")
       ) ; end unless workflow contains required needle
     ) ; end for workflow needle
     (for ([target (in-list targets)])
@@ -4944,7 +4944,7 @@ jobs:
                                    (hash-ref target 'container)
                                    (rpm-ci-target-artifact-name artifact-prefix target)))])
         (unless (string-contains? content needle)
-          (raise-user-error 'validate-rpm-ci-workflow! f"RPM CI workflow missing target field: {needle}")
+          (raise-user-error 'validate-rpm-ci-workflow! "~a" f"RPM CI workflow missing target field: {needle}")
         ) ; end unless workflow contains target needle
       ) ; end for target needle
     ) ; end for target
@@ -5009,7 +5009,7 @@ jobs:
   (begin
     (assert-single-line-string 'deb-ci-config 'id value)
     (unless (regexp-match? #px"^[A-Za-z0-9_.+-]+$" value)
-      (raise-user-error 'deb-ci-config
+      (raise-user-error 'deb-ci-config "~a"
                         f"target id must contain only letters, digits, _, ., +, or -: {value}")
     ) ; end unless safe target id
     value
@@ -5020,7 +5020,7 @@ jobs:
   (begin
     (assert-single-line-string 'deb-ci-config 'runner value)
     (unless (regexp-match? #px"^[A-Za-z0-9_.:-]+$" value)
-      (raise-user-error 'deb-ci-config
+      (raise-user-error 'deb-ci-config "~a"
                         f"runner must contain only letters, digits, _, ., :, or -: {value}")
     ) ; end unless safe runner
     value
@@ -5031,7 +5031,7 @@ jobs:
   (begin
     (assert-single-line-string 'deb-ci-config 'container value)
     (unless (regexp-match? #px"^[A-Za-z0-9._/:@-]+$" value)
-      (raise-user-error 'deb-ci-config
+      (raise-user-error 'deb-ci-config "~a"
                         f"container must contain only image-reference characters: {value}")
     ) ; end unless safe container
     value
@@ -5042,7 +5042,7 @@ jobs:
   (begin
     (assert-single-line-string 'deb-ci-config 'setup-packages value)
     (unless (regexp-match? #px"^[A-Za-z0-9._+:@/-]+$" value)
-      (raise-user-error 'deb-ci-config
+      (raise-user-error 'deb-ci-config "~a"
                         f"setup package contains unsupported characters: {value}")
     ) ; end unless safe package
     value
@@ -5053,7 +5053,7 @@ jobs:
   (begin
     (assert-single-line-string 'deb-ci-config 'artifact-prefix value)
     (unless (regexp-match? #px"^[A-Za-z0-9_.+-]+$" value)
-      (raise-user-error 'deb-ci-config
+      (raise-user-error 'deb-ci-config "~a"
                         f"artifact-prefix must contain only letters, digits, _, ., +, or -: {value}")
     ) ; end unless safe artifact prefix
     value
@@ -5064,7 +5064,7 @@ jobs:
   (begin
     (assert-single-line-string 'deb-ci-config 'release-tag value)
     (unless (regexp-match? #px"^[A-Za-z0-9._/-]+$" value)
-      (raise-user-error 'deb-ci-config
+      (raise-user-error 'deb-ci-config "~a"
                         f"release-tag must contain only letters, digits, _, ., /, or -: {value}")
     ) ; end unless safe release tag
     value
@@ -5094,11 +5094,11 @@ jobs:
     (define packages
       (config-required-list 'deb-ci-config target 'setup-packages))
     (when (null? packages)
-      (raise-user-error 'deb-ci-config f"target {id} setup-packages must not be empty")
+      (raise-user-error 'deb-ci-config "~a" f"target {id} setup-packages must not be empty")
     ) ; end when empty setup packages
     (for ([pkg (in-list packages)])
       (unless (string? pkg)
-        (raise-user-error 'deb-ci-config f"target {id} setup-packages must contain only strings")
+        (raise-user-error 'deb-ci-config "~a" f"target {id} setup-packages must contain only strings")
       ) ; end unless package string
       (assert-deb-ci-package pkg)
     ) ; end for setup package
@@ -5393,7 +5393,7 @@ jobs:
     (when (file-exists? path)
       (define content (file->string path))
       (unless (string-contains? content generated-deb-repo-notice-marker)
-        (raise-user-error 'write-deb-ci-workflow!
+        (raise-user-error 'write-deb-ci-workflow! "~a"
                           f"refusing to overwrite workflow without generated marker: {(clean-path-string path)}")
       ) ; end unless generated marker present
     ) ; end when workflow exists
@@ -5437,7 +5437,7 @@ jobs:
                                  "racket -e '(require readline/readline) (displayln f\"deb-readline-ok\")'"
                                  "EXPECTED_DEB_COUNT:"))])
       (unless (string-contains? content needle)
-        (raise-user-error 'validate-deb-ci-workflow! f"DEB CI workflow missing: {needle}")
+        (raise-user-error 'validate-deb-ci-workflow! "~a" f"DEB CI workflow missing: {needle}")
       ) ; end unless workflow contains required needle
     ) ; end for workflow needle
     (for ([target (in-list targets)])
@@ -5450,7 +5450,7 @@ jobs:
                                    (hash-ref target 'container)
                                    (deb-ci-target-artifact-name artifact-prefix target)))])
         (unless (string-contains? content needle)
-          (raise-user-error 'validate-deb-ci-workflow! f"DEB CI workflow missing target field: {needle}")
+          (raise-user-error 'validate-deb-ci-workflow! "~a" f"DEB CI workflow missing target field: {needle}")
         ) ; end unless workflow contains target needle
       ) ; end for target needle
     ) ; end for target
@@ -5512,7 +5512,7 @@ jobs:
   (begin
     (assert-single-line-string 'windows-ci-config 'token-secret value)
     (unless (regexp-match? #px"^[A-Z0-9_]+$" value)
-      (raise-user-error 'windows-ci-config
+      (raise-user-error 'windows-ci-config "~a"
                         f"token-secret must contain only uppercase letters, digits, or _: {value}")
     ) ; end unless safe secret name
     value
@@ -5523,7 +5523,7 @@ jobs:
   (begin
     (assert-single-line-string 'windows-ci-config 'runner value)
     (unless (regexp-match? #px"^[A-Za-z0-9_.:-]+$" value)
-      (raise-user-error 'windows-ci-config
+      (raise-user-error 'windows-ci-config "~a"
                         f"runner must contain only letters, digits, _, ., :, or -: {value}")
     ) ; end unless safe runner
     value
@@ -5534,7 +5534,7 @@ jobs:
   (begin
     (assert-single-line-string 'windows-ci-config 'artifact-prefix value)
     (unless (regexp-match? #px"^[A-Za-z0-9_.+-]+$" value)
-      (raise-user-error 'windows-ci-config
+      (raise-user-error 'windows-ci-config "~a"
                         f"artifact-prefix must contain only letters, digits, _, ., +, or -: {value}")
     ) ; end unless safe artifact prefix
     value
@@ -5545,7 +5545,7 @@ jobs:
   (begin
     (assert-single-line-string 'windows-ci-config 'release-tag value)
     (unless (regexp-match? #px"^[A-Za-z0-9._/-]+$" value)
-      (raise-user-error 'windows-ci-config
+      (raise-user-error 'windows-ci-config "~a"
                         f"release-tag must contain only letters, digits, _, ., /, or -: {value}")
     ) ; end unless safe release tag
     value
@@ -5560,7 +5560,7 @@ jobs:
     (assert-single-line-string 'windows-ci-config 'arch value)
     (match (string-downcase value)
       [(or "x86_64" "amd64" "x64") "x86_64"]
-      [_ (raise-user-error 'windows-ci-config
+      [_ (raise-user-error 'windows-ci-config "~a"
                            f"arch must be x86_64, amd64, or x64 for this first portable target: {value}")]
     ) ; end match arch value
   ) ; end begin assert-windows-ci-arch
@@ -5570,7 +5570,7 @@ jobs:
   (begin
     (assert-single-line-string 'windows-ci-config 'msvc-arch value)
     (unless (member value '("x64" "x86" "x86_amd64" "x64_arm64" "arm64" "arm64_x64") string=?)
-      (raise-user-error 'windows-ci-config
+      (raise-user-error 'windows-ci-config "~a"
                         f"msvc-arch must be x64, x86, x86_amd64, x64_arm64, arm64, or arm64_x64: {value}")
     ) ; end unless known msvc mode
     value
@@ -5583,7 +5583,7 @@ jobs:
   (begin
     (assert-single-line-string 'windows-ci-config 'inno-arch value)
     (unless (regexp-match? #px"^[A-Za-z0-9]+$" value)
-      (raise-user-error 'windows-ci-config
+      (raise-user-error 'windows-ci-config "~a"
                         f"inno-arch must contain only letters and digits: {value}")
     ) ; end unless safe inno arch
     value
@@ -5596,7 +5596,7 @@ jobs:
     (match (string-downcase value)
       [(or "x86_64" "amd64" "x64") "x86_64"]
       [(or "arm64" "aarch64") "arm64"]
-      [_ (raise-user-error 'windows-ci-config
+      [_ (raise-user-error 'windows-ci-config "~a"
                            f"target arch must be x86_64/amd64/x64 or arm64/aarch64: {value}")]
     ) ; end match target arch value
   ) ; end begin normalize-windows-ci-target-arch
@@ -5663,7 +5663,7 @@ jobs:
   (begin
     (assert-single-line-string 'windows-ci-config 'nmake-target value)
     (unless (regexp-match? #px"^[A-Za-z0-9_.:+-]+$" value)
-      (raise-user-error 'windows-ci-config
+      (raise-user-error 'windows-ci-config "~a"
                         f"nmake-target contains unsupported characters: {value}")
     ) ; end unless safe target
     value
@@ -5674,7 +5674,7 @@ jobs:
   (begin
     (assert-single-line-string 'windows-ci-config 'portable-dir-name value)
     (unless (regexp-match? #px"^[A-Za-z0-9_.+-]+$" value)
-      (raise-user-error 'windows-ci-config
+      (raise-user-error 'windows-ci-config "~a"
                         f"portable-dir-name must contain only letters, digits, _, ., +, or -: {value}")
     ) ; end unless safe portable dir
     value
@@ -5685,7 +5685,7 @@ jobs:
   (begin
     (assert-single-line-string 'windows-ci-config 'release-repo value)
     (unless (regexp-match? #px"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" value)
-      (raise-user-error 'windows-ci-config
+      (raise-user-error 'windows-ci-config "~a"
                         f"release-repo must be OWNER/REPO: {value}")
     ) ; end unless owner/repo
     value
@@ -5967,7 +5967,7 @@ racket package-racket.rkt \\
   (cond
     [(string=? arch "x86_64") "x86_64"]
     [(string=? arch "arm64") "aarch64"]
-    [else (raise-user-error who f"no llvm-mingw arch mapping for windows arch: {arch}")]
+    [else (raise-user-error who "~a" f"no llvm-mingw arch mapping for windows arch: {arch}")]
   ) ; end cond windows arch to llvm-mingw arch
 ) ; end define windows-ci-mingw-arch
 
@@ -6833,7 +6833,7 @@ jobs:{build-jobs-yaml}{(windows-ci-publish-job-content config)}"
     (when (file-exists? path)
       (define content (file->string path))
       (unless (string-contains? content generated-windows-ci-notice-marker)
-        (raise-user-error 'write-windows-ci-workflow!
+        (raise-user-error 'write-windows-ci-workflow! "~a"
                           f"refusing to overwrite workflow without generated marker: {(clean-path-string path)}")
       ) ; end unless generated marker present
     ) ; end when workflow exists
@@ -6845,7 +6845,7 @@ jobs:{build-jobs-yaml}{(windows-ci-publish-job-content config)}"
     (when (file-exists? path)
       (define content (file->string path))
       (unless (string-contains? content generated-windows-ci-notice-marker)
-        (raise-user-error 'write-windows-ci-readme!
+        (raise-user-error 'write-windows-ci-readme! "~a"
                           f"refusing to overwrite README without generated marker: {(clean-path-string path)}")
       ) ; end unless generated marker present
     ) ; end when README exists
@@ -6870,7 +6870,7 @@ jobs:{build-jobs-yaml}{(windows-ci-publish-job-content config)}"
                                    arch-needles
                                    (list "/CACHEPATH")))])
       (unless (string-contains? content needle)
-        (raise-user-error 'validate-windows-ci-readme! f"Windows README missing: {needle}")
+        (raise-user-error 'validate-windows-ci-readme! "~a" f"Windows README missing: {needle}")
       ) ; end unless README contains required text
     ) ; end for README needle
   ) ; end begin validate-windows-ci-readme!
@@ -6911,7 +6911,7 @@ jobs:{build-jobs-yaml}{(windows-ci-publish-job-content config)}"
                                          "actions/upload-artifact@v6")
                                    arch-needles))])
       (unless (string-contains? content needle)
-        (raise-user-error 'validate-windows-ci-workflow! f"Windows CI workflow missing: {needle}")
+        (raise-user-error 'validate-windows-ci-workflow! "~a" f"Windows CI workflow missing: {needle}")
       ) ; end unless workflow contains required needle
     ) ; end for workflow needle
     (when (config-required-boolean 'windows-ci-config config 'publish-release)
@@ -6919,7 +6919,7 @@ jobs:{build-jobs-yaml}{(windows-ci-publish-job-content config)}"
                                "gh release upload"
                                "RELEASE_REPO:"))])
         (unless (string-contains? content needle)
-          (raise-user-error 'validate-windows-ci-workflow! f"Windows publish workflow missing: {needle}")
+          (raise-user-error 'validate-windows-ci-workflow! "~a" f"Windows publish workflow missing: {needle}")
         ) ; end unless workflow contains publish needle
       ) ; end for publish needle
     ) ; end when publish release
@@ -6994,7 +6994,7 @@ jobs:{build-jobs-yaml}{(windows-ci-publish-job-content config)}"
     (copy-file rpm-path dest #t)
     (assert-nonempty-file 'copy-rpm-into-repo! dest)
     (unless (string=? (sha256-file rpm-path) (sha256-file dest))
-      (raise-user-error 'copy-rpm-into-repo!
+      (raise-user-error 'copy-rpm-into-repo! "~a"
                         f"copied RPM sha256 mismatch: {(clean-path-string dest)}")
     ) ; end unless copied rpm sha matches
     (println/flush f"Installed RPM repo package: {(clean-path-string dest)}")
@@ -7271,7 +7271,7 @@ jobs:{build-jobs-yaml}{(windows-ci-publish-job-content config)}"
   (match (regexp-match #rx"^([0-9]+)[.]([0-9]+)" version)
     [(list _ major minor)
      f"https://download.racket-lang.org/releases/{major}.{minor}/catalog/"]
-    [_ (raise-user-error 'release-catalog-url
+    [_ (raise-user-error 'release-catalog-url "~a"
                          f"cannot derive release catalog from version: {version}")]
   ) ; end match version
 ) ; end define release-catalog-url
@@ -7415,7 +7415,7 @@ information.
     (define old-rx (regexp (regexp-quote old)))
     (define count (regexp-match-count old-rx content))
     (unless (= count 1)
-      (raise-user-error who
+      (raise-user-error who "~a"
                         f"expected exactly one source patch match in {(clean-path-string path)}, found {count}")
     ) ; end unless exactly one match
     (write-text-file! path (regexp-replace old-rx content new))
@@ -7495,7 +7495,7 @@ information.
                                          (build-path racket-root "racket" "share" "pkgs" name)))])
         (and (directory-exists? candidate) candidate)
       ) ; end for/or candidates
-      (raise-user-error 'brew-package-source
+      (raise-user-error 'brew-package-source "~a"
                         f"cannot find package {name} in {(clean-path-string racket-root)}/pkgs or {(clean-path-string racket-root)}/racket/share/pkgs")))
 
 (define (datum->source v)
@@ -7505,7 +7505,7 @@ information.
   (begin
     (define pair (assoc name brew-package-links))
     (unless pair
-      (raise-user-error 'brew-package-link-name
+      (raise-user-error 'brew-package-link-name "~a"
                         f"package has no explicit collection link mapping: {name}")
     ) ; end unless known package link
     (cdr pair)
@@ -7560,7 +7560,7 @@ information.
         (define checksum
           (hash-ref checksums name
                     (lambda ()
-                      (raise-user-error 'write-brew-pkgs-db!
+                      (raise-user-error 'write-brew-pkgs-db! "~a"
                                         f"package has no self-catalog checksum: {name}"))))
         (values name (brew-pkg-info-value name checksum))
       ) ; end for/hash entries
@@ -7610,7 +7610,7 @@ information.
   (begin
     (define info (get-info/full (build-path pkgs-dir name)))
     (unless info
-      (raise-user-error 'brew-package-catalog-metadata
+      (raise-user-error 'brew-package-catalog-metadata "~a"
                         f"package has no readable info.rkt: {name}")
     ) ; end unless readable info
     (values (info 'deps (lambda () '()))
@@ -7675,13 +7675,13 @@ information.
     (define dependency-count
       (regexp-match-count excluded-dependency-line-rx content))
     (unless (= dependency-count 1)
-      (raise-user-error 'patch-brew-racket-lib-info!
+      (raise-user-error 'patch-brew-racket-lib-info! "~a"
                         f"expected exactly one excluded platform dependency in {(clean-path-string info-path)}, found {dependency-count}")
     ) ; end unless exactly one excluded dependency
     (define patched-content
       (regexp-replace excluded-dependency-line-rx content ""))
     (when (string-contains? patched-content brew-racket-lib-excluded-dependency)
-      (raise-user-error 'patch-brew-racket-lib-info!
+      (raise-user-error 'patch-brew-racket-lib-info! "~a"
                         f"excluded platform dependency still present after patch: {(clean-path-string info-path)}")
     ) ; end when dependency still present
     (write-text-file! info-path patched-content)
@@ -7693,7 +7693,7 @@ information.
     (define dependency-rx (regexp (regexp-quote dependency)))
     (define dependency-count (regexp-match-count dependency-rx content))
     (unless (= dependency-count 1)
-      (raise-user-error who
+      (raise-user-error who "~a"
                         f"expected exactly one excluded platform dependency in {(clean-path-string info-path)}, found {dependency-count}: {dependency}")
     ) ; end unless exactly one dependency
     (regexp-replace dependency-rx content "")
@@ -7715,7 +7715,7 @@ information.
     ) ; end define patched-content
     (for ([dependency (in-list brew-draw-lib-excluded-dependencies)])
       (when (string-contains? patched-content dependency)
-        (raise-user-error 'patch-brew-draw-lib-info!
+        (raise-user-error 'patch-brew-draw-lib-info! "~a"
                           f"excluded platform dependency still present after patch: {(clean-path-string info-path)}")
       ) ; end when dependency still present
     ) ; end for dependency check
@@ -7738,7 +7738,7 @@ information.
           [(file-exists? share-src) share-src]
           [(file-exists? src-src) src-src]
           [else
-           (raise-user-error 'copy-brew-licenses! f"missing license file: {name}")]
+           (raise-user-error 'copy-brew-licenses! "~a" f"missing license file: {name}")]
         ) ; end cond license source
       ) ; end define src
       (copy-file src (build-path dest-share name) #t)
@@ -7838,7 +7838,7 @@ information.
     (close-input-port err)
     (delete-file tar-path)
     (unless (zero? status)
-      (raise-user-error 'make-brew-tgz! f"gzip failed with exit {status}: {stderr}")
+      (raise-user-error 'make-brew-tgz! "~a" f"gzip failed with exit {status}: {stderr}")
     ) ; end unless gzip success
     tgz-path
   ) ; end begin make-brew-tgz!
@@ -7870,14 +7870,14 @@ information.
     (define links-content (brew-tgz-file-content c "share/links.rktd"))
     (for ([needle (in-list (brew-required-link-needles c))])
       (unless (string-contains? links-content needle)
-        (raise-user-error 'validate-brew-tgz!
+        (raise-user-error 'validate-brew-tgz! "~a"
                           f"brew source tgz links.rktd is missing: {needle}")
       ) ; end unless link needle
     ) ; end for required links
     (define pkgs-db-content (brew-tgz-file-content c "share/pkgs/pkgs.rktd"))
     (for ([needle (in-list (brew-required-pkgs-db-needles c))])
       (unless (string-contains? pkgs-db-content needle)
-        (raise-user-error 'validate-brew-tgz!
+        (raise-user-error 'validate-brew-tgz! "~a"
                           f"brew source tgz pkgs.rktd is missing: {needle}")
       ) ; end unless pkgs db needle
     ) ; end for required pkgs db entries
@@ -7891,25 +7891,25 @@ information.
       (define entry (read (open-input-string entry-content)))
       (define catalog-checksum (hash-ref entry 'checksum ""))
       (unless (regexp-match? #px"^[0-9a-f]{40}$" catalog-checksum)
-        (raise-user-error 'validate-brew-tgz!
+        (raise-user-error 'validate-brew-tgz! "~a"
                           f"self catalog entry has no usable checksum: {name}")
       ) ; end unless checksum shape
       (define db-info (hash-ref pkgs-db name #f))
       (define db-checksum (and db-info (vector-ref (struct->vector db-info) 2)))
       (unless (equal? catalog-checksum db-checksum)
-        (raise-user-error 'validate-brew-tgz!
+        (raise-user-error 'validate-brew-tgz! "~a"
                           f"self catalog and pkgs.rktd checksums disagree for: {name}")
       ) ; end unless checksums agree
       (unless (string-contains? tgz-members
                                 (brew-tgz-member-path c f"share/self-catalog/pkgs/{name}.tar"))
-        (raise-user-error 'validate-brew-tgz!
+        (raise-user-error 'validate-brew-tgz! "~a"
                           f"brew source tgz is missing the self catalog archive for: {name}")
       ) ; end unless archive member present
     ) ; end for self catalog entries
     (define racket-lib-info-content
       (brew-tgz-file-content c "share/pkgs/racket-lib/info.rkt"))
     (when (string-contains? racket-lib-info-content brew-racket-lib-excluded-dependency)
-      (raise-user-error 'validate-brew-tgz!
+      (raise-user-error 'validate-brew-tgz! "~a"
                         f"brew source tgz racket-lib/info.rkt still depends on excluded package: {brew-racket-lib-excluded-dependency}")
     ) ; end when excluded dependency still present
     (when (cfg-with-docs? c)
@@ -7917,7 +7917,7 @@ information.
         (brew-tgz-file-content c "share/pkgs/draw-lib/info.rkt"))
       (for ([dependency (in-list brew-draw-lib-excluded-dependencies)])
         (when (string-contains? draw-lib-info-content dependency)
-          (raise-user-error 'validate-brew-tgz!
+          (raise-user-error 'validate-brew-tgz! "~a"
                             f"brew source tgz draw-lib/info.rkt still depends on excluded package: {dependency}")
         ) ; end when excluded draw dependency still present
       ) ; end for excluded draw dependency
@@ -7950,7 +7950,7 @@ information.
        (cond
          [(not value) (fallback)]
          [(and (string? value) (not (string=? value ""))) value]
-         [else (raise-user-error who f"config key must be a non-empty string: {tag-key}")]
+         [else (raise-user-error who "~a" f"config key must be a non-empty string: {tag-key}")]
        ) ; end cond configured tag
       ]
       [else
@@ -7983,7 +7983,7 @@ information.
 (define (github-release-tag-from-root-url who root-url)
   (match (regexp-match #rx"^https://github[.]com/[^/]+/[^/]+/releases/download/([^/]+)$" root-url)
     [(list _ tag) tag]
-    [_ (raise-user-error who
+    [_ (raise-user-error who "~a"
                          f"--bottle-root-url must be a GitHub release download URL: {root-url}")]
   ) ; end match github release root url
 ) ; end define github-release-tag-from-root-url
@@ -7998,11 +7998,11 @@ information.
         (assert-file 'assert-homebrew-tap! (cfg-formula c))
       ) ; end when incremental formula requires existing file
       (unless (path-contained-in? (cfg-formula c) (build-path (cfg-homebrew-tap c) "Formula"))
-        (raise-user-error 'assert-homebrew-tap!
+        (raise-user-error 'assert-homebrew-tap! "~a"
                           f"formula must be inside tap Formula directory: {(clean-path-string (cfg-formula c))}")
       ) ; end unless formula inside tap Formula
       (unless (equal? (file-name-from-path (cfg-formula c)) (string->path "racket@9.rb"))
-        (raise-user-error 'assert-homebrew-tap!
+        (raise-user-error 'assert-homebrew-tap! "~a"
                           f"formula file must be racket@9.rb: {(clean-path-string (cfg-formula c))}")
       ) ; end unless formula basename expected
     ) ; end when update formula
@@ -8041,7 +8041,7 @@ information.
     (define content (file->string formula-path))
     (match (regexp-match #px"(?m:^  sha256 \"([0-9a-f]{64})\")" content)
       [(list _ digest) digest]
-      [_ (raise-user-error 'formula-sha256
+      [_ (raise-user-error 'formula-sha256 "~a"
                            f"formula has no source sha256 line: {(clean-path-string formula-path)}")]
     ) ; end match formula sha
   ) ; end begin formula-sha256
@@ -8071,7 +8071,7 @@ information.
 	                                 "test do"
 	                                 f"assert_match \"{(cfg-source-version c)}\""))])
       (unless (string-contains? content needle)
-        (raise-user-error 'validate-formula-file!
+        (raise-user-error 'validate-formula-file! "~a"
                           f"formula is missing expected content: {needle}")
       ) ; end unless needle present
     ) ; end for formula needle
@@ -8079,26 +8079,26 @@ information.
       (for ([needle (in-list (list "raco docs --help"
                                    "raco doc --help"))])
         (unless (string-contains? content needle)
-          (raise-user-error 'validate-formula-file!
+          (raise-user-error 'validate-formula-file! "~a"
                             f"formula with --within-docs is missing expected content: {needle}")
         ) ; end unless docs needle present
       ) ; end for docs formula needle
     ) ; end when docs enabled
     (unless (= 1 (regexp-match-count #px"(?m:^  sha256 \"[0-9a-f]{64}\")" content))
-      (raise-user-error 'validate-formula-file!
+      (raise-user-error 'validate-formula-file! "~a"
                         f"formula must contain exactly one source sha256 line: {(clean-path-string formula-path)}")
     ) ; end unless one source sha
     (unless (= 1 (regexp-match-count #px"(?m:^  version \"[^\"]+\")" content))
-      (raise-user-error 'validate-formula-file!
+      (raise-user-error 'validate-formula-file! "~a"
                         f"formula must contain exactly one version line: {(clean-path-string formula-path)}")
     ) ; end unless one formula version
     (validate-formula-version-before-sha! 'validate-formula-file! content formula-path)
 	    (when (> (regexp-match-count #px"(?m:^    root_url \"[^\"]+\")" content) 1)
-	      (raise-user-error 'validate-formula-file!
+	      (raise-user-error 'validate-formula-file! "~a"
 	                        f"formula must contain at most one bottle root_url line: {(clean-path-string formula-path)}")
 	    ) ; end when too many root_url lines
 	    (when (string-contains? content "end, \"--no-launcher\"")
-	      (raise-user-error 'validate-formula-file!
+	      (raise-user-error 'validate-formula-file! "~a"
 	                        f"formula has stale no-launcher text after a Ruby block: {(clean-path-string formula-path)}")
 	    ) ; end when stale no-launcher text
 	    (formula-sha256 formula-path)
@@ -8115,25 +8115,25 @@ information.
                                  "racket-minimal-"
                                  "test do"))])
       (unless (string-contains? content needle)
-        (raise-user-error 'validate-formula-template!
+        (raise-user-error 'validate-formula-template! "~a"
                           f"formula template is missing expected content: {needle}")
       ) ; end unless needle present
     ) ; end for template needle
     (unless (= 1 (regexp-match-count #px"(?m:^  url \"[^\"]+racket-minimal-[^\"]+-src[.]tgz\")" content))
-      (raise-user-error 'validate-formula-template!
+      (raise-user-error 'validate-formula-template! "~a"
                         f"formula template must contain exactly one source url line: {(clean-path-string formula-path)}")
     ) ; end unless one source url
     (unless (= 1 (regexp-match-count #px"(?m:^  sha256 \"[0-9a-f]{64}\")" content))
-      (raise-user-error 'validate-formula-template!
+      (raise-user-error 'validate-formula-template! "~a"
                         f"formula template must contain exactly one source sha256 line: {(clean-path-string formula-path)}")
     ) ; end unless one source sha
     (when (> (regexp-match-count #px"(?m:^  version \"[^\"]+\")" content) 1)
-      (raise-user-error 'validate-formula-template!
+      (raise-user-error 'validate-formula-template! "~a"
                         f"formula template must contain at most one version line: {(clean-path-string formula-path)}")
     ) ; end when too many formula versions
     (validate-formula-version-before-sha! 'validate-formula-template! content formula-path)
     (when (> (regexp-match-count #px"(?m:^    root_url \"[^\"]+\")" content) 1)
-      (raise-user-error 'validate-formula-template!
+      (raise-user-error 'validate-formula-template! "~a"
                         f"formula template must contain at most one bottle root_url line: {(clean-path-string formula-path)}")
     ) ; end when too many root_url lines
   ) ; end begin validate-formula-template!
@@ -8152,7 +8152,7 @@ information.
        (write-text-file! formula-path (regexp-replace root-url-rx content (formula-root-url-line c)))
        (validate-formula-file! c formula-path)]
       [else
-       (raise-user-error 'set-formula-bottle-root-url!
+       (raise-user-error 'set-formula-bottle-root-url! "~a"
                          f"formula must contain at most one bottle root_url line: {(clean-path-string formula-path)}")]
     ) ; end cond root_url count
   ) ; end begin set-formula-bottle-root-url!
@@ -8246,15 +8246,15 @@ information.
     (define formula-version-rx #px"(?m:^  version \"[^\"]+\")")
     (define formula-version-line-rx #px"(?m:^  version \"[^\"]+\"\n)")
     (unless (= 1 (regexp-match-count source-url-rx content))
-      (raise-user-error 'set-formula-source!
+      (raise-user-error 'set-formula-source! "~a"
                         f"formula must contain exactly one source url line: {(clean-path-string formula-path)}")
     ) ; end unless exactly one source url
     (unless (= 1 (regexp-match-count source-sha-rx content))
-      (raise-user-error 'set-formula-source!
+      (raise-user-error 'set-formula-source! "~a"
                         f"formula must contain exactly one source sha256 line: {(clean-path-string formula-path)}")
     ) ; end unless exactly one source sha
     (when (> (regexp-match-count formula-version-rx content) 1)
-      (raise-user-error 'set-formula-source!
+      (raise-user-error 'set-formula-source! "~a"
                         f"formula must contain at most one version line: {(clean-path-string formula-path)}")
     ) ; end when too many version lines
     (define with-source-url
@@ -8508,7 +8508,7 @@ information.
       (define content (file->string formula-path))
       (unless (string-contains? content "raco docs --help")
         (unless (= 1 (regexp-match-count #px"(?m:^  test do\n)" content))
-          (raise-user-error 'ensure-formula-docs-test!
+          (raise-user-error 'ensure-formula-docs-test! "~a"
                             f"formula must contain exactly one test block for docs test insertion: {(clean-path-string formula-path)}")
         ) ; end unless exactly one test block
         (write-text-file!
@@ -8816,7 +8816,7 @@ end
     (define tgz-path (brew-output-tgz c))
     (assert-nonempty-file 'validate-brew-tgz! tgz-path)
     (unless (equal? (file-name-from-path tgz-path) (string->path (brew-source-tgz-name c)))
-      (raise-user-error 'validate-brew-tgz!
+      (raise-user-error 'validate-brew-tgz! "~a"
                         f"brew source tgz name must be {(brew-source-tgz-name c)}: {(clean-path-string tgz-path)}")
     ) ; end unless brew tgz basename matches formula
     (validate-brew-tgz-content! c)
@@ -8831,7 +8831,7 @@ end
     (define formula-digest (formula-sha256 formula-path))
     (define actual-digest (sha256-file (brew-output-tgz c)))
     (unless (string=? formula-digest actual-digest)
-      (raise-user-error 'validate-brew-artifact!
+      (raise-user-error 'validate-brew-artifact! "~a"
                         f"formula sha256 {formula-digest} does not match generated tgz sha256 {actual-digest}")
     ) ; end unless formula sha matches tgz
     (println/flush f"Validated brew formula: {(clean-path-string formula-path)}")
@@ -8871,7 +8871,7 @@ end
     (cond
       [(formula-mode-incremental? c)
        (unless original-digest
-         (raise-user-error 'prepare-generated-formula!
+         (raise-user-error 'prepare-generated-formula! "~a"
                            f"incremental formula mode requires an existing formula: {(clean-path-string (cfg-formula c))}")
       ) ; end unless existing formula digest
        (copy-file (cfg-formula c) generated #t)
@@ -8880,7 +8880,7 @@ end
       [(formula-mode-full? c)
        (void)]
       [else
-       (raise-user-error 'prepare-generated-formula!
+       (raise-user-error 'prepare-generated-formula! "~a"
                          f"unsupported formula build mode: {(cfg-formula-build-mode c)}")]
     ) ; end cond formula mode
     (values generated original-digest)
@@ -8898,13 +8898,13 @@ end
       [original-digest
        (let ([current-digest (sha256-file dest)])
          (unless (string=? current-digest original-digest)
-           (raise-user-error 'install-generated-formula!
+           (raise-user-error 'install-generated-formula! "~a"
                              f"refusing to replace formula because it changed during this run: {(clean-path-string dest)}")
          ) ; end unless formula unchanged
        ) ; end let current digest
       ]
       [(file-exists? dest)
-       (raise-user-error 'install-generated-formula!
+       (raise-user-error 'install-generated-formula! "~a"
                          f"refusing to replace formula because it appeared during this run: {(clean-path-string dest)}")]
       [else
        (void)]
@@ -8955,7 +8955,7 @@ end
           [(formula-mode-full? c)
            (write-full-formula! c generated-formula digest)]
           [else
-           (raise-user-error 'build-brew!
+           (raise-user-error 'build-brew! "~a"
                              f"unsupported formula build mode: {(cfg-formula-build-mode c)}")]
         ) ; end cond formula mode
       ) ; end when update formula fields
@@ -8990,7 +8990,7 @@ end
         (define datum (read in))
         (define next (read in))
         (unless (eof-object? next)
-          (raise-user-error who f"file must contain exactly one Racket datum: {(clean-path-string path)}")
+          (raise-user-error who "~a" f"file must contain exactly one Racket datum: {(clean-path-string path)}")
         ) ; end unless exactly one datum
         datum
       ) ; end lambda in
@@ -9002,7 +9002,7 @@ end
   (begin
     (define datum (read-single-rktd who path))
     (unless (hash? datum)
-      (raise-user-error who f"config must be a hash: {(clean-path-string path)}")
+      (raise-user-error who "~a" f"config must be a hash: {(clean-path-string path)}")
     ) ; end unless hash config
     datum
   ) ; end begin read-rktd-hash
@@ -9017,7 +9017,7 @@ end
   (begin
     (define value (hash-ref config key #f))
     (unless (and (string? value) (not (string=? value "")))
-      (raise-user-error who f"missing non-empty string config key: {key}")
+      (raise-user-error who "~a" f"missing non-empty string config key: {key}")
     ) ; end unless required string
     value
   ) ; end begin config-required-string
@@ -9027,7 +9027,7 @@ end
   (begin
     (define value (hash-ref config key #f))
     (unless (boolean? value)
-      (raise-user-error who f"missing boolean config key: {key}")
+      (raise-user-error who "~a" f"missing boolean config key: {key}")
     ) ; end unless required boolean
     value
   ) ; end begin config-required-boolean
@@ -9037,7 +9037,7 @@ end
   (begin
     (define value (hash-ref config key #f))
     (unless (list? value)
-      (raise-user-error who f"missing list config key: {key}")
+      (raise-user-error who "~a" f"missing list config key: {key}")
     ) ; end unless required list
     value
   ) ; end begin config-required-list
@@ -9047,7 +9047,7 @@ end
   (begin
     (define value (hash-ref config key default))
     (unless (and (string? value) (not (string=? value "")))
-      (raise-user-error who f"config key must be a non-empty string: {key}")
+      (raise-user-error who "~a" f"config key must be a non-empty string: {key}")
     ) ; end unless optional string
     value
   ) ; end begin config-optional-string
@@ -9057,7 +9057,7 @@ end
   (begin
     (define value (hash-ref config key default))
     (unless (boolean? value)
-      (raise-user-error who f"config key must be boolean: {key}")
+      (raise-user-error who "~a" f"config key must be boolean: {key}")
     ) ; end unless boolean
     value
   ) ; end begin config-optional-boolean
@@ -9066,7 +9066,7 @@ end
 (define (assert-rpm-repo-id value)
   (unless (and (string? value)
                (regexp-match? #px"^[A-Za-z0-9_.:-]+$" value))
-    (raise-user-error 'rpm-repo-config
+    (raise-user-error 'rpm-repo-config "~a"
                       f"rpm-repo-id must contain only letters, digits, _, ., :, or -: {value}")
   ) ; end unless valid rpm repo id
   value)
@@ -9081,7 +9081,7 @@ end
 (define (assert-rpm-repo-baseurl value)
   (begin
     (unless (regexp-match? #px"^(https?|file)://" value)
-      (raise-user-error 'rpm-repo-config
+      (raise-user-error 'rpm-repo-config "~a"
                         f"rpm-repo-baseurl must start with https://, http://, or file://: {value}")
     ) ; end unless supported repo baseurl
     (when (or (string-contains? value " ")
@@ -9089,7 +9089,7 @@ end
               (string-contains? value "'")
               (string-contains? value "\n")
               (string-contains? value "\r"))
-      (raise-user-error 'rpm-repo-config
+      (raise-user-error 'rpm-repo-config "~a"
                         f"rpm-repo-baseurl contains unsafe characters: {value}")
     ) ; end when unsafe repo baseurl
     value
@@ -9153,10 +9153,10 @@ end
   (match (string-split repo "/")
     [(list owner name)
      (when (or (string=? owner "") (string=? name ""))
-       (raise-user-error who f"GitHub repo must be OWNER/REPO: {repo}")
+       (raise-user-error who "~a" f"GitHub repo must be OWNER/REPO: {repo}")
      ) ; end when empty owner/name
      (values owner name)]
-    [_ (raise-user-error who f"GitHub repo must be OWNER/REPO: {repo}")]
+    [_ (raise-user-error who "~a" f"GitHub repo must be OWNER/REPO: {repo}")]
   ) ; end match repo pieces
 ) ; end define split-github-repo
 
@@ -9180,7 +9180,7 @@ end
   (begin
     (define bits (file-or-directory-permissions path 'bits))
     (when (not (zero? (bitwise-and bits #o077)))
-      (raise-user-error 'read-github-token
+      (raise-user-error 'read-github-token "~a"
                         f"token file must not be group/world readable or writable; run chmod 600 {(shell-quote (clean-path-string path))}")
     ) ; end when unsafe secret file permissions
   ) ; end begin assert-secret-file-mode!
@@ -9195,7 +9195,7 @@ end
   (begin
     (define value (getenv name))
     (unless (and value (not (string=? (string-trim value) "")))
-      (raise-user-error 'read-github-token
+      (raise-user-error 'read-github-token "~a"
                         f"environment variable named by --token-env is unset or empty: {name}")
     ) ; end unless token present
     (string-trim value)
@@ -9209,17 +9209,17 @@ end
     (define datum
       (with-handlers ([exn:fail?
                        (lambda (exn)
-                         (raise-user-error 'read-github-token
+                         (raise-user-error 'read-github-token "~a"
                                            f"could not read token file as one Racket datum: {(clean-path-string token-file)}")
                        )])
         (read-single-rktd 'read-github-token token-file)))
     (unless (string? datum)
-      (raise-user-error 'read-github-token
+      (raise-user-error 'read-github-token "~a"
                         f"token file must contain a string datum, got non-string value ({(safe-secret-preview datum)}): {(clean-path-string token-file)}")
     ) ; end unless token string
     (define token (string-trim datum))
     (when (string=? token "")
-      (raise-user-error 'read-github-token f"token file string is empty: {(clean-path-string token-file)}")
+      (raise-user-error 'read-github-token "~a" f"token file string is empty: {(clean-path-string token-file)}")
     ) ; end when empty token
     token
   ) ; end begin read-github-token/file
@@ -9238,7 +9238,7 @@ end
   (match (regexp-match #px"^https://([^/]+)(/.*)?$" url)
     [(list _ host path)
      (values host (if path path "/"))]
-    [_ (raise-user-error who f"expected https URL from GitHub API: {url}")]
+    [_ (raise-user-error who "~a" f"expected https URL from GitHub API: {url}")]
   ) ; end match url
 ) ; end define https-url->host/path
 
@@ -9246,7 +9246,7 @@ end
   (match (regexp-match #px"^https://github[.]com/([^/]+)/([^/]+)/releases/download/([^/]+)/([^/?#]+)" url)
     [(list _ owner repo tag asset-name)
      (values owner repo tag asset-name)]
-    [_ (raise-user-error who
+    [_ (raise-user-error who "~a"
                          f"expected GitHub release download URL: {url}")]
   ) ; end match GitHub release URL
 ) ; end define github-release-download-url-values
@@ -9257,9 +9257,9 @@ end
     (cond
       [(>= (length pieces) 2)
        (or (string->number (second pieces))
-           (raise-user-error 'http-status-code f"could not parse HTTP status: {(bytes->string/utf-8 status)}"))]
+           (raise-user-error 'http-status-code "~a" f"could not parse HTTP status: {(bytes->string/utf-8 status)}"))]
       [else
-       (raise-user-error 'http-status-code f"could not parse HTTP status: {(bytes->string/utf-8 status)}")]
+       (raise-user-error 'http-status-code "~a" f"could not parse HTTP status: {(bytes->string/utf-8 status)}")]
     ) ; end cond status pieces
   ) ; end begin http-status-code
 ) ; end define http-status-code
@@ -9304,7 +9304,7 @@ end
        (raise-user-error 'github-response-port "POST requires request data")
      ) ; end unless post data
      (post-impure-port url data headers)]
-    [_ (raise-user-error 'github-response-port f"unsupported HTTP method: {method}")]
+    [_ (raise-user-error 'github-response-port "~a" f"unsupported HTTP method: {method}")]
   ) ; end match method
 ) ; end define github-response-port
 
@@ -9342,7 +9342,7 @@ end
                           (sleep (min attempt 5))
                           (loop (add1 attempt))]
                          [else
-                          (raise-user-error who
+                          (raise-user-error who "~a"
                                             f"HTTP request failed after {attempt} attempts: {method} https://{host}{path}
 {(exn-message exn)}")]
                        ) ; end cond retry
@@ -9369,7 +9369,7 @@ end
     (define body (port->string body-port))
     (close-input-port body-port)
     (unless (member code ok-statuses =)
-      (raise-user-error who
+      (raise-user-error who "~a"
                         f"GitHub API request failed: {method} https://{host}{path}
 status: {(bytes->string/utf-8 status)}
 body: {(safe-response-body body)}")
@@ -9409,7 +9409,7 @@ body: {(safe-response-body body)}")
          (define location (github-header-value header-lines "Location"))
          (close-input-port body-port)
          (unless location
-           (raise-user-error who f"GitHub redirect missing Location header: {code}")
+           (raise-user-error who "~a" f"GitHub redirect missing Location header: {code}")
          ) ; end unless location
          (define-values (next-host next-path)
            (https-url->host/path who location)
@@ -9418,7 +9418,7 @@ body: {(safe-response-body body)}")
         [else
          (define body (port->string body-port))
          (close-input-port body-port)
-         (raise-user-error who
+         (raise-user-error who "~a"
                            f"GitHub asset download failed: {code}
 body: {(safe-response-body body)}")]
       ) ; end cond download response
@@ -9452,7 +9452,7 @@ body: {(safe-response-body body)}")]
                              #:content-type "application/json"
                              #:ok '(201))]
       [else
-       (raise-user-error who f"no GitHub release for tag {tag} in {owner}/{repo}; pass --create-release to create it")]
+       (raise-user-error who "~a" f"no GitHub release for tag {tag} in {owner}/{repo}; pass --create-release to create it")]
     ) ; end cond found
   ) ; end begin github-release-by-tag/create!
 ) ; end define github-release-by-tag/create!
@@ -9510,7 +9510,7 @@ body: {(safe-response-body body)}")]
                 (string=? (hash-ref asset 'name "") asset-name))
               assets))
     (when (> (length matches) 1)
-      (raise-user-error 'release-asset-by-name
+      (raise-user-error 'release-asset-by-name "~a"
                         f"release has multiple assets named {asset-name}; refusing to continue")
     ) ; end when duplicate assets
     (and (pair? matches) (car matches))
@@ -9548,7 +9548,7 @@ body: {(safe-response-body body)}")]
                [path initial-path]
                [redirects 0])
       (when (> redirects 5)
-        (raise-user-error who f"too many redirects while downloading: {url}")
+        (raise-user-error who "~a" f"too many redirects while downloading: {url}")
       ) ; end when too many redirects
       (define-values (status header-lines body-port)
         (http-send/port! who "GET" host path (list "User-Agent: package-racket") #f)
@@ -9568,7 +9568,7 @@ body: {(safe-response-body body)}")]
          (define location (github-header-value header-lines "Location"))
          (close-input-port body-port)
          (unless location
-           (raise-user-error who f"HTTP redirect missing Location header: {code}")
+           (raise-user-error who "~a" f"HTTP redirect missing Location header: {code}")
          ) ; end unless location header
          (cond
            [(string-prefix? location "https://")
@@ -9579,13 +9579,13 @@ body: {(safe-response-body body)}")]
            [(string-prefix? location "/")
             (loop host location (add1 redirects))]
            [else
-            (raise-user-error who f"unsupported redirect Location: {location}")]
+            (raise-user-error who "~a" f"unsupported redirect Location: {location}")]
          ) ; end cond redirect location
         ]
         [else
          (define body (port->string body-port))
          (close-input-port body-port)
-         (raise-user-error who
+         (raise-user-error who "~a"
                            f"download failed: {code} https://{host}{path}
 body: {(safe-response-body body)}")]
       ) ; end cond response status
@@ -9697,7 +9697,7 @@ body: {(safe-response-body body)}")]
     (define asset-path (build-path (cfg-artifact-dir c) asset-name))
     (assert-nonempty-file 'validate-source-release-artifact! asset-path)
     (unless (equal? (file-name-from-path asset-path) (string->path asset-name))
-      (raise-user-error 'validate-source-release-artifact!
+      (raise-user-error 'validate-source-release-artifact! "~a"
                         f"source release asset path basename does not match config asset name: {(clean-path-string asset-path)}")
     ) ; end unless asset basename
     asset-path
@@ -9709,11 +9709,11 @@ body: {(safe-response-body body)}")]
     (define asset-path (build-path (cfg-artifact-dir c) asset-name))
     (assert-nonempty-file 'validate-apt-release-artifact! asset-path)
     (unless (regexp-match? #rx"[.]deb$" asset-name)
-      (raise-user-error 'validate-apt-release-artifact!
+      (raise-user-error 'validate-apt-release-artifact! "~a"
                         f"apt release asset must end with .deb: {asset-name}")
     ) ; end unless deb asset name
     (unless (equal? (file-name-from-path asset-path) (string->path asset-name))
-      (raise-user-error 'validate-apt-release-artifact!
+      (raise-user-error 'validate-apt-release-artifact! "~a"
                         f"apt release asset path basename does not match config asset name: {(clean-path-string asset-path)}")
     ) ; end unless asset basename
     (validate-deb! c asset-path)
@@ -9723,7 +9723,7 @@ body: {(safe-response-body body)}")]
 
 (define (assert-release-asset-matches-producer! who producer-name expected-name asset-name)
   (unless (string=? asset-name expected-name)
-    (raise-user-error who
+    (raise-user-error who "~a"
                       f"{asset-name} does not match {producer-name} output {expected-name}; refusing to upload a stale or unrelated release asset")
   ) ; end unless asset matches producer
 ) ; end define assert-release-asset-matches-producer!
@@ -9735,7 +9735,7 @@ body: {(safe-response-body body)}")]
     (define actual-sha (sha256-file tmp))
     (delete-file tmp)
     (unless (string=? actual-sha expected-sha)
-      (raise-user-error 'verify-uploaded-asset!
+      (raise-user-error 'verify-uploaded-asset! "~a"
                         f"uploaded asset sha256 {actual-sha} does not match local sha256 {expected-sha}")
     ) ; end unless uploaded sha matches
   ) ; end begin verify-uploaded-asset!
@@ -9755,7 +9755,7 @@ body: {(safe-response-body body)}")]
             (string=? uploaded-digest f"sha256:{expected-sha}"))
        (println/flush f"Uploaded asset digest matches local sha256: {uploaded-digest}")]
       [(string? uploaded-digest)
-       (raise-user-error 'verify-uploaded-asset!
+       (raise-user-error 'verify-uploaded-asset! "~a"
                          f"uploaded asset digest {uploaded-digest} does not match local sha256 {expected-sha}")]
       [else
        (verify-uploaded-asset! owner repo-name token uploaded-id expected-sha)]
@@ -9785,7 +9785,7 @@ body: {(safe-response-body body)}")]
          (println/flush f"Deleting existing release asset before upload: {asset-name}")
          (github-delete-asset! owner repo-name existing-id token)]
         [else
-         (raise-user-error who
+         (raise-user-error who "~a"
                            f"release asset already exists and differs; set replace-release-asset to #t: {asset-name}")]
       ) ; end cond existing asset
     ) ; end when existing asset
@@ -9939,7 +9939,7 @@ body: {(safe-response-body body)}")]
       (call-with-input-file path read)
     ) ; end define value
     (unless (hash? value)
-      (raise-user-error 'read-brew-ci-config f"config must be a hash: {(clean-path-string path)}")
+      (raise-user-error 'read-brew-ci-config "~a" f"config must be a hash: {(clean-path-string path)}")
     ) ; end unless hash config
     value
   ) ; end begin read-brew-ci-config
@@ -9952,7 +9952,7 @@ body: {(safe-response-body body)}")]
   (begin
     (define value (hash-ref config key #f))
     (unless (and (string? value) (not (string=? value "")))
-      (raise-user-error 'required-config-string f"missing string config key: {key}")
+      (raise-user-error 'required-config-string "~a" f"missing string config key: {key}")
     ) ; end unless valid string
     value
   ) ; end begin required-config-string
@@ -9962,7 +9962,7 @@ body: {(safe-response-body body)}")]
   (begin
     (define value (hash-ref config key #f))
     (unless (exact-positive-integer? value)
-      (raise-user-error 'required-config-positive-integer f"missing positive integer config key: {key}")
+      (raise-user-error 'required-config-positive-integer "~a" f"missing positive integer config key: {key}")
     ) ; end unless valid positive integer
     value
   ) ; end begin required-config-positive-integer
@@ -10414,7 +10414,7 @@ jobs:
                                  "*.bottle*.tar.gz"
                                  "if-no-files-found: error"))])
       (unless (string-contains? content needle)
-        (raise-user-error 'validate-tests-workflow! f"tests workflow missing: {needle}")
+        (raise-user-error 'validate-tests-workflow! "~a" f"tests workflow missing: {needle}")
       ) ; end unless tests workflow needle
     ) ; end for needle
   ) ; end begin validate-tests-workflow!
@@ -10444,7 +10444,7 @@ jobs:
                                  "[skip ci]"
                                  "contents: write"))])
       (unless (string-contains? content needle)
-        (raise-user-error 'validate-publish-workflow! f"publish workflow missing: {needle}")
+        (raise-user-error 'validate-publish-workflow! "~a" f"publish workflow missing: {needle}")
       ) ; end unless publish workflow needle
     ) ; end for needle
   ) ; end begin validate-publish-workflow!
@@ -10864,7 +10864,7 @@ jobs:
   (when (needs-racket-root? targets)
     (define configured-source-version (read-package-source-version package-config))
     (unless (string=? configured-source-version source-version)
-      (raise-user-error 'main
+      (raise-user-error 'main "~a"
                         f"package-config source-version {configured-source-version} does not match racket-root source version {source-version}")
     ) ; end unless configured source version matches checkout
   ) ; end when compare source version
@@ -11131,7 +11131,7 @@ jobs:
       [m-rc (values 'rc (cadr m-rc) "1")]
       [m-pkg (values 'pkg (cadr m-pkg) (caddr m-pkg))]
       [else
-       (raise-user-error who
+       (raise-user-error who "~a"
                          f"unrecognized release tag (expected release-X.Y.Z, release-X.Y.Z-rcN, or pkg-X.Y.Z.N; upstream-style v* tags are not release triggers): {tag}")]
     ) ; end cond tag shape
   ) ; end begin parse-release-tag
@@ -11224,7 +11224,7 @@ jobs:
         (define min-count (fourth edit))
         (define count (length (regexp-match* rx content)))
         (when (< count min-count)
-          (raise-user-error who
+          (raise-user-error who "~a"
                             f"expected at least {min-count} occurrence(s) of {label} in {(clean-path-string path)}, found {count}")
         ) ; end when too few matches
         (regexp-replace* rx content (regexp-replace-quote replacement))
@@ -11245,14 +11245,14 @@ jobs:
     (define (expect path key expected)
       (define actual (hash-ref (read-rktd-hash who path) key #f))
       (unless (equal? actual expected)
-        (raise-user-error who
+        (raise-user-error who "~a"
                           f"after rewriting, {key} in {(clean-path-string path)} is {(format "~s" actual)}, expected {(format "~s" expected)}")
       ) ; end unless value matches
     ) ; end define expect
     (define (expect-targets path key expected)
       (for ([target (in-list (hash-ref (read-rktd-hash who path) 'targets '()))])
         (unless (equal? (hash-ref target key #f) expected)
-          (raise-user-error who
+          (raise-user-error who "~a"
                             f"after rewriting, a target in {(clean-path-string path)} has {key} {(format "~s" (hash-ref target key #f))}, expected {(format "~s" expected)}")
         ) ; end unless target value matches
       ) ; end for targets
@@ -11700,7 +11700,7 @@ jobs:
 (define (assert-release-ci-workflow-replaceable! who path)
   (when (file-exists? path)
     (unless (string-contains? (file->string path) generated-release-ci-notice-marker)
-      (raise-user-error who
+      (raise-user-error who "~a"
                         f"refusing to overwrite workflow without generated marker: {(clean-path-string path)}")
     ) ; end unless marker present
   ) ; end when file exists
@@ -11726,7 +11726,7 @@ jobs:
                                  "--create-release"
                                  "git push origin HEAD:main"))])
       (unless (string-contains? content needle)
-        (raise-user-error 'validate-release-ci-workflow!
+        (raise-user-error 'validate-release-ci-workflow! "~a"
                           f"generated release workflow is missing required content: {needle}")
       ) ; end unless needle present
     ) ; end for needles
@@ -11743,7 +11743,7 @@ jobs:
                                  (release-config-string config 'dispatch-token-secret)
                                  "gh api"))])
       (unless (string-contains? content needle)
-        (raise-user-error 'validate-notify-workflow!
+        (raise-user-error 'validate-notify-workflow! "~a"
                           f"generated notify workflow is missing required content: {needle}")
       ) ; end unless needle present
     ) ; end for needles
