@@ -11583,6 +11583,14 @@ jobs:
         shell: bash
         run: brew install {bootstrap} ruby
 
+      - name: Apply the release plan to this checkout
+        shell: bash
+        working-directory: package-racket
+        run: |
+          set -euo pipefail
+          racket package-racket.rkt --target release-plan --release-tag \"$TAG\" --artifact-dir artifacts
+          git status --short -- '*.rktd'
+
       - name: Build the source archive and the Formula
         shell: bash
         working-directory: package-racket
