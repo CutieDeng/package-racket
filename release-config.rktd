@@ -12,4 +12,4 @@
       (dispatch-event . "racket-tag")
       (pb-repo . "https://github.com/racket/pb")
       (pb-commit . "d8c788e335876838463fdc226a84026f61cd5c45")
-      (bootstrap-tap-commit . "97c47c5f565354735944c3d700f9fc4fa8e2c7bf"))
+      (bootstrap-tap-commit . "b30f7b21754ae2797ea5179b7e08f734e1d808a5"))

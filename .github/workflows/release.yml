@@ -67,8 +67,8 @@ jobs:
           set -euo pipefail
           brew tap cutiedeng/racket https://github.com/CutieDeng/homebrew-racket
           repo="$(brew --repo cutiedeng/racket)"
-          git -C "$repo" fetch -q origin 97c47c5f565354735944c3d700f9fc4fa8e2c7bf
-          git -C "$repo" checkout -q 97c47c5f565354735944c3d700f9fc4fa8e2c7bf
+          git -C "$repo" fetch -q origin b30f7b21754ae2797ea5179b7e08f734e1d808a5
+          git -C "$repo" checkout -q b30f7b21754ae2797ea5179b7e08f734e1d808a5
           echo "bootstrap tap at $(git -C "$repo" rev-parse HEAD)"
           HOMEBREW_NO_AUTO_UPDATE=1 brew install cutiedeng/racket/racket@9
 
@@ -182,8 +182,8 @@ jobs:
           set -euo pipefail
           brew tap cutiedeng/racket https://github.com/CutieDeng/homebrew-racket
           repo="$(brew --repo cutiedeng/racket)"
-          git -C "$repo" fetch -q origin 97c47c5f565354735944c3d700f9fc4fa8e2c7bf
-          git -C "$repo" checkout -q 97c47c5f565354735944c3d700f9fc4fa8e2c7bf
+          git -C "$repo" fetch -q origin b30f7b21754ae2797ea5179b7e08f734e1d808a5
+          git -C "$repo" checkout -q b30f7b21754ae2797ea5179b7e08f734e1d808a5
           echo "bootstrap tap at $(git -C "$repo" rev-parse HEAD)"
           HOMEBREW_NO_AUTO_UPDATE=1 brew install cutiedeng/racket/racket@9 ruby
 
