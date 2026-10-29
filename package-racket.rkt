@@ -11150,14 +11150,19 @@ jobs:
     (define release-config (read-release-config c))
     (define bottle-root-base
       (config-required-string 'release-config release-config 'bottle-root-base))
+    ;; the GitHub release that holds the source archive, which is also the
+    ;; Racket ref to build from: the tag itself for a source release and a
+    ;; candidate (a candidate's archive must not live under the final tag,
+    ;; which does not exist yet), the final tag for a packaging-only release
+    (define source-release-tag (if (eq? kind 'pkg) f"release-{source}" tag))
     (release-plan tag
                   kind
                   source
                   release
                   f"{source}.{release}"
-                  f"release-{source}"
+                  source-release-tag
                   f"release-{source}-r{release}"
-                  f"{bottle-root-base}/release-{source}"
+                  f"{bottle-root-base}/{source-release-tag}"
                   f"racket-minimal-{source}-src.tgz")
   ) ; end begin make-release-plan
 ) ; end define make-release-plan
@@ -12420,3 +12425,18 @@ end
 
 (module+ main
   (main))
+
+;; release-plan checks that need `test-cfg`, which is defined above
+(module+ test
+  ;; the archive's release tag follows the kind
+  (let ([config-path (make-temporary-file "release-config-~a.rktd")])
+    (call-with-output-file config-path #:exists 'truncate/replace
+      (lambda (out) (write (hash 'bottle-root-base "https://example.invalid/download") out)))
+    (define (plan-for tag)
+      (make-release-plan (struct-copy cfg (test-cfg) [release-tag tag] [release-config config-path])))
+    (check-equal? (release-plan-source-release-tag (plan-for "release-9.3.12-rc2")) "release-9.3.12-rc2")
+    (check-equal? (release-plan-source-release-tag (plan-for "release-9.3.12")) "release-9.3.12")
+    (check-equal? (release-plan-source-release-tag (plan-for "pkg-9.3.12.3")) "release-9.3.12")
+    (check-equal? (release-plan-bottle-root-url (plan-for "release-9.3.12-rc2")) "https://example.invalid/download/release-9.3.12-rc2")
+    (delete-file config-path))
+) ; end module+ test release-plan with test-cfg
